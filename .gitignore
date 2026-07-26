@@ -24,6 +24,7 @@ data/real/**
 # Generated artifacts are private/transient by default. Only reviewed aggregate
 # receipts and boundary documentation are eligible for the public repository.
 artifacts/*
+!artifacts/release_acceptance_1.2.0.json
 !artifacts/public/
 !artifacts/public/**
 !artifacts/dipser_credible/
