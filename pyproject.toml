@@ -44,6 +44,7 @@ dev = [
   "jsonschema>=4.20",
   "pytest>=8",
   "ruff==0.15.22",
+  "setuptools==80.9.0",
 ]
 
 [project.scripts]
