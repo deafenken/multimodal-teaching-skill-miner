@@ -6,16 +6,36 @@ from typing import Any
 
 from .miner import STRATEGY_PATTERNS
 from .models import REQUIRED_SKILL_FIELDS, validate_skill, validate_transcript
+from .teaching_phases import CANONICAL_PHASES
 
 
 DIMENSION_WEIGHTS = {
-    "structural_completeness": 0.20,
-    "evidence_grounding": 0.20,
-    "executability": 0.25,
-    "pedagogical_quality": 0.15,
-    "generalizability": 0.10,
-    "traceability": 0.10,
+    "structural_completeness": 0.12,
+    "evidence_grounding": 0.18,
+    "executability": 0.18,
+    "method_fidelity": 0.22,
+    "pedagogical_quality": 0.12,
+    "generalizability": 0.09,
+    "traceability": 0.09,
 }
+
+# Weights inside the ``method_fidelity`` dimension.  ``phase_coverage``,
+# ``evidence_utilisation`` and ``evidence_density`` vary across honest skills:
+# they measure how much of the teacher's own method the miner recovered.  The
+# other three sit at 1.0 for an honest skill and only collapse when a step's
+# provenance is fabricated, so they are the falsifiable half of the dimension.
+METHOD_FIDELITY_WEIGHTS = {
+    "phase_coverage": 0.30,
+    "cue_verification": 0.20,
+    "span_consistency": 0.15,
+    "evidence_utilisation": 0.15,
+    "temporal_monotonicity": 0.10,
+    "evidence_density": 0.10,
+}
+
+# A procedure quoting two transcript segments per observed phase counts as
+# fully dense; further quotes add breadth rather than method fidelity.
+TARGET_EVIDENCE_PER_OBSERVED_STEP = 2.0
 
 
 def _percent(parts: list[bool]) -> float:
@@ -165,6 +185,132 @@ def _procedure_provenance_diagnostics(skill: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _method_fidelity(skill: dict[str, Any]) -> dict[str, Any]:
+    """Score how faithfully the procedure reproduces the teacher's own method.
+
+    Every other dimension checks fields the miner emits by construction, so they
+    saturate.  This one is computed by re-deriving each ``observed_method``
+    step's claims from the evidence records it cites: a step that claims a cue,
+    a timespan or an evidence id it cannot support loses points.  A pure
+    template with no observed steps scores near zero.
+    """
+
+    source = skill.get("source", {}) if isinstance(skill.get("source"), dict) else {}
+    evidence_by_id = {
+        str(item["evidence_id"]): item
+        for item in source.get("evidence", [])
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+    multimodal_by_id = {
+        str(item["event_id"]): item
+        for item in source.get("multimodal_evidence", [])
+        if isinstance(item, dict) and item.get("event_id")
+    }
+    procedure = skill.get("procedure", [])
+    if not isinstance(procedure, list):
+        procedure = []
+    observed = [
+        step
+        for step in procedure
+        if isinstance(step, dict) and step.get("origin") == "observed_method"
+    ]
+
+    def _records(step: dict[str, Any]) -> list[dict[str, Any]]:
+        found = []
+        for value in step.get("evidence_ids", []) or []:
+            record = evidence_by_id.get(str(value)) or multimodal_by_id.get(str(value))
+            if isinstance(record, dict):
+                found.append(record)
+        return found
+
+    cue_verified = 0
+    span_consistent = 0
+    cited_ids: set[str] = set()
+    quoted_segments = 0
+    starts: list[float] = []
+    for step in observed:
+        records = _records(step)
+        cited_ids.update(str(value) for value in step.get("evidence_ids", []) or [])
+        quoted_segments += len(records)
+
+        # A claimed cue must literally occur in the quoted evidence.
+        haystack = " ".join(str(record.get("quote", "")) for record in records).lower()
+        cues = [str(cue).lower() for cue in step.get("matched_cues", []) or [] if cue]
+        if cues and haystack and all(cue in haystack for cue in cues):
+            cue_verified += 1
+
+        # The claimed span must actually contain every record it cites.
+        span = step.get("observed_span") or {}
+        try:
+            low = float(span["start"])
+            high = float(span["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        starts.append(low)
+        if records and all(
+            low - 1e-6 <= float(record.get("start", low - 1))
+            and float(record.get("end", high + 1)) <= high + 1e-6
+            for record in records
+        ):
+            span_consistent += 1
+
+    observed_count = len(observed)
+    canonical_total = len(CANONICAL_PHASES)
+    distinct_phases = {
+        step.get("teaching_phase") for step in observed if step.get("teaching_phase")
+    }
+    ordered_pairs = list(zip(starts, starts[1:]))
+    components = {
+        "phase_coverage": (
+            len(distinct_phases) / canonical_total if canonical_total else 0.0
+        ),
+        "cue_verification": cue_verified / observed_count if observed_count else 0.0,
+        "span_consistency": span_consistent / observed_count if observed_count else 0.0,
+        "evidence_utilisation": (
+            len(cited_ids & set(evidence_by_id)) / len(evidence_by_id)
+            if evidence_by_id
+            else 0.0
+        ),
+        "temporal_monotonicity": (
+            sum(1 for earlier, later in ordered_pairs if earlier <= later)
+            / len(ordered_pairs)
+            if ordered_pairs
+            else (1.0 if observed_count else 0.0)
+        ),
+        "evidence_density": (
+            min(
+                1.0,
+                quoted_segments
+                / (observed_count * TARGET_EVIDENCE_PER_OBSERVED_STEP),
+            )
+            if observed_count
+            else 0.0
+        ),
+    }
+    score = round(
+        100
+        * sum(components[key] * weight for key, weight in METHOD_FIDELITY_WEIGHTS.items()),
+        1,
+    )
+    return {
+        "score": min(100.0, max(0.0, score)),
+        "components": {key: round(value, 3) for key, value in components.items()},
+        "weights": METHOD_FIDELITY_WEIGHTS,
+        "observed_step_count": observed_count,
+        "distinct_observed_phase_count": len(distinct_phases),
+        "canonical_phase_count": canonical_total,
+        "cue_verified_step_count": cue_verified,
+        "span_consistent_step_count": span_consistent,
+        "cited_text_evidence_count": len(cited_ids & set(evidence_by_id)),
+        "available_text_evidence_count": len(evidence_by_id),
+        "score_semantics": (
+            "衡量 procedure 中 observed_method 步骤能被其引用证据反推验证的程度："
+            "线索、时间区间、证据利用率与时间顺序均由证据记录重新推导，"
+            "不代表真实课堂教学效果。"
+        ),
+    }
+
+
 def evaluate_skill(skill: dict[str, Any], transcript: dict[str, Any] | None = None) -> dict[str, Any]:
     validation = validate_skill(skill)
     transcript_validation = validate_transcript(transcript) if transcript is not None else None
@@ -305,10 +451,12 @@ def evaluate_skill(skill: dict[str, Any], transcript: dict[str, Any] | None = No
     if transcript and transcript.get("timestamps_are_approximate"):
         traceability = min(traceability, 85.0)
 
+    method_fidelity = _method_fidelity(skill)
     dimensions = {
         "structural_completeness": structural,
         "evidence_grounding": grounding,
         "executability": executability,
+        "method_fidelity": method_fidelity["score"],
         "pedagogical_quality": pedagogical,
         "generalizability": generalizability,
         "traceability": traceability,
@@ -325,6 +473,7 @@ def evaluate_skill(skill: dict[str, Any], transcript: dict[str, Any] | None = No
             and multimodal_score >= 60
             and bool(transcript_validation and transcript_validation.valid)
         ),
+        "method_distilled_from_video": method_fidelity["score"] >= 40,
     }
     grounding_note += (
         " Procedure 中 observed_method 步骤只有在引用有效 evidence_id 时才计为视频中观察到的方法；"
@@ -345,6 +494,7 @@ def evaluate_skill(skill: dict[str, Any], transcript: dict[str, Any] | None = No
         "validation": validation.as_dict(),
         "transcript_validation": transcript_validation.as_dict() if transcript_validation else None,
         "notes": [grounding_note],
+        "method_fidelity": method_fidelity,
         "method_provenance": {
             **method_provenance,
             "observed_strategy_count": strategy_origins["observed_method"],
