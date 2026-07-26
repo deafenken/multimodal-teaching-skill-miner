@@ -126,10 +126,10 @@ scripts/run_full_video_multimodal_study.sh \
 
 | Arm | 平均内部 Overall | 配对变化 | 有事件讲次 | 保留事件数 |
 |---|---:|---:|---:|---:|
-| transcript-only | 100.00 | 0.00 | 0/10 | 0 |
-| transcript + audio | 100.00 | 0.00 | 10/10 | 237 |
-| transcript + visual/OCR | 99.92 | -0.08 | 10/10 | 2,033 |
-| full | 99.94 | -0.06 | 10/10 | 2,270 |
+| transcript-only | 95.37 | 0.00 | 0/10 | 0 |
+| transcript + audio | 95.37 | 0.00 | 10/10 | 237 |
+| transcript + visual/OCR | 95.30 | -0.07 | 10/10 | 2,033 |
+| full | 95.32 | -0.05 | 10/10 | 2,270 |
 
 `internal_overall_score` 是项目自身对结构、证据、执行性和可追溯性的量表；`internal_evidence_consistency_score` 检查引用是否精确匹配同一分析记录。两者都不衡量事件是否符合独立真值。当前结果只能支持“音频/视觉改变了保留事件和可引用证据”，不能支持“多模态提高准确率或 Skill 质量”；内部 Overall 甚至没有出现正向增益。
 

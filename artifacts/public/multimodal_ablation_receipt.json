@@ -3,15 +3,15 @@
   "schema_version": "1.0",
   "dataset_id": "mit_ocw_10_full_video_multimodal",
   "source_artifact_sha256": {
-    "four_arm_ablation_report": "a51622cf89314faf5ba8321630c0d8b3600b0f82463954345f88cf74895ec202",
+    "four_arm_ablation_report": "43161416ad83219cff9f76a3bf28ca0b2a73db2ea232d58d8900dfbb5eec117a",
     "semantic_data_audit": "7a06cf17d795bf647cd076b5a02a6ba88bf37d1797c80a0509583a76d7f9bda5",
     "semantic_dataset_manifest": "c966182b4d6442d9ec048024b28170c15d523b83e3213e3a64cd1430a3990f2a",
     "visual_semantic_batch_receipt": "56d616f76bae2424f4ebd885ba96ba125d49aae566897ba08b75d8cb3e535c04"
   },
   "integrity_commitments": {
     "source_transcript_set_sha256": "00476477d289cf8cf979d7c8536e26507c3ba44c8254862f7cc39fef7651e9c6",
-    "aggregate_internal_metrics_sha256": "f86b45fb9e466c9a3b69443c271a9b2a56fcec2f6caa3aac00d7fa9797a31e57",
-    "paired_lecture_record_set_sha256": "c75445a73ef8795c209a16e0397bdda07da6b6c1075557997e878d102b10057a",
+    "aggregate_internal_metrics_sha256": "a40f90cbca7fb589406790d5a12254c79dac8055de3a0611915ed3ead83e2f2a",
+    "paired_lecture_record_set_sha256": "0b546525207367c8012f4a713ce3538fd82248848d98819c6b705290a2aaaa06",
     "paired_lecture_count": 10
   },
   "design": {
@@ -31,7 +31,7 @@
   "aggregate_internal_metrics": {
     "transcript_only": {
       "lecture_count": 10,
-      "mean_internal_overall_score": 100.0,
+      "mean_internal_overall_score": 95.37,
       "mean_paired_internal_score_delta": 0.0,
       "median_paired_internal_score_delta": 0.0,
       "mean_paired_evidence_grounding_delta": 0.0,
@@ -43,7 +43,7 @@
     },
     "transcript_audio": {
       "lecture_count": 10,
-      "mean_internal_overall_score": 100.0,
+      "mean_internal_overall_score": 95.37,
       "mean_paired_internal_score_delta": 0.0,
       "median_paired_internal_score_delta": 0.0,
       "mean_paired_evidence_grounding_delta": 0.0,
@@ -55,8 +55,8 @@
     },
     "transcript_visual": {
       "lecture_count": 10,
-      "mean_internal_overall_score": 99.92,
-      "mean_paired_internal_score_delta": -0.08,
+      "mean_internal_overall_score": 95.3,
+      "mean_paired_internal_score_delta": -0.07,
       "median_paired_internal_score_delta": 0.0,
       "mean_paired_evidence_grounding_delta": -0.4,
       "lectures_with_positive_internal_score_delta": 0,
@@ -67,8 +67,8 @@
     },
     "full": {
       "lecture_count": 10,
-      "mean_internal_overall_score": 99.94,
-      "mean_paired_internal_score_delta": -0.06,
+      "mean_internal_overall_score": 95.32,
+      "mean_paired_internal_score_delta": -0.05,
       "median_paired_internal_score_delta": 0.0,
       "mean_paired_evidence_grounding_delta": -0.3,
       "lectures_with_positive_internal_score_delta": 0,

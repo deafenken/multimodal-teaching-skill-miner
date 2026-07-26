@@ -12,7 +12,7 @@
 | 视频/字幕或 ASR / Skill / 教学过程 / 状态机 | 完成 | `tsm pipeline --transcript` 提供无 Whisper 的真实视频闭环；同媒体哈希 ASR 仍可直接使用 |
 | 完整视频音频、抽帧、OCR 与事件 | 完成工程链路 | v9/v2：10/10 全时间轴覆盖和字幕—媒体对齐；2553 帧、2441 非空 OCR 帧、1964 帧至少 3 词、40191 接受词、1974 视觉事件、2270 融合事件 |
 | CLIP 视觉语义 | 完成工程链路 | wheel `visual` extra 和三个 `tsm visual-semantic-*` 入口；2553/2553 哈希绑定帧；512 维嵌入、八类相对 prompt 分数、模型 revision/权重 SHA/CPU 环境绑定；没有人工真值，不建立 Accuracy |
-| transcript / +audio / +visual / full 消融 | 完成内部分析 | 10 讲完全相同 transcript segments，排除课堂观察；平均内部 Skill 分 100.00/100.00/99.92/99.94，不构成多模态增益 |
+| transcript / +audio / +visual / full 消融 | 完成内部分析 | 10 讲完全相同 transcript segments，排除课堂观察；平均内部 Skill 分 95.37/95.37/95.30/95.32，不构成多模态增益 |
 | 多模态公开聚合 receipts | 完成工程边界 | `full_multimodal_validation_receipt.json` 与 `multimodal_ablation_receipt.json` 只保留聚合、设计、结论边界和私有来源哈希承诺；发布仍需 release audit 与人工披露复核 |
 | 10 讲端到端总 runner | 完成工程入口 | `run_full_video_multimodal_study.sh` 串联获取/验证、可恢复长视频处理、CLIP、审计、消融、公开 receipts 与 release audit；默认 CPU，可通过环境变量选择授权 GPU |
 | TeachObs 外部人工标签 | 完成导入与审计 | commit-pinned v0.1：30 讲、5158 场景、39 个共识标签、官方 23/7 划分；来源报告 7 名独立编码员，但无逐编码员文件，不能重算 κ |
@@ -22,7 +22,9 @@
 | TeachObs 双人独立标注包 | 完成 fail-closed 骨架 | `prepare/analyze-teachobs-double-annotation`；A/B 两份空标签表使用不同盲化顺序，论文 profile 为每人 4,945 行×39 标签，完整 profile 为 5,158 行×39；发布的 39 个定义全空，须外部 39/39 operational codebook 和真实两人回填后才计算 κ，当前 human_completion=false |
 | TeachObs 完整视频四臂 F1 | 完成正式探索性实跑 | 29 讲/4,945 场景完成媒体、字幕/ASR、音频、OCR、CLIP 与四臂对齐；固定六讲 1,099 场景上，transcript/+audio/+visual/full 的 Micro-F1 为 0.594496/0.604708/0.548328/0.543812，Macro-F1 为 0.244338/0.247501/0.303894/0.309604，Hamming 为 0.818833/0.809967/0.775297/0.763258。full 相对 text 的 Macro-F1 增量 +0.065266（lesson-cluster 95% CI [0.014886,0.095637]），但 Micro/Hamming 明显下降。修订仅在 23 讲内做 5 折 lesson-grouped OOF 并记录 frozen v2 provenance；首轮公开测试结果已观察，因此是 post-test iterative exploratory，不是首次盲测、0.9、确认性或部署结果 |
 | TeachObs 新站点确认性四臂预注册 | 完成 fail-closed 草案链 | 精确绑定 system/analysis/四臂模型文件 SHA、同样本主 contrast、39 标签 Macro-F1、classroom/session cluster、固定 2,000 次 bootstrap、coverage、前瞻/一次性与外部 Ed25519 登记门；本地四臂冻结包是否完整必须以草案中的传递校验字段和 checker 为准。在新目标数据、外部登记签名和一次性执行证据到位前，所有 established=false；公开 TeachObs 23/7 被机器规则排除 |
-| 自动结构与证据一致性评估 | 完成 | `tsm evaluate` |
+| 九个规范教学环节蒸馏 | 完成 | `teaching_phases.py` 按题目 4.2 定义九个环节；`mine_skill` 按教师自己的时间线排出 procedure，每步标 `origin=observed_method`（带时间戳、命中线索和 evidence_id）或 `recommended_enrichment`（无证据）。10 份演示 transcript 实际观察到 4–7 个环节 |
+| 自动结构与证据一致性评估 | 完成 | `tsm evaluate`；七个维度加权（结构 12%、证据 18%、可执行 18%、方法忠实度 22%、教学质量 12%、迁移 9%、溯源 9%）。前六个维度检查生成器按构造必然满足的字段，10 份演示 Skill 上标准差为 0.000；`method_fidelity` 改为从被引用的 evidence 记录反推每个 observed 步骤的主张，实际区分度为 83.3–89.8（总分 92.3–93.7） |
+| 评分维度的可证伪性 | 完成负控 | `tests/test_method_fidelity.py` 用五种降级（纯模板、伪造线索、打乱时间段、删证据、塌缩环节）对深拷贝 Skill 打分并断言严格下降，且把每种降级绑定到应当检出它的那个分量；把 `method_fidelity` 钉成 100.0 会让 8 个测试失败 |
 | observed method 与推荐脚手架区分 | 完成 | `method_provenance` |
 | 人工复核覆盖与版本审计机制 | 完成工程能力 | 复核完成后强制 100% 覆盖、不同 reviewer、canonical `skill_fingerprint` 绑定；当前真实评分仍待完成 |
 | DIPSER 数据/特征防篡改 | 完成 | runner 重算指纹 + tamper tests |

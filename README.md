@@ -235,14 +235,14 @@ CLIP 对 `2,553/2,553` 个哈希绑定帧完成 512 维视觉嵌入和八类封�
 
 | Arm | 平均内部 Skill 分 | 相对 transcript-only | 保留事件数 |
 |---|---:|---:|---:|
-| transcript-only | 100.00 | 0.00 | 0 |
-| transcript + audio | 100.00 | 0.00 | 237 |
-| transcript + visual/OCR | 99.92 | -0.08 | 2,033 |
-| full | 99.94 | -0.06 | 2,270 |
+| transcript-only | 95.37 | 0.00 | 0 |
+| transcript + audio | 95.37 | 0.00 | 237 |
+| transcript + visual/OCR | 95.30 | -0.07 | 2,033 |
+| full | 95.32 | -0.05 | 2,270 |
 
 这些分数只是同一流水线的结构、证据引用一致性和可执行性量表；它们不是 Accuracy、Precision、Recall、F1，也没有显示内部 Skill 分数增益。OCR 计数不表示 OCR 正确率，CLIP 相对 prompt 分数不是校准概率，检测器事件数不表示正确事件数。因为没有独立事件 gold label、独立 Skill 质量评分或学习者结果，`recognition_accuracy_established`、`multimodal_gain_established`、`teaching_effectiveness_established` 和 `deployment_accuracy_established` 均为 `false`。完整设计和证据解释见 [`docs/multimodal_design.md`](docs/multimodal_design.md)。
 
-内容最小化的公开证据分别写入 `artifacts/public/full_multimodal_validation_receipt.json` 和 `artifacts/public/multimodal_ablation_receipt.json`。最终总 runner 实跑后的文件 SHA-256 分别为 `33155d14082050ef06302b33f18b5f01894a569147009681d93a18febc90f32b` 与 `f8db1145f323f8fc98777f1e300310d90fe8adfa26f6bc553fd23c181c633019`。它们只保留聚合计数、设计字段和上游私有产物哈希承诺，不包含媒体、字幕/OCR 文本、帧、嵌入、逐讲记录、讲次标识或本地路径；生成后仍须运行 `tsm release-audit artifacts/public` 并做人工披露风险复核。
+内容最小化的公开证据分别写入 `artifacts/public/full_multimodal_validation_receipt.json` 和 `artifacts/public/multimodal_ablation_receipt.json`。最终总 runner 实跑后的文件 SHA-256 分别为 `33155d14082050ef06302b33f18b5f01894a569147009681d93a18febc90f32b` 与 `81af973544a2a9b49708712ae2cb95f4381791cd4d26e4add7168bf1f95d3410`。它们只保留聚合计数、设计字段和上游私有产物哈希承诺，不包含媒体、字幕/OCR 文本、帧、嵌入、逐讲记录、讲次标识或本地路径；生成后仍须运行 `tsm release-audit artifacts/public` 并做人工披露风险复核。
 
 #### TeachObs 真实标签四臂基准
 
@@ -510,18 +510,34 @@ python3 -m teaching_skill_miner evaluate \
   --output artifacts/python_l03.report.json
 ```
 
-总分为六个维度的加权和：
+总分为七个维度的加权和：
 
 | 维度 | 权重 | 核心检查 |
 |---|---:|---|
-| 结构完整性 | 20% | 必填字段、类型、动作词表 |
-| 证据落地性 | 20% | 时间戳、精确引文、证据数量 |
-| 可执行性 | 25% | 步骤、观察信号、失败回退、参数 |
-| 教学质量 | 15% | 前提、成功标准、失败模式、验证题 |
-| 可迁移性 | 10% | 概念参数、近迁移题、边界/反例 |
-| 可追溯性 | 10% | 课程、视频、来源、转写类型 |
+| 结构完整性 | 12% | 必填字段、类型、动作词表 |
+| 证据落地性 | 18% | 时间戳、精确引文、证据数量 |
+| 可执行性 | 18% | 步骤、观察信号、失败回退、参数 |
+| 方法忠实度 | 22% | observed_method 步骤能否被其引用证据反推验证 |
+| 教学质量 | 12% | 前提、成功标准、失败模式、验证题 |
+| 可迁移性 | 9% | 概念参数、近迁移题、边界/反例 |
+| 可追溯性 | 9% | 课程、视频、来源、转写类型 |
 
-通过条件为总分至少 75，并且同时通过四个硬门槛：schema 合法、grounding 至少 60、executability 至少 70、至少两种测试。自动高分仅表示“工程与量表合规”，不等价于真实学习效果。人工协议、评分锚点与 A/B 指标见 [`docs/human_review_guide.md`](docs/human_review_guide.md)。
+其余六个维度检查的都是挖掘器按构造必然写出的字段，因此在本数据集上全部饱和（十个 Skill 的每个维度总体标准差均为 0.000）。**方法忠实度**是唯一一个需要重新推导才能得分的维度：它不看步骤"有没有写"，而是拿每个 `observed_method` 步骤引用的证据记录反推它自己的声明。
+
+| 子项 | 权重 | 检查 |
+|---|---:|---|
+| `phase_coverage` | 30% | 九个规范环节中实际还原了几个 |
+| `cue_verification` | 20% | 步骤声称的触发线索是否真的出现在它引用的引文里 |
+| `span_consistency` | 15% | 步骤声称的时间区间是否真的包含它引用的每条证据 |
+| `evidence_utilisation` | 15% | 已挖掘的证据被 procedure 引用的比例 |
+| `temporal_monotonicity` | 10% | observed 步骤是否沿视频时间轴单调推进 |
+| `evidence_density` | 10% | 每个 observed 步骤的引文条数（上限 2 条即满分） |
+
+前一、四、六项在诚实的 Skill 之间本就有差异，衡量"方法还原了多少"；后三项在诚实的 Skill 上恒为 1.0，只有在步骤伪造出处时才会塌陷，是这个维度可证伪的一半。当前十个 Skill 的方法忠实度落在 83.3–89.8（标准差 1.64），总分落在 92.3–93.7。
+
+`tests/test_method_fidelity.py` 用五种人工降级（纯模板、伪造线索、打乱时间区间、抽掉证据、塌缩环节）验证它确实在测量：每种降级都必须被对应的子项抓到，且总分严格下降；把这个维度钉成常数会让其中八个测试失败。
+
+通过条件为总分至少 75，并且同时通过全部硬门槛：schema 合法、grounding 至少 60、executability 至少 70、至少两种测试、方法忠实度至少 40（`method_distilled_from_video`）；多模态 Skill 还要额外通过 `multimodal_consistent`。自动高分仅表示"工程与量表合规"，不等价于真实学习效果。人工协议、评分锚点与 A/B 指标见 [`docs/human_review_guide.md`](docs/human_review_guide.md)。
 
 留出新任务测试覆盖分数除法、光合作用、递归、条件概率、牛顿第三定律和议论文结构：
 
