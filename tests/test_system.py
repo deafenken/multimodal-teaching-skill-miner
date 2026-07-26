@@ -390,6 +390,30 @@ class MiningTests(unittest.TestCase):
         self.assertEqual(advance["event"]["transition"], "advance")
         self.assertEqual(runtime.procedure_index, 1)
 
+    def test_demo_response_script_covers_the_whole_multimodal_skill(self) -> None:
+        """The shipped demo script must outlast the procedure it drives.
+
+        It is a fixed list, so any change to the number of distilled teaching
+        phases can silently leave the demo session incomplete and make
+        ``interact`` exit non-zero.
+        """
+
+        transcript = read_json(
+            self.root / "data/demo/synthetic_multimodal_transcript.json"
+        )
+        skill = mine_skill(transcript)
+        script = read_json(self.root / "data/demo/scripted_learner_responses.json")
+        result = run_scripted_session(
+            skill, concept="递归调用栈", responses=script["responses"]
+        )
+        self.assertTrue(
+            result["completed"],
+            "data/demo/scripted_learner_responses.json is too short for the "
+            "current procedure; the demo session would end unfinished",
+        )
+        self.assertEqual(result["completion_ratio"], 1.0)
+        self.assertGreaterEqual(result["fallback_count"], 1)
+
     def test_scripted_runtime_can_complete(self) -> None:
         total = len(self.skill["procedure"]) + len(self.skill["verification"])
         result = run_scripted_session(

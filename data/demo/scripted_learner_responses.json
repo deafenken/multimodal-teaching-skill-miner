@@ -1,13 +1,19 @@
 {
+  "script_purpose": "驱动 interact 演示走完九个教学环节与两道验证题；不代表真实学生作答。",
+  "learning_effectiveness_established": false,
+  "expected_turn_count_semantics": "1 次回退重答 + 9 个 procedure 环节 + 2 道 verification = 12 次作答",
   "responses": [
     {"response": "我还不确定，请先给一个更简单的前置例子。", "signal": "not_achieved"},
-    {"response": "我能说明前置概念并给出一个例子。", "signal": "achieved"},
-    {"response": "我能预测每一步并说明理由。", "signal": "achieved"},
-    {"response": "我能把实例结构对应到正式定义。", "signal": "achieved"},
-    {"response": "我能区分正例和反例。", "signal": "achieved"},
-    {"response": "我能在新情境中独立完成关键步骤。", "signal": "achieved"},
-    {"response": "我能总结定义、条件、反例和迁移用途。", "signal": "achieved"},
+    {"response": "我能说明前置概念，并举出一个例子。", "signal": "achieved"},
+    {"response": "我能用自己的话指出这个例子里的关键结构。", "signal": "achieved"},
+    {"response": "我能复述待解决的问题，并说出初步猜想。", "signal": "achieved"},
+    {"response": "我能说出每一步的输入、操作与输出。", "signal": "achieved"},
+    {"response": "我能把例子逐项对应到形式定义。", "signal": "achieved"},
+    {"response": "换一种表述我也能完成关键步骤，并说明理由。", "signal": "achieved"},
+    {"response": "我能定位第一处出错的步骤，并说出失效条件。", "signal": "achieved"},
+    {"response": "我能总结定义、适用条件、一个反例和迁移用途。", "signal": "achieved"},
+    {"response": "我能根据反馈定位问题，并完成第二次尝试。", "signal": "achieved"},
     {"response": "近迁移题完成，理由引用了适用条件。", "signal": "achieved"},
-    {"response": "边界案例判断完成并指出失效条件。", "signal": "achieved"}
+    {"response": "边界案例判断正确，并指出决定性的条件。", "signal": "achieved"}
   ]
 }
