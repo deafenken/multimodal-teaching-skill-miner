@@ -73,6 +73,17 @@ CI 的 Python 3.10–3.13 矩阵用于检验声明版本范围的前向兼容性
 sh scripts/build_release_acceptance.sh
 ```
 
+若本机存在 TeachObs 私有证据，`verify_project.sh` 会一并重验人工复核骨架与锁箱草案。它们的默认路径是未带日期的文件名，而本仓库随附的是与论文 profile 配对的带日期版本，因此需要显式指向：
+
+```bash
+TSM_TEACHOBS_HUMAN_ROOT="$PWD/artifacts/private/external_datasets/teachobs/human_annotation_paper_track1_20260723" \
+TSM_TEACHOBS_HUMAN_RECEIPT="$PWD/artifacts/public/teachobs_human_annotation_paper_track1_20260723_receipt.json" \
+TSM_TEACHOBS_LOCKBOX_DRAFT="$PWD/artifacts/public/teachobs_new_site_paper_track1_lockbox_preregistration_20260723_draft.json" \
+sh scripts/build_release_acceptance.sh
+```
+
+不设这三个变量时，验收会在 TeachObs 阶段以"human-review evidence is partial"失败关闭——这是刻意的：`human_annotation/` 下还留着 5,158 行的完整 profile 旧骨架，与 4,945 行论文 profile 的公开 receipt 并不配对，宁可失败也不允许用不匹配的骨架通过。没有 TeachObs 私有证据的环境（例如公开 CI）会跳过整段检查，直接裸跑即可。
+
 这个入口启动时先把旧 acceptance 降级为 `stale_not_accepted`，随后依次执行全量项目验收、两个独立临时源码副本的字节级一致构建、最终候选 wheel 的隔离安装和视频闭环、wheel/公开目录发布审计；候选通过后才原子替换 `dist/` 中的同名 wheel，再对新 acceptance 本身做发布审计并原子替换 `artifacts/release_acceptance_1.2.0.json`。因此中途失败不会遗留看似仍有效的旧验收。acceptance 的测试数、wheel 哈希/大小/成员、公开目录摘要都由绑定同一 wheel SHA-256 的新鲜 receipt 重算；验证源码或任一产物在验收后变化都会失败，不会复制旧 acceptance 的字段。为保证相同证据生成相同字节，acceptance 有意不写墙钟时间。
 
 如需逐步排障，底层入口仍可单独运行：
@@ -469,6 +480,39 @@ python3 -m teaching_skill_miner mine \
 离线抽取器对中英文关键词、时间段和教学事件进行可解释打分，覆盖题目要求中的具体例子、逐步拆解、提问、追问、纠错、对比、先直觉后形式化、整体到局部、代码/公式逐行解释、练习反馈、难度递进、回顾、迁移和动态调整等策略。
 
 每个策略和 procedure 步骤都标记 `origin`：`observed_method` 表示有视频/转写证据，`recommended_enrichment` 表示系统补充的通用教学脚手架。每个证据有稳定 `evidence_id`，观察到的步骤必须列出 `evidence_ids`；推荐步骤不会被计入“视频中观察到的方法”覆盖率。
+
+#### 教学步骤：按教师自己的顺序还原九个环节
+
+题目 4.2 列出九个教学环节。[`teaching_phases.py`](teaching_skill_miner/teaching_phases.py) 逐条实现它们，用线索匹配定位每个环节在转写中的首次出现，再**按教师自己的时间顺序**排出 procedure——而不是套一个固定模板：
+
+| 环节 | `teaching_phase` |
+|---|---|
+| 复习前置知识 | `prior_knowledge_review` |
+| 提出问题或情境 | `problem_or_context_setup` |
+| 给出直观例子 | `intuitive_example` |
+| 建立抽象概念 | `abstract_concept_building` |
+| 展示推导或操作 | `derivation_or_operation_walkthrough` |
+| 检查学生理解 | `understanding_check` |
+| 纠正常见错误 | `error_diagnosis_and_correction` |
+| 练习与反馈 | `practice_and_feedback` |
+| 总结和迁移 | `summary_and_transfer` |
+
+命中的环节带真实时间段、触发线索和 `evidence_ids`，标 `origin=observed_method`；未命中的环节仍然补进 procedure 以保证可执行，但明确标 `origin=recommended_enrichment` 且 `observed_span` 为 `null`，指令里直接写明"视频中未观察到该环节"。两者在 JSON 里从不混淆：
+
+```json
+{
+  "step": 2,
+  "teaching_phase": "intuitive_example",
+  "teaching_phase_name": "给出直观例子",
+  "origin": "observed_method",
+  "observed_span": {"start": 0.0, "end": 100.0},
+  "matched_cues": ["example"],
+  "evidence_ids": ["evi_35d8659f0cbfbac8"],
+  "provenance": {"derivation": "observed_teaching_phase_from_timeline"}
+}
+```
+
+`mining_metadata.teaching_phase_analysis` 记录本讲实际观察到哪些环节、顺序如何、哪些没出现。10 份演示转写各观察到 4–7 个环节，没有一份凑满九个——凑满才说明检测器在编造。该检测器只记录时间轴上可见的教学动作，不建立识别准确率。
 
 每个 Skill 都带 `source.evidence`；证据包含开始/结束时间、原转写中的精确引文和所支持的策略。评估器会做逐字匹配，伪造证据无法通过 grounding gate。
 

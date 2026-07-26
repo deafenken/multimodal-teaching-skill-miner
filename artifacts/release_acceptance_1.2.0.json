@@ -1,16 +1,211 @@
 {
-  "schema_version": "teaching_skill_miner.release_acceptance.pending.v1",
+  "schema_version": "teaching_skill_miner.release_acceptance.v2",
   "release_version": "1.2.0",
-  "overall_status": "stale_not_accepted",
-  "engineering_release_accepted": false,
-  "prior_acceptance_values_valid_for_current_source": false,
-  "reason": "Release acceptance regeneration is in progress or the last attempt did not complete successfully.",
-  "regenerate_with": "sh scripts/build_release_acceptance.sh",
+  "overall_status": "engineering_ready_external_validation_pending",
+  "generation_policy": {
+    "method": "fresh_receipts_and_exact_artifact_recomputation",
+    "copied_from_previous_acceptance": false,
+    "timestamp_omitted_for_reproducibility": true
+  },
+  "validation": {
+    "pytest": {
+      "passed": true,
+      "testcase_count": 374,
+      "subtest_count": 121,
+      "total_count": 495,
+      "skipped_count": 0,
+      "passed_count": 495
+    },
+    "ruff_passed": true,
+    "compileall_passed": true,
+    "shell_syntax_passed": true,
+    "source_entrypoint_smoke_passed": true,
+    "pip_check_passed": true,
+    "doctor_passed": true,
+    "demo_passed": true,
+    "delivery_verification_passed": true,
+    "public_release_audit_passed": true,
+    "byte_identical_double_build_passed": true,
+    "exact_release_wheel_verification_passed": true,
+    "generated_skill_schema_validation_passed": true,
+    "wheel_release_audit_passed": true
+  },
+  "conditional_validation": {
+    "formal_caption_private_audit_run": true,
+    "formal_caption_private_audit_passed": true,
+    "teachobs_private_receipt_audit_run": true,
+    "teachobs_private_receipt_audit_passed": true,
+    "teachobs_private_receipt_binding": {
+      "file_count": 23,
+      "files": [
+        {
+          "role": "annotation_audit",
+          "sha256": "39ba834c507a332683ee6fc970c64bf62f78a29d06dd5c25880e189d8a9d8604"
+        },
+        {
+          "role": "annotation_receipt",
+          "sha256": "0c0a850e0dca89c4c87935522c5028982bae07a4cf69422c844bfd9e9db8c98b"
+        },
+        {
+          "role": "asr_coverage_matrix",
+          "sha256": "13304cfdf940775257481e9f1e8de92b47fd55f6cb0bc5eb3b57c02d5f41b0ce"
+        },
+        {
+          "role": "asr_import_audit",
+          "sha256": "a8928cd083c6151668a44963b1d7a14ac8b001e6c7a6920b46f49318bda41e84"
+        },
+        {
+          "role": "asr_job_manifest",
+          "sha256": "031edcec4d618a479454238f4ab5ea2630448a937d8e213995c6507bcf9c3591"
+        },
+        {
+          "role": "asr_receipt",
+          "sha256": "30f9a128eeb3018c5dafc85270c8e7885861dd5ea40adf67b2a360311c26654d"
+        },
+        {
+          "role": "caption_audit",
+          "sha256": "bee539239b897a9dcf923037a195c332815701072fe160d88ff7702b98fc141e"
+        },
+        {
+          "role": "caption_receipt",
+          "sha256": "ce9fca899a9be0e721cd30d943ab6ce021fd105a74d4075dbda62db4aaed078e"
+        },
+        {
+          "role": "media_manifest",
+          "sha256": "24d13ee6818688bf186da6dcce68e3660a046ae0b1d2d016c3c1ed09e306b6f9"
+        },
+        {
+          "role": "teachobs_benchmark_receipt",
+          "sha256": "b3abd1f05cc2f680af5c4c5d6aed7cf3761da387f3d47aed02a2587507a8740a"
+        },
+        {
+          "role": "teachobs_benchmark_result",
+          "sha256": "674dfcc2e6884d9fa1aece909bd78e8ebccf23007d95e666684f47b6083d728c"
+        },
+        {
+          "role": "teachobs_feature_manifest",
+          "sha256": "cf0df1dce999f3e40510d6c6daab2ceff5b5a9f0cb6f029faf8043811bed7712"
+        },
+        {
+          "role": "teachobs_frozen_bundle_manifest",
+          "sha256": "0d4c87cbef34257b2f8fd693d38fe015fa147c2e5904afee1172096fec4707cb"
+        },
+        {
+          "role": "teachobs_frozen_full_arrays",
+          "sha256": "6917fd1896b1bc5ac686378395dd9d340dd88166c8c08a61f56aad11021eeefa"
+        },
+        {
+          "role": "teachobs_frozen_full_manifest",
+          "sha256": "a2427731324d832b62ef11cafc5c8e5ef79f9de07ff5af422686549616b40eff"
+        },
+        {
+          "role": "teachobs_frozen_transcript_audio_arrays",
+          "sha256": "8e7c2572b673d399ceea4d50f1e40f7730a98fb62b1511aabbaeffe8b86cf6af"
+        },
+        {
+          "role": "teachobs_frozen_transcript_audio_manifest",
+          "sha256": "162a2ddafad64add107789fc14338c0f9503ce70e81f54db35574fbbd0e4bbef"
+        },
+        {
+          "role": "teachobs_frozen_transcript_only_arrays",
+          "sha256": "5961d73ecc364a4867aa1129b57f74012ead4af3d1191e8a21f8ec507a27b3ba"
+        },
+        {
+          "role": "teachobs_frozen_transcript_only_manifest",
+          "sha256": "4d9e1d385fd5a218b1c5037dac65ea9eb02a2140399da1469183f972ae5071b8"
+        },
+        {
+          "role": "teachobs_frozen_transcript_visual_arrays",
+          "sha256": "9ce405630369084dacb8fe1fe4086474b5ec969a47a6bf8f722371464d883fbb"
+        },
+        {
+          "role": "teachobs_frozen_transcript_visual_manifest",
+          "sha256": "cec969ed745117a0eb8abdaaeea578723c2a7078cd26cb5f219caafd384afdee"
+        },
+        {
+          "role": "teachobs_transcript_materialization_manifest",
+          "sha256": "2dd03aee0a5b98ae36832d120fba7b8bf3b5f707ff04afbfff28fb942937647f"
+        },
+        {
+          "role": "teachobs_transcript_materialization_receipt",
+          "sha256": "81116f47f0923aad645434281b767d92d2cddc47e74479dca552dc921e6102c6"
+        }
+      ],
+      "binding_sha256": "c9df7867e5459decda73fac981b20047cc14a69685167522d5a35a99e921a246"
+    },
+    "teachobs_governance_artifacts_checked": true,
+    "teachobs_governance_binding": {
+      "file_count": 3,
+      "files": [
+        {
+          "role": "human_manifest",
+          "path": "artifacts/private/external_datasets/teachobs/human_annotation_paper_track1_20260723/assignment_manifest.json",
+          "sha256": "da4420d4efd40a320b06953ebc47ef62468822e2436e3ca466f996f4d8be2370"
+        },
+        {
+          "role": "human_receipt",
+          "path": "artifacts/public/teachobs_human_annotation_paper_track1_20260723_receipt.json",
+          "sha256": "8740bec4eb6cf4ed9750725fe2254ff7b80147ceccc2a8e1f115a80a794433bf"
+        },
+        {
+          "role": "lockbox_draft",
+          "path": "artifacts/public/teachobs_new_site_paper_track1_lockbox_preregistration_20260723_draft.json",
+          "sha256": "728fb516b24a77e66aa06dbc4fc5c6212f20cfd723cfb9448c1e683fce81916c"
+        }
+      ],
+      "binding_sha256": "5e5a998e48eccd2afc7a98e88cc40902b1f3114509c72a6b13506ec73f04f155"
+    },
+    "tracked_file_privacy_scan_run": true,
+    "tracked_file_privacy_scan_passed": true
+  },
+  "release_artifact": {
+    "artifact": "dist/teaching_skill_miner-1.2.0-py3-none-any.whl",
+    "size_bytes": 566603,
+    "uncompressed_bytes": 2352568,
+    "member_count": 98,
+    "sha256": "bad5ea0b1abdb41b959a66fb5116c259a047fc46eccd8497d68bd7da3596cdfe",
+    "distribution": "teaching-skill-miner",
+    "version": "1.2.0",
+    "license_expression": "LicenseRef-Academic-Evaluation-1.0",
+    "requires_python": ">=3.10",
+    "release_audit_finding_count": 0,
+    "members_sha256": "2475a862efdfa3db46a191d332ac055add9997d45200f7e6216cdd70d05f559a"
+  },
+  "public_artifacts": {
+    "directory": "artifacts/public",
+    "member_count": 14,
+    "total_size_bytes": 90376,
+    "release_audit_finding_count": 0,
+    "members_sha256": "ede68664c60adc802f1a18231c04a8597e70cbc110a58eb5e1067ecc365495c9"
+  },
+  "environment": {
+    "python": "3.13.11",
+    "python_implementation": "CPython",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "ruff": "ruff 0.15.22",
+    "ffmpeg": "ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers",
+    "ffprobe": "ffprobe version 8.1.2 Copyright (c) 2007-2026 the FFmpeg developers",
+    "tesseract": "tesseract 5.5.2"
+  },
+  "verification_binding": {
+    "verification_scope": {
+      "file_count": 85,
+      "sha256": "92b4f38feb3af8a70a709a1b460abfbd8a2a9565f89f40d6c08bad288ca4b368"
+    },
+    "project_verification_receipt_sha256": "499901e96dd4dbfe7a1814e071e3b388c9b65612604000d790d513db4e12e223",
+    "exact_wheel_verification_receipt_sha256": "a3ff7b90918bbfd96378033cf790079c2882fd929fde6886dcc52b89124bce5a"
+  },
   "research_claim_boundaries": {
     "independent_human_review_complete": false,
     "confirmatory_multimodal_gain_established": false,
     "prospective_deployment_accuracy_established": false,
     "real_learner_effectiveness_established": false,
-    "stable_cross_session_accuracy_0_9_established": false
+    "stable_cross_session_accuracy_0_9_established": false,
+    "note": "Release engineering checks do not establish annotation validity, confirmatory multimodal gain, deployment accuracy, or learner effects."
+  },
+  "unverified_external_state": {
+    "git_checkout_available": true,
+    "tracked_file_privacy_scan_run": true,
+    "remote_github_actions_run_verified": false
   }
 }
