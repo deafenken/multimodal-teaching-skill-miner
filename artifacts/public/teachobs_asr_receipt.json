@@ -1,0 +1,50 @@
+{
+  "artifact_kind": "teachobs_aggregate_audited_asr_handoff_receipt",
+  "schema": "teaching_skill_miner.teachobs_asr_receipt.v1",
+  "generated_at_utc": "2026-07-23T15:06:01Z",
+  "source_hashes": {
+    "media_manifest_file_sha256": "24d13ee6818688bf186da6dcce68e3660a046ae0b1d2d016c3c1ed09e306b6f9",
+    "caption_audit_file_sha256": "bee539239b897a9dcf923037a195c332815701072fe160d88ff7702b98fc141e",
+    "job_manifest_file_sha256": "031edcec4d618a479454238f4ab5ea2630448a937d8e213995c6507bcf9c3591",
+    "asr_import_audit_file_sha256": "a8928cd083c6151668a44963b1d7a14ac8b001e6c7a6920b46f49318bda41e84",
+    "coverage_matrix_file_sha256": "13304cfdf940775257481e9f1e8de92b47fd55f6cb0bc5eb3b57c02d5f41b0ce",
+    "model_contract_sha256": "f057b1a332823f3d0a0424353bbe0eea6bb5adef215e43be2d9953b7473d40dd",
+    "decoding_contract_sha256": "fb1c28ee61fbf6148aa0435a16b37588f298c2fc7ca62cb7add4904e4f810cc4",
+    "runtime_contract_sha256": "bc50bb3a624db6fdb2c7507be766055f7a0880c789c8c1b7e1644c315c373315"
+  },
+  "aggregate": {
+    "expected_lesson_count": 30,
+    "covered_lesson_count": 29,
+    "pending_lesson_count": 1,
+    "platform_creator_provided_caption_lesson_count": 19,
+    "platform_automatic_caption_lesson_count": 4,
+    "audited_asr_fallback_lesson_count": 6,
+    "pending_no_audited_source_lesson_count": 1,
+    "transcript_source_coverage_complete": false,
+    "hash_bound_private_media_lesson_count": null,
+    "asr_job_count": 6,
+    "valid_asr_result_count": 6,
+    "pending_asr_result_count": 0
+  },
+  "evidence_status": {
+    "handoff_status": "pending",
+    "transcript_source_coverage_complete": false,
+    "asr_provenance_and_timeline_audit_completed": true,
+    "asr_is_official_caption": false,
+    "independent_human_content_audit_completed": false,
+    "content_accuracy_established": false,
+    "word_error_rate_established": false,
+    "recognition_accuracy_established": false
+  },
+  "source_priority": "platform creator-provided caption, then platform automatic caption, then technically audited ASR fallback",
+  "metric_boundary": "Hash, runtime, model, decoding, timestamp, and aggregate timeline checks do not establish transcript content accuracy or WER.",
+  "content_exclusion": {
+    "media_bytes_included": false,
+    "transcript_text_included": false,
+    "source_urls_included": false,
+    "lesson_or_video_ids_included": false,
+    "filesystem_paths_included": false,
+    "per_lesson_records_included": false,
+    "runtime_host_identity_included": false
+  }
+}

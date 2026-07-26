@@ -1,0 +1,20 @@
+{
+  "privacy_note": "Synthetic, anonymized classroom events; no identity or face recognition.",
+  "observations": [
+    {
+      "type": "student_confusion",
+      "start": 5.6,
+      "end": 5.9,
+      "note": "The learner cannot explain why the returned value differs.",
+      "confidence": 0.9
+    },
+    {
+      "type": "teacher_adjustment",
+      "start": 6.0,
+      "end": 6.8,
+      "note": "The teacher reduces the example to one variable and replays the first line.",
+      "confidence": 0.9
+    }
+  ]
+}
+

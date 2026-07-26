@@ -1,0 +1,584 @@
+{
+  "schema_version": "1.0",
+  "receipt_kind": "teachobs_aggregate_four_arm_multimodal_benchmark",
+  "private_result_canonical_sha256": "cb675ce369dc1e736524531c91dd4cb7c4a2158d5d36023f4524e50a27a5322a",
+  "dataset_aggregate": {
+    "dataset_name": "TeachObs",
+    "benchmark_profile": "paper_track1_23_train_6_test",
+    "profile_source_alignment": "arxiv_2605.30673v2_section_4.1_track1_text_frame_intersection",
+    "published_six_lesson_intersection": true,
+    "lesson_count": 29,
+    "train_lesson_count": 23,
+    "test_lesson_count": 6,
+    "scene_count": 4945,
+    "train_scene_count": 3846,
+    "test_scene_count": 1099,
+    "code_count": 39,
+    "visual_code_count": 20,
+    "nonvisual_code_count": 19,
+    "dataset_sha256": "5b1350cdcc67588b22de66397c248edf8532ec3bf536e583aa6b03e0f08aaa64",
+    "dataset_profile_fingerprint": "55df20bbb89d8ef58f6e8b6e4fb80560072c5b03e7365888650f7b86540ae2fb",
+    "benchmark_input_fingerprint": "465b76a4ffdddd39441c0f27bb4450acaa7418599cfcfa0601813726c5d813f0"
+  },
+  "transcript_aggregate": {
+    "schema": "teaching_skill_miner.teachobs_transcript_materialization_manifest.v2",
+    "profile_id": "paper_track1_23_train_6_test",
+    "manifest_file_sha256": "2dd03aee0a5b98ae36832d120fba7b8bf3b5f707ff04afbfff28fb942937647f",
+    "manifest_sha256": "abbbfdcd8cd82add0068f0f284bf853791c31c0655072568c9fbef74d0c676f9",
+    "materialization_fingerprint_sha256": "346862857226541940cd8e6621139d6b292f292cc89c6418ae85b02dfefdc8b8",
+    "ordered_sample_id_sha256": "ba38f09b04cc84efa9fc3180b0e27d76248474b651a64e769dbaff27a45b962f",
+    "ordered_scene_text_sha256": "86bd194dff9a0155a55cddf36bf132725352d4e9749070d5d0fc4e033a4e3e6d",
+    "repository_binding_sha256": "b869e330012cb7f6f624a8a4d36f17fdea08fc11b631f1b516326dfc1d1ea8f9",
+    "input_hashes_sha256": "3e3f73f9978e5327a1c3c5fc1469595924946c3443ff296a803f4dfe6b4e2799",
+    "selected_train_transcript_order_sha256": "5adc32d33fb0b9d01eff45793d62e015ecb74950fbfb1844d807db6fd3375029",
+    "selected_test_transcript_order_sha256": "8142044d7cdeffe6d8f971d1f3f261a9244098790bb45f72dfef03d0406d225a",
+    "lesson_count": 29,
+    "scene_count": 4945,
+    "nonempty_scene_count": 4509,
+    "empty_scene_count": 436,
+    "source_tier_lesson_counts": {
+      "platform_creator_provided_caption": 19,
+      "platform_automatic_caption": 4,
+      "audited_asr_fallback": 6
+    },
+    "source_tier_scene_counts": {
+      "platform_creator_provided_caption": 3068,
+      "platform_automatic_caption": 762,
+      "audited_asr_fallback": 1115
+    },
+    "all_selected_scene_transcripts_materialized": true,
+    "sample_order_matches_benchmark_profile": true,
+    "released_transcript_fallback_used": false,
+    "labels_read_or_used": false,
+    "empty_scenes_filled_from_released_transcript": false,
+    "released_repository_transcripts_used_for_model_input": false,
+    "benchmark_input_fingerprint": "465b76a4ffdddd39441c0f27bb4450acaa7418599cfcfa0601813726c5d813f0"
+  },
+  "feature_aggregate": {
+    "feature_manifest_sha256": "cf0df1dce999f3e40510d6c6daab2ceff5b5a9f0cb6f029faf8043811bed7712",
+    "audio_feature_count": 7,
+    "visual_feature_count": 25729,
+    "visual_raw_numeric_feature_count": 40,
+    "ocr_char_tfidf_feature_count": 16626,
+    "ocr_word_tfidf_feature_count": 8551,
+    "clip_embedding_feature_count": 512,
+    "feature_block_dimensions": {
+      "transcript_tfidf": 30000,
+      "audio_numeric": 7,
+      "ocr_char_tfidf": 16626,
+      "ocr_word_tfidf": 8551,
+      "visual_numeric": 40,
+      "clip_embedding": 512
+    },
+    "visual_feature_layout": "single_combined_clip_result",
+    "visual_evidence_set_sha256": "8bd1afa5a2a7708d42d4ef87c3ecec48ca39505f5452498e621a4556adc3cee4",
+    "visual_evidence_configuration_set_sha256": "c127cd643cac79fc18293287a5e86516e0a8c9af29c013385a24b6a5f9d74135",
+    "clip_weight_manifest_sha256": "664566eb76b725f00dff118536c43e51d0c45afa03b433df4ca5c5e59cd868f9",
+    "ocr_status_counts": {
+      "completed": 4945
+    },
+    "ocr_completed_scene_count": 4945,
+    "ocr_nonempty_scene_count": 4596,
+    "ocr_completed_scene_fraction": 1.0,
+    "ocr_complete_for_every_scene": true,
+    "all_scenes_have_audio_and_visual_features": true,
+    "scene_identity_and_hash_binding_verified": true,
+    "profile_selected_lessons_have_complete_audio_visual_clip": true
+  },
+  "source_identity_aggregate": {
+    "schema": "teaching_skill_miner.teachobs_source_identity_audit.v1",
+    "metadata_file_sha256": "fe607eb503bea8f3175941232ff8f5ecbfaa8f3135e70436f4ce51f154217f48",
+    "metadata_lesson_count": 30,
+    "source_metadata_field": "source",
+    "source_field_present_for_every_lesson": true,
+    "selected_train_lesson_count": 23,
+    "selected_test_lesson_count": 6,
+    "selected_train_source_value_count": 7,
+    "selected_test_source_value_count": 6,
+    "overlapping_source_value_count": 3,
+    "source_value_union_count": 10,
+    "train_source_value_set_sha256": "6bdd58e3c96d4e39b8c49820390fdd69357901b06147a556058a543b8df66950",
+    "test_source_value_set_sha256": "604937269ccafcb18135e91d7c4bebcae8881417e042bd016da64eb28cac5745",
+    "overlapping_source_value_set_sha256": "ebcf69c65aed1538ef16b96c895ae88b16d94f708b01863d4af67a6d464b56f2",
+    "train_test_source_value_overlap_detected": true,
+    "source_value_disjoint_split": false,
+    "canonical_site_id_field_present": false,
+    "canonical_teacher_id_field_present": false,
+    "canonical_classroom_id_field_present": false,
+    "source_field_used_as_canonical_site_id": false,
+    "source_field_semantics": "upstream_provenance_or_collection_value_not_canonical_site_id",
+    "site_disjointness_verified": false,
+    "teacher_disjointness_verified": false,
+    "classroom_disjointness_verified": false,
+    "source_family_sensitivity_metric_computed": false,
+    "site_held_out_evaluation_performed": false,
+    "site_held_out_accuracy_established": false
+  },
+  "fixed_protocol": {
+    "arms": [
+      "transcript_only",
+      "transcript_audio",
+      "transcript_visual",
+      "full"
+    ],
+    "benchmark_profile": "paper_track1_23_train_6_test",
+    "profile_source_alignment": "arxiv_2605.30673v2_section_4.1_track1_text_frame_intersection",
+    "published_six_lesson_intersection": true,
+    "decision_threshold_policy": "per_label_official_training_lesson_grouped_oof",
+    "decision_threshold_candidate_grid": [
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7
+    ],
+    "official_lesson_disjoint_split": true,
+    "training_only_feature_fitting": true,
+    "test_labels_used_for_feature_fitting_training_or_tuning": false,
+    "test_threshold_or_hyperparameter_tuning_performed": false,
+    "thresholds_frozen_before_current_revised_test_scoring": true,
+    "public_test_outcomes_previously_observed_before_revision": true,
+    "current_revision_is_post_test_exploratory": true,
+    "same_test_scenes_used_for_all_arms": true,
+    "s4_labels_used_for_fitting_tuning_or_metrics": false
+  },
+  "training_only_model_selection": {
+    "schema": "teaching_skill_miner.teachobs_train_lesson_grouped_oof_selection.v1",
+    "exploratory_revision_after_initial_public_test_evaluation": true,
+    "confirmatory_selection": false,
+    "fit_scope": "official_23_training_lessons_only",
+    "outer_test_labels_used_for_selection": false,
+    "outer_test_features_used_for_selection": false,
+    "preprocessing_refit_inside_every_group_fold": true,
+    "splitter": "GroupKFold",
+    "group_unit": "complete_classroom_lesson",
+    "fold_count": 5,
+    "classifier_random_state": 0,
+    "candidate_registry": [
+      {
+        "candidate_id": "balanced_c0.25",
+        "regularization_c": 0.25,
+        "class_weight": "balanced"
+      },
+      {
+        "candidate_id": "balanced_c1",
+        "regularization_c": 1.0,
+        "class_weight": "balanced"
+      }
+    ],
+    "threshold_candidate_grid": [
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7
+    ],
+    "selection_criterion": "pooled OOF Micro-F1; Hamming accuracy then Macro-F1; C closest to 1 then registry order",
+    "each_training_scene_has_exactly_one_oof_prediction": true,
+    "arms": {
+      "transcript_only": {
+        "selected_candidate_id": "balanced_c1",
+        "selected_regularization_c": 1.0,
+        "selected_class_weight": "balanced",
+        "selected_thresholds_sha256": "18e5d4e7d51d9843bbd05911bb04cde47071d354765a84e9c8689a6619914502",
+        "selected_oof_metrics": {
+          "micro_f1": 0.611918,
+          "macro_f1": 0.276512,
+          "subset_accuracy": 0.00078,
+          "hamming_accuracy": 0.818906,
+          "visual_macro_f1": 0.276284,
+          "nonvisual_macro_f1": 0.276752
+        }
+      },
+      "transcript_audio": {
+        "selected_candidate_id": "balanced_c1",
+        "selected_regularization_c": 1.0,
+        "selected_class_weight": "balanced",
+        "selected_thresholds_sha256": "66866d803959796a5ea7252ce35852f142641d9e77b948ee24b5b0b2eba09e39",
+        "selected_oof_metrics": {
+          "micro_f1": 0.564436,
+          "macro_f1": 0.271153,
+          "subset_accuracy": 0.0,
+          "hamming_accuracy": 0.778478,
+          "visual_macro_f1": 0.267656,
+          "nonvisual_macro_f1": 0.274835
+        }
+      },
+      "transcript_visual": {
+        "selected_candidate_id": "balanced_c0.25",
+        "selected_regularization_c": 0.25,
+        "selected_class_weight": "balanced",
+        "selected_thresholds_sha256": "4c00526fa35c2cd7674e9033dc7caa5f0ad389726a259126a953a3899febc99f",
+        "selected_oof_metrics": {
+          "micro_f1": 0.541563,
+          "macro_f1": 0.297737,
+          "subset_accuracy": 0.00026,
+          "hamming_accuracy": 0.778511,
+          "visual_macro_f1": 0.327896,
+          "nonvisual_macro_f1": 0.265991
+        }
+      },
+      "full": {
+        "selected_candidate_id": "balanced_c0.25",
+        "selected_regularization_c": 0.25,
+        "selected_class_weight": "balanced",
+        "selected_thresholds_sha256": "797d8308864b01bdebc6f7bb0407e793fddb6b8b0b23f722e4b071b69d874b3e",
+        "selected_oof_metrics": {
+          "micro_f1": 0.516856,
+          "macro_f1": 0.287497,
+          "subset_accuracy": 0.00026,
+          "hamming_accuracy": 0.75731,
+          "visual_macro_f1": 0.312825,
+          "nonvisual_macro_f1": 0.260835
+        }
+      }
+    }
+  },
+  "aggregate_arms": {
+    "transcript_only": {
+      "metrics": {
+        "micro_f1": 0.594496,
+        "macro_f1": 0.244338,
+        "subset_accuracy": 0.00091,
+        "hamming_accuracy": 0.818833,
+        "visual_macro_f1": 0.238622,
+        "nonvisual_macro_f1": 0.250355
+      },
+      "feature_count": 30000,
+      "feature_blocks": {
+        "transcript_tfidf": 30000
+      },
+      "model_kind_counts": {
+        "logistic_regression": 39
+      },
+      "all_iterative_models_converged": true
+    },
+    "transcript_audio": {
+      "metrics": {
+        "micro_f1": 0.604708,
+        "macro_f1": 0.247501,
+        "subset_accuracy": 0.0,
+        "hamming_accuracy": 0.809967,
+        "visual_macro_f1": 0.244307,
+        "nonvisual_macro_f1": 0.250862
+      },
+      "feature_count": 30007,
+      "feature_blocks": {
+        "transcript_tfidf": 30000,
+        "audio_numeric": 7
+      },
+      "model_kind_counts": {
+        "logistic_regression": 39
+      },
+      "all_iterative_models_converged": true
+    },
+    "transcript_visual": {
+      "metrics": {
+        "micro_f1": 0.548328,
+        "macro_f1": 0.303894,
+        "subset_accuracy": 0.0,
+        "hamming_accuracy": 0.775297,
+        "visual_macro_f1": 0.332851,
+        "nonvisual_macro_f1": 0.273414
+      },
+      "feature_count": 55729,
+      "feature_blocks": {
+        "transcript_tfidf": 30000,
+        "ocr_char_tfidf": 16626,
+        "ocr_word_tfidf": 8551,
+        "visual_numeric": 40,
+        "clip_embedding": 512
+      },
+      "model_kind_counts": {
+        "logistic_regression": 39
+      },
+      "all_iterative_models_converged": true
+    },
+    "full": {
+      "metrics": {
+        "micro_f1": 0.543812,
+        "macro_f1": 0.309604,
+        "subset_accuracy": 0.00091,
+        "hamming_accuracy": 0.763258,
+        "visual_macro_f1": 0.336426,
+        "nonvisual_macro_f1": 0.281369
+      },
+      "feature_count": 55736,
+      "feature_blocks": {
+        "transcript_tfidf": 30000,
+        "audio_numeric": 7,
+        "ocr_char_tfidf": 16626,
+        "ocr_word_tfidf": 8551,
+        "visual_numeric": 40,
+        "clip_embedding": 512
+      },
+      "model_kind_counts": {
+        "logistic_regression": 39
+      },
+      "all_iterative_models_converged": true
+    }
+  },
+  "paired_cluster_bootstrap": {
+    "bootstrap_unit": "profile_selected_test_lesson_cluster",
+    "cluster_count": 6,
+    "replicates": 2000,
+    "seed": 20260723,
+    "paired_resampling": true,
+    "interval_method": "percentile_95",
+    "comparisons": {
+      "transcript_audio_minus_transcript_only": {
+        "micro_f1": {
+          "point_delta": 0.010212,
+          "percentile_95_ci": [
+            -0.009991,
+            0.029059
+          ]
+        },
+        "macro_f1": {
+          "point_delta": 0.003162,
+          "percentile_95_ci": [
+            -0.00562,
+            0.014444
+          ]
+        },
+        "subset_accuracy": {
+          "point_delta": -0.00091,
+          "percentile_95_ci": [
+            -0.002941,
+            0.0
+          ]
+        },
+        "hamming_accuracy": {
+          "point_delta": -0.008866,
+          "percentile_95_ci": [
+            -0.020202,
+            0.000911
+          ]
+        },
+        "visual_macro_f1": {
+          "point_delta": 0.005685,
+          "percentile_95_ci": [
+            -0.006102,
+            0.015353
+          ]
+        },
+        "nonvisual_macro_f1": {
+          "point_delta": 0.000507,
+          "percentile_95_ci": [
+            -0.01173,
+            0.020062
+          ]
+        }
+      },
+      "transcript_visual_minus_transcript_only": {
+        "micro_f1": {
+          "point_delta": -0.046168,
+          "percentile_95_ci": [
+            -0.062885,
+            -0.034275
+          ]
+        },
+        "macro_f1": {
+          "point_delta": 0.059556,
+          "percentile_95_ci": [
+            0.008715,
+            0.088644
+          ]
+        },
+        "subset_accuracy": {
+          "point_delta": -0.00091,
+          "percentile_95_ci": [
+            -0.002941,
+            0.0
+          ]
+        },
+        "hamming_accuracy": {
+          "point_delta": -0.043536,
+          "percentile_95_ci": [
+            -0.059056,
+            -0.031152
+          ]
+        },
+        "visual_macro_f1": {
+          "point_delta": 0.094229,
+          "percentile_95_ci": [
+            0.031542,
+            0.108312
+          ]
+        },
+        "nonvisual_macro_f1": {
+          "point_delta": 0.023059,
+          "percentile_95_ci": [
+            -0.029189,
+            0.081899
+          ]
+        }
+      },
+      "full_minus_transcript_only": {
+        "micro_f1": {
+          "point_delta": -0.050684,
+          "percentile_95_ci": [
+            -0.065745,
+            -0.040763
+          ]
+        },
+        "macro_f1": {
+          "point_delta": 0.065266,
+          "percentile_95_ci": [
+            0.014886,
+            0.095637
+          ]
+        },
+        "subset_accuracy": {
+          "point_delta": 0.0,
+          "percentile_95_ci": [
+            -0.002846,
+            0.002646
+          ]
+        },
+        "hamming_accuracy": {
+          "point_delta": -0.055575,
+          "percentile_95_ci": [
+            -0.077503,
+            -0.039182
+          ]
+        },
+        "visual_macro_f1": {
+          "point_delta": 0.097804,
+          "percentile_95_ci": [
+            0.035152,
+            0.114008
+          ]
+        },
+        "nonvisual_macro_f1": {
+          "point_delta": 0.031014,
+          "percentile_95_ci": [
+            -0.023064,
+            0.08909
+          ]
+        }
+      },
+      "full_minus_transcript_audio": {
+        "micro_f1": {
+          "point_delta": -0.060896,
+          "percentile_95_ci": [
+            -0.073453,
+            -0.051075
+          ]
+        },
+        "macro_f1": {
+          "point_delta": 0.062103,
+          "percentile_95_ci": [
+            0.00847,
+            0.086932
+          ]
+        },
+        "subset_accuracy": {
+          "point_delta": 0.00091,
+          "percentile_95_ci": [
+            0.0,
+            0.002745
+          ]
+        },
+        "hamming_accuracy": {
+          "point_delta": -0.046709,
+          "percentile_95_ci": [
+            -0.069009,
+            -0.026322
+          ]
+        },
+        "visual_macro_f1": {
+          "point_delta": 0.092119,
+          "percentile_95_ci": [
+            0.023135,
+            0.117759
+          ]
+        },
+        "nonvisual_macro_f1": {
+          "point_delta": 0.030507,
+          "percentile_95_ci": [
+            -0.016496,
+            0.07311
+          ]
+        }
+      },
+      "full_minus_transcript_visual": {
+        "micro_f1": {
+          "point_delta": -0.004517,
+          "percentile_95_ci": [
+            -0.015057,
+            0.0072
+          ]
+        },
+        "macro_f1": {
+          "point_delta": 0.005709,
+          "percentile_95_ci": [
+            0.003267,
+            0.011472
+          ]
+        },
+        "subset_accuracy": {
+          "point_delta": 0.00091,
+          "percentile_95_ci": [
+            0.0,
+            0.002745
+          ]
+        },
+        "hamming_accuracy": {
+          "point_delta": -0.012039,
+          "percentile_95_ci": [
+            -0.01932,
+            -0.004637
+          ]
+        },
+        "visual_macro_f1": {
+          "point_delta": 0.003576,
+          "percentile_95_ci": [
+            -0.000787,
+            0.011124
+          ]
+        },
+        "nonvisual_macro_f1": {
+          "point_delta": 0.007955,
+          "percentile_95_ci": [
+            -0.000599,
+            0.020701
+          ]
+        }
+      }
+    }
+  },
+  "claim_boundaries": {
+    "released_consensus_gold_evaluated": true,
+    "public_test_labels_were_accessible_before_implementation": true,
+    "provisional_result": true,
+    "exploratory_multimodal_gain_estimate": true,
+    "confirmatory_multimodal_gain_established": false,
+    "external_lockbox_established": false,
+    "deployment_accuracy_established": false,
+    "learning_effectiveness_established": false,
+    "source_value_train_test_overlap_detected": true,
+    "source_field_used_as_canonical_site_id": false,
+    "site_disjointness_verified": false,
+    "teacher_disjointness_verified": false,
+    "classroom_disjointness_verified": false,
+    "source_family_sensitivity_metric_computed": false,
+    "site_held_out_evaluation_performed": false,
+    "site_held_out_accuracy_established": false,
+    "valid_claim": "provisional exploratory four-arm multimodal comparison on the publicly accessible TeachObs source-aligned published six-lesson Track 1 text/frame intersection",
+    "invalid_claims": [
+      "confirmatory multimodal gain",
+      "external lockbox accuracy",
+      "deployment accuracy",
+      "learning effectiveness"
+    ]
+  },
+  "row_level_data_included": false,
+  "lesson_or_scene_ids_included": false,
+  "source_video_urls_included": false,
+  "transcript_text_included": false,
+  "ocr_text_included": false,
+  "audio_rows_included": false,
+  "visual_embeddings_included": false,
+  "per_label_or_lesson_results_included": false
+}

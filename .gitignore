@@ -1,0 +1,43 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+dist/
+build/
+*.egg-info/
+.coverage
+htmlcov/
+.ruff_cache/
+*.log
+
+# Real classroom recordings contain identifiable people and must stay local.
+data/real/**
+!data/real/README.md
+
+# Generated artifacts are private/transient by default. Only reviewed aggregate
+# receipts and boundary documentation are eligible for the public repository.
+artifacts/*
+!artifacts/public/
+!artifacts/public/**
+!artifacts/dipser_credible/
+artifacts/dipser_credible/*
+!artifacts/dipser_credible/README.md
+!artifacts/real_classroom/
+artifacts/real_classroom/*
+!artifacts/real_classroom/README.md
+
+# Common credential and large derived-data formats.
+*.pem
+*.key
+*.p12
+*.npz
+*.npy
+*.parquet
+*.partial

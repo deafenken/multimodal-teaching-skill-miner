@@ -1,0 +1,71 @@
+{
+  "artifact_kind": "public_full_multimodal_validation_receipt",
+  "schema_version": "1.0",
+  "dataset_id": "mit_ocw_10_full_video_multimodal",
+  "source_artifact_sha256": {
+    "semantic_data_audit": "7a06cf17d795bf647cd076b5a02a6ba88bf37d1797c80a0509583a76d7f9bda5",
+    "semantic_dataset_manifest": "c966182b4d6442d9ec048024b28170c15d523b83e3213e3a64cd1430a3990f2a",
+    "visual_semantic_batch_receipt": "56d616f76bae2424f4ebd885ba96ba125d49aae566897ba08b75d8cb3e535c04"
+  },
+  "integrity_commitments": {
+    "media_set_sha256": "523a6512a270729265dee72121e545b004e6a1c07d3514be687b5bbb36872e5a",
+    "semantic_result_set_sha256": "2baff9a35356fccfbeffcaeaae6c6eec189ef19fd17e66ddf78b18ac846f8360",
+    "visual_model_weight_manifest_sha256": "664566eb76b725f00dff118536c43e51d0c45afa03b433df4ca5c5e59cd868f9",
+    "semantic_result_count": 10
+  },
+  "aggregate_validation": {
+    "video_count": 10,
+    "course_count": 2,
+    "lessons_per_course_sorted": [
+      5,
+      5
+    ],
+    "total_duration_seconds": 26656.83,
+    "total_duration_hours": 7.404675,
+    "keyframe_count": 2553,
+    "nonempty_thresholded_ocr_frame_count": 2441,
+    "ocr_frame_with_three_or_more_accepted_words_count": 1964,
+    "ocr_accepted_word_count": 40191,
+    "visual_event_count": 1974,
+    "fused_event_count": 2270,
+    "full_timeline_sampling_passed_count": 10,
+    "caption_timeline_media_binding_verified_count": 10,
+    "semantic_feature_complete_count": 10,
+    "valid_transcript_count": 10,
+    "research_grade_transcript_count": 10,
+    "multimodal_ready_transcript_count": 10,
+    "average_caption_segment_count": 770.5,
+    "average_caption_word_count": 6172.8,
+    "audit_error_count": 0,
+    "audit_warning_count": 0
+  },
+  "evidence_status": {
+    "dataset_structure_passed": true,
+    "formal_caption_provenance_ready": true,
+    "multimodal_pipeline_ready": true,
+    "full_timeline_sampling_passed_for_all_videos": true,
+    "official_caption_timeline_media_binding_verified_for_all_videos": true,
+    "hash_bound_visual_semantic_features_complete_for_all_videos": true,
+    "audio_content_word_level_verified": false,
+    "independent_ocr_ground_truth_used": false,
+    "independent_visual_semantic_ground_truth_used": false,
+    "ocr_accuracy_established": false,
+    "visual_semantic_accuracy_established": false,
+    "recognition_accuracy_established": false,
+    "recognition_precision_recall_f1_established": false,
+    "causal_multimodal_gain_established": false,
+    "deployment_accuracy_established": false,
+    "learner_effect_established": false
+  },
+  "content_exclusion": {
+    "media_content_included": false,
+    "caption_text_included": false,
+    "ocr_text_included": false,
+    "frame_content_included": false,
+    "embedding_values_included": false,
+    "per_lecture_records_included": false,
+    "lecture_identifiers_included": false,
+    "personal_identity_fields_included": false,
+    "local_or_private_paths_included": false
+  }
+}

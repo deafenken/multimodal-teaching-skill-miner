@@ -1,0 +1,31 @@
+{
+  "video_id": "synthetic_multimodal_demo",
+  "course_id": "system_demo",
+  "title": "Synthetic Lesson: From Example to Code",
+  "source_url": "https://example.org/local-synthetic-multimodal-demo",
+  "language": "en",
+  "transcript_kind": "provided_synthetic_transcript",
+  "timestamps_are_approximate": false,
+  "provenance": {
+    "origin": "hand_authored_synthetic_fixture",
+    "audio_content_verified": false,
+    "note": "The media audio contains tones and silence, not the spoken transcript; this fixture tests alignment logic, not ASR."
+  },
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 1.5,
+      "text": "Look at this concrete example. Why does the output change?"
+    },
+    {
+      "start": 3.5,
+      "end": 5.5,
+      "text": "Now read the code line by line and compare the input with the returned value."
+    },
+    {
+      "start": 5.5,
+      "end": 8.0,
+      "text": "Try a new case, check the result, and explain which condition caused your error."
+    }
+  ]
+}

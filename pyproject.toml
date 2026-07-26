@@ -1,0 +1,115 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "teaching-skill-miner"
+version = "1.2.0"
+description = "Teaching video method distillation, executable skill generation, and evaluation"
+readme = "README.md"
+authors = [{name = "Teaching Skill Miner contributors"}]
+requires-python = ">=3.10"
+dependencies = []
+license = "LicenseRef-Academic-Evaluation-1.0"
+license-files = ["LICENSE"]
+keywords = ["education", "teaching-skill", "multimodal", "video", "evaluation"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Education",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Education",
+]
+
+[project.optional-dependencies]
+recognition = [
+  "numpy>=1.24,<3",
+  "scikit-learn>=1.3,<2",
+  "cryptography>=42,<47",
+]
+visual = [
+  "huggingface-hub>=0.24,<2",
+  "Pillow>=10,<13",
+  "safetensors>=0.4,<1",
+  "torch>=2.2,<3",
+  "transformers>=4.46,<6",
+]
+asr-gpu = [
+  "ctranslate2>=4.4,<5",
+  "faster-whisper>=1.1,<2",
+]
+dev = [
+  "build>=1.2",
+  "jsonschema>=4.20",
+  "pytest>=8",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+tsm = "teaching_skill_miner.cli:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["teaching_skill_miner*"]
+exclude = ["teaching_skill_miner.__pycache__*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"teaching_skill_miner.web" = ["index.html"]
+
+[tool.setuptools.data-files]
+"share/teaching-skill-miner/data" = [
+  "data/dataset_manifest.json",
+  "data/evaluation_cases.json",
+  "data/formal_caption_sources.json",
+]
+"share/teaching-skill-miner/data/transcripts" = [
+  "data/transcripts/linear_algebra_l01.json",
+  "data/transcripts/linear_algebra_l02.json",
+  "data/transcripts/linear_algebra_l03.json",
+  "data/transcripts/linear_algebra_l04.json",
+  "data/transcripts/linear_algebra_l05.json",
+  "data/transcripts/python_l01.json",
+  "data/transcripts/python_l02.json",
+  "data/transcripts/python_l03.json",
+  "data/transcripts/python_l04.json",
+  "data/transcripts/python_l05.json",
+]
+"share/teaching-skill-miner/schema" = [
+  "schema/external_claim_contract.schema.json",
+  "schema/external_evaluation_receipt.schema.json",
+  "schema/external_research_evidence.schema.json",
+  "schema/external_research_evidence_attestation.schema.json",
+  "schema/formal_caption_sources.schema.json",
+  "schema/freeze_registration_attestation.schema.json",
+  "schema/freeze_registration_request.schema.json",
+  "schema/frozen_recognition_model.schema.json",
+  "schema/multimodal_event.schema.json",
+  "schema/raw_feature_extractor_config.schema.json",
+  "schema/strict_feature_bundle.schema.json",
+  "schema/strict_recognition_manifest.schema.json",
+  "schema/teaching_skill.schema.json",
+  "schema/teachobs_lockbox_preregistration.schema.json",
+]
+"share/teaching-skill-miner/configs" = [
+  "configs/external_claim_contract.example.json",
+  "configs/raw_feature_extractor.example.json",
+]
+"share/teaching-skill-miner/governance" = [
+  "CHANGELOG.md",
+  "PRIVACY.md",
+  "SECURITY.md",
+  "THIRD_PARTY_DATA.md",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/download_dipser_subset.py" = ["E402"]
+"scripts/run_dipser_hierarchical_challenge.py" = ["E402"]
+"scripts/run_dipser_optimization.py" = ["E402"]

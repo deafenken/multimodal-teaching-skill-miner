@@ -1,0 +1,13 @@
+{
+  "responses": [
+    {"response": "我还不确定，请先给一个更简单的前置例子。", "signal": "not_achieved"},
+    {"response": "我能说明前置概念并给出一个例子。", "signal": "achieved"},
+    {"response": "我能预测每一步并说明理由。", "signal": "achieved"},
+    {"response": "我能把实例结构对应到正式定义。", "signal": "achieved"},
+    {"response": "我能区分正例和反例。", "signal": "achieved"},
+    {"response": "我能在新情境中独立完成关键步骤。", "signal": "achieved"},
+    {"response": "我能总结定义、条件、反例和迁移用途。", "signal": "achieved"},
+    {"response": "近迁移题完成，理由引用了适用条件。", "signal": "achieved"},
+    {"response": "边界案例判断完成并指出失效条件。", "signal": "achieved"}
+  ]
+}

@@ -1,0 +1,16 @@
+configs/external_claim_contract.example.json
+configs/raw_feature_extractor.example.json
+schema/external_claim_contract.schema.json
+schema/external_evaluation_receipt.schema.json
+schema/external_research_evidence.schema.json
+schema/external_research_evidence_attestation.schema.json
+schema/formal_caption_sources.schema.json
+schema/freeze_registration_attestation.schema.json
+schema/freeze_registration_request.schema.json
+schema/frozen_recognition_model.schema.json
+schema/multimodal_event.schema.json
+schema/raw_feature_extractor_config.schema.json
+schema/strict_feature_bundle.schema.json
+schema/strict_recognition_manifest.schema.json
+schema/teaching_skill.schema.json
+schema/teachobs_lockbox_preregistration.schema.json

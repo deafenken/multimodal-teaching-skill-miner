@@ -1,0 +1,19 @@
+{
+  "video_id": "python_l04",
+  "course_id": "mit_60001",
+  "title": "Lecture 4: Decomposition, Abstraction, and Functions",
+  "source_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/resources/lecture-4-decomposition-abstraction-and-functions/",
+  "transcript_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/2cd211c4c7f47153bbc413099ae2d2e1_MjbuarJ7SE0.pdf",
+  "language": "en",
+  "transcript_kind": "curated_paraphrase_excerpt",
+  "timestamps_are_approximate": true,
+  "segments": [
+    {"start": 0, "end": 110, "text": "Present the whole program as a set of cooperating boxes, then break the task down so each function owns one smaller job."},
+    {"start": 110, "end": 280, "text": "Use a concrete function example with inputs and an output. Ask what callers need to know and what details can remain hidden."},
+    {"start": 280, "end": 440, "text": "Write a formal function specification after the example: state assumptions about inputs and guarantees about the returned value."},
+    {"start": 440, "end": 610, "text": "Contrast print with return by running two nearly identical functions and checking which value the caller can reuse."},
+    {"start": 610, "end": 780, "text": "Show a scope error where a local variable is used outside the function. Ask why the name is unavailable and correct the design."},
+    {"start": 780, "end": 960, "text": "Give a decomposition exercise, review the proposed interfaces, provide feedback, and revise the functions once more."}
+  ]
+}
+

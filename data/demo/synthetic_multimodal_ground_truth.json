@@ -1,0 +1,49 @@
+{
+  "fixture_id": "synthetic_multimodal_demo_v2",
+  "media_description": "Two synthetic slides, a provided aligned transcript, tones, and one exact silence interval.",
+  "events": [
+    {
+      "type": "question_and_wait",
+      "start": 0.0,
+      "end": 3.5,
+      "tolerance_seconds": 0.1
+    },
+    {
+      "type": "slide_change",
+      "anchor": 3.5,
+      "tolerance_seconds": 0.6
+    },
+    {
+      "type": "code_formula_walkthrough",
+      "start": 3.5,
+      "end": 5.5,
+      "tolerance_seconds": 0.1
+    }
+  ],
+  "silences": [
+    {
+      "start": 1.5,
+      "end": 3.5,
+      "tolerance_seconds": 0.1
+    }
+  ],
+  "ocr_checks": [
+    {
+      "timestamp": 0.0,
+      "tolerance_seconds": 0.1,
+      "required_tokens": ["concrete", "example", "what", "happens", "next"]
+    },
+    {
+      "timestamp": 4.0,
+      "tolerance_seconds": 0.1,
+      "required_tokens": ["code", "walkthrough", "def", "solve"]
+    }
+  ],
+  "limitations": [
+    "The fixture is synthetic and is not a sample of real classroom conditions.",
+    "The transcript is provided; ASR accuracy is not measured.",
+    "The audio uses tones plus silence, so speech/audio semantic correspondence is not measured.",
+    "Classroom observations are provided annotations and are excluded from detector metrics.",
+    "Passing this fixture does not establish real-world event accuracy or learning gains."
+  ]
+}

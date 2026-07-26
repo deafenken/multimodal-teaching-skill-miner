@@ -1,0 +1,19 @@
+{
+  "video_id": "linear_algebra_l03",
+  "course_id": "mit_1806",
+  "title": "Lecture 3: Multiplication and Inverse Matrices",
+  "source_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-3-multiplication-and-inverse-matrices/",
+  "transcript_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-3-multiplication-and-inverse-matrices/",
+  "language": "en",
+  "transcript_kind": "curated_paraphrase_excerpt",
+  "timestamps_are_approximate": true,
+  "segments": [
+    {"start": 0, "end": 90, "text": "Begin with the big picture: matrix multiplication can be understood from several equivalent viewpoints rather than one rule to memorize."},
+    {"start": 90, "end": 260, "text": "For a small example, explain the formula entry by entry and then interpret the same output as a combination of columns."},
+    {"start": 260, "end": 430, "text": "Compare row-times-column, column combinations, and whole-matrix transformations. Ask why all three produce the same numbers."},
+    {"start": 430, "end": 600, "text": "Define an inverse through the formal equation A inverse times A equals I, after the concrete multiplication is visible."},
+    {"start": 600, "end": 760, "text": "Show a singular example and ask what goes wrong. The failed elimination step explains why not every matrix has an inverse."},
+    {"start": 760, "end": 940, "text": "Practice finding an inverse by Gauss-Jordan elimination, check the answer by multiplication, and generalize the check to a new matrix."}
+  ]
+}
+

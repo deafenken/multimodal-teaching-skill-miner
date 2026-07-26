@@ -1,0 +1,19 @@
+{
+  "video_id": "python_l03",
+  "course_id": "mit_60001",
+  "title": "Lecture 3: String Manipulation, Guess and Check, Approximations, Bisection",
+  "source_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/resources/lecture-3-string-manipulation-guess-and-check-approximations-bisection/",
+  "transcript_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/d68f91578c16ffb99a7eccaf841a13b0_SE4P7IVCunE.pdf",
+  "language": "en",
+  "transcript_kind": "curated_paraphrase_excerpt",
+  "timestamps_are_approximate": true,
+  "segments": [
+    {"start": 0, "end": 100, "text": "Begin with simple string indexing and slicing examples, asking students to predict each result before the code runs."},
+    {"start": 100, "end": 270, "text": "Build guess-and-check step by step: choose a guess, test it, update it, and stop when the exact answer is found."},
+    {"start": 270, "end": 440, "text": "Explain why exact equality can fail for floating-point approximations, then replace it with a tolerance check."},
+    {"start": 440, "end": 610, "text": "Compare exhaustive guessing with bisection. Ask what information lets bisection discard half of the remaining interval."},
+    {"start": 610, "end": 790, "text": "Trace the bisection code line by line on a small interval, checking low, high, and the midpoint after every iteration."},
+    {"start": 790, "end": 970, "text": "Practice on a harder target, give feedback on the stopping condition, and transfer the algorithm to cube roots."}
+  ]
+}
+

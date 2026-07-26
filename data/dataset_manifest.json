@@ -1,0 +1,96 @@
+{
+  "dataset_id": "mit_ocw_two_course_teaching_skill_demo_v1",
+  "version": "1.0",
+  "created_for": "Teaching Skill Mining and Evaluation System offline demonstration",
+  "license_note": "Source course pages and official transcripts are MIT OpenCourseWare materials under the license stated on those pages. This repository stores original, short paraphrased teaching-event annotations rather than redistributing full transcripts.",
+  "data_note": "The bundled files are manually curated, timestamp-approximate, paraphrased excerpts for deterministic offline testing. They are not verbatim or complete ASR transcripts. Use `tsm preprocess` with downloaded official captions/transcripts or a local video to produce full transcript data for a formal study.",
+  "courses": [
+    {
+      "course_id": "mit_1806",
+      "name": "MIT 18.06 Linear Algebra",
+      "instructor": "Gilbert Strang",
+      "course_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/",
+      "lecture_gallery_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/video_galleries/video-lectures/"
+    },
+    {
+      "course_id": "mit_60001",
+      "name": "MIT 6.0001 Introduction to Computer Science and Programming in Python",
+      "instructor": "Ana Bell",
+      "course_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/",
+      "lecture_gallery_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/video_galleries/lecture-videos/"
+    }
+  ],
+  "videos": [
+    {
+      "video_id": "linear_algebra_l01",
+      "course_id": "mit_1806",
+      "title": "Lecture 1: The Geometry of Linear Equations",
+      "source_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-1-the-geometry-of-linear-equations/",
+      "transcript_path": "data/transcripts/linear_algebra_l01.json"
+    },
+    {
+      "video_id": "linear_algebra_l02",
+      "course_id": "mit_1806",
+      "title": "Lecture 2: Elimination with Matrices",
+      "source_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-2-elimination-with-matrices/",
+      "transcript_path": "data/transcripts/linear_algebra_l02.json"
+    },
+    {
+      "video_id": "linear_algebra_l03",
+      "course_id": "mit_1806",
+      "title": "Lecture 3: Multiplication and Inverse Matrices",
+      "source_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-3-multiplication-and-inverse-matrices/",
+      "transcript_path": "data/transcripts/linear_algebra_l03.json"
+    },
+    {
+      "video_id": "linear_algebra_l04",
+      "course_id": "mit_1806",
+      "title": "Lecture 4: Factorization into A = LU",
+      "source_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-4-factorization-into-a-lu/",
+      "transcript_path": "data/transcripts/linear_algebra_l04.json"
+    },
+    {
+      "video_id": "linear_algebra_l05",
+      "course_id": "mit_1806",
+      "title": "Lecture 5: Transposes, Permutations, Spaces R^n",
+      "source_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-5-transposes-permutations-spaces-r-n/",
+      "transcript_path": "data/transcripts/linear_algebra_l05.json"
+    },
+    {
+      "video_id": "python_l01",
+      "course_id": "mit_60001",
+      "title": "Lecture 1: What is Computation?",
+      "source_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/resources/lecture-1-what-is-computation/",
+      "transcript_path": "data/transcripts/python_l01.json"
+    },
+    {
+      "video_id": "python_l02",
+      "course_id": "mit_60001",
+      "title": "Lecture 2: Branching and Iteration",
+      "source_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/resources/lecture-2-branching-and-iteration/",
+      "transcript_path": "data/transcripts/python_l02.json"
+    },
+    {
+      "video_id": "python_l03",
+      "course_id": "mit_60001",
+      "title": "Lecture 3: String Manipulation, Guess and Check, Approximations, Bisection",
+      "source_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/resources/lecture-3-string-manipulation-guess-and-check-approximations-bisection/",
+      "transcript_path": "data/transcripts/python_l03.json"
+    },
+    {
+      "video_id": "python_l04",
+      "course_id": "mit_60001",
+      "title": "Lecture 4: Decomposition, Abstraction, and Functions",
+      "source_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/resources/lecture-4-decomposition-abstraction-and-functions/",
+      "transcript_path": "data/transcripts/python_l04.json"
+    },
+    {
+      "video_id": "python_l05",
+      "course_id": "mit_60001",
+      "title": "Lecture 5: Tuples, Lists, Aliasing, Mutability, and Cloning",
+      "source_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/resources/lecture-5-tuples-lists-aliasing-mutability-and-cloning/",
+      "transcript_path": "data/transcripts/python_l05.json"
+    }
+  ]
+}
+

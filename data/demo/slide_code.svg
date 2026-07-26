@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
+  <rect width="1280" height="720" fill="#123d2d"/>
+  <text x="640" y="140" text-anchor="middle" fill="white" font-family="Arial, Helvetica, sans-serif" font-size="68">Code Walkthrough</text>
+  <rect x="230" y="230" width="820" height="300" rx="24" fill="#081f18" stroke="#9be7c4" stroke-width="4"/>
+  <text x="300" y="350" fill="#d7ffe9" font-family="Courier New, monospace" font-size="66">def solve(x):</text>
+  <text x="360" y="460" fill="#ffde59" font-family="Courier New, monospace" font-size="66">return x + 1</text>
+</svg>
+

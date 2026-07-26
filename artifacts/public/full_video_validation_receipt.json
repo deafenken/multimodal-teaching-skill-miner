@@ -1,0 +1,112 @@
+{
+  "artifact_kind": "public_full_video_validation_receipt",
+  "schema_version": "1.0",
+  "generated_at_utc": "2026-07-22T14:30:54Z",
+  "dataset_id": "mit_ocw_two_course_official_captions_v1",
+  "publisher": "MIT OpenCourseWare",
+  "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "source_manifest_sha256": "93e58d371fd91b865700d3ee2afffea7e245a0722cdf89f729d369c72c1a5a31",
+  "formal_caption_manifest_sha256": "d0d33ed992029f3dcdc36329f691b66442a18d02738643cd2a7951d72eca7a50",
+  "complete": true,
+  "video_count": 10,
+  "total_media_bytes": 1038813006,
+  "total_duration_seconds": 26656.829,
+  "media_content_included": false,
+  "caption_text_included": false,
+  "frame_content_included": false,
+  "local_file_paths_included": false,
+  "upstream_media_hashes_available": false,
+  "integrity_interpretation": "Local SHA-256 values detect mutation after HTTPS download. Because the source index does not pin publisher-provided media hashes, they do not independently authenticate upstream bytes. Duration and audio/video streams are checked with ffprobe against formal-caption references.",
+  "records": [
+    {
+      "video_id": "linear_algebra_l01",
+      "course_id": "mit_1806",
+      "media_size_bytes": 92409278,
+      "media_sha256": "a3fa5bb22fa65d96f95452ae8ef80cd0a743f24ff6d47b7a24332598fa316a31",
+      "duration_seconds": 2388.842,
+      "video_stream_count": 2,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "linear_algebra_l02",
+      "course_id": "mit_1806",
+      "media_size_bytes": 108128339,
+      "media_sha256": "fc930975f9133f91b5ce32017889bfda7b80fce87ae40a882afe1a8091200df2",
+      "duration_seconds": 2861.371791,
+      "video_stream_count": 3,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "linear_algebra_l03",
+      "course_id": "mit_1806",
+      "media_size_bytes": 111305176,
+      "media_sha256": "51bf1fa266a99dc9f72926c6062cad874e56e4b5e58b5ed2a1792a3f6069ab98",
+      "duration_seconds": 2808.105215,
+      "video_stream_count": 3,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "linear_algebra_l04",
+      "course_id": "mit_1806",
+      "media_size_bytes": 112447812,
+      "media_sha256": "1a33a40167df06ed808986b854b0e488f7d485fbdcc4ac18b90876b4b307eb8d",
+      "duration_seconds": 2884.650667,
+      "video_stream_count": 3,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "linear_algebra_l05",
+      "course_id": "mit_1806",
+      "media_size_bytes": 108271626,
+      "media_sha256": "2fb150acb501fe0e86ac03ab331ad6283e404ca08cc35396add0003a6c927a1d",
+      "duration_seconds": 2861.186032,
+      "video_stream_count": 3,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "python_l01",
+      "course_id": "mit_60001",
+      "media_size_bytes": 101137401,
+      "media_sha256": "06236664b370ca2309aa5e74918a36a39512fad690ad9938d50b776217c02dcf",
+      "duration_seconds": 2585.964,
+      "video_stream_count": 2,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "python_l02",
+      "course_id": "mit_60001",
+      "media_size_bytes": 103139956,
+      "media_sha256": "84460ee538b02e950c343b28518afa2b9e48f7a29e6cc82d4d9ad33aa7583dcb",
+      "duration_seconds": 2610.133333,
+      "video_stream_count": 3,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "python_l03",
+      "course_id": "mit_60001",
+      "media_size_bytes": 106484836,
+      "media_sha256": "0071878688a02e2e155374a413be81ce70fd2e3d1732d9199c1d218c25149ae5",
+      "duration_seconds": 2701.034667,
+      "video_stream_count": 3,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "python_l04",
+      "course_id": "mit_60001",
+      "media_size_bytes": 97241238,
+      "media_sha256": "4e89688d2f1cbefb31f79430abb978d039760f5e6944b64405fb3a137ce5890a",
+      "duration_seconds": 2468.394667,
+      "video_stream_count": 3,
+      "audio_stream_count": 1
+    },
+    {
+      "video_id": "python_l05",
+      "course_id": "mit_60001",
+      "media_size_bytes": 98247344,
+      "media_sha256": "baa74671b7e4733439100c084c390b92b3cd213e0fbbbabaa403629787af088b",
+      "duration_seconds": 2487.146667,
+      "video_stream_count": 3,
+      "audio_stream_count": 1
+    }
+  ]
+}

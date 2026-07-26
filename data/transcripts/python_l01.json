@@ -1,0 +1,19 @@
+{
+  "video_id": "python_l01",
+  "course_id": "mit_60001",
+  "title": "Lecture 1: What is Computation?",
+  "source_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/resources/lecture-1-what-is-computation/",
+  "transcript_url": "https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/904de062253d2fad3064ab5ca917883d_nykOeWgQcHM.pdf",
+  "language": "en",
+  "transcript_kind": "curated_paraphrase_excerpt",
+  "timestamps_are_approximate": true,
+  "segments": [
+    {"start": 0, "end": 120, "text": "Give the course roadmap first: students will learn programming concepts, practical coding skills, and problem solving through repeated practice."},
+    {"start": 120, "end": 300, "text": "Ask what a computer fundamentally does. Contrast storing information with performing calculations, and stress that a computer follows instructions."},
+    {"start": 300, "end": 480, "text": "Use a familiar prize drawing as a concrete example. A fact is declarative knowledge, while a recipe of steps is imperative knowledge."},
+    {"start": 480, "end": 650, "text": "Demonstrate the recipe in Python code and invite students to predict the output before running each line."},
+    {"start": 650, "end": 820, "text": "Introduce types and variables with small arithmetic examples, then check what changes when two different types are combined."},
+    {"start": 820, "end": 990, "text": "Summarize computation as primitive operations composed into algorithms, and ask students to transfer the idea to an everyday task."}
+  ]
+}
+

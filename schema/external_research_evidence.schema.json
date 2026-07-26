@@ -1,0 +1,357 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:external-research-evidence:1",
+  "title": "Externally governed aggregate research evidence",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "protocol",
+    "evidence_id",
+    "evidence_kind",
+    "study_id",
+    "registered_at_utc",
+    "completed_at_utc",
+    "preregistration",
+    "governance",
+    "population",
+    "artifact_bindings",
+    "claim",
+    "evidence_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "protocol": {"const": "externally_governed_research_evidence_v1"},
+    "evidence_id": {"$ref": "#/$defs/safe_id"},
+    "evidence_kind": {
+      "enum": [
+        "confirmatory_multimodal_gain",
+        "real_learner_effectiveness"
+      ]
+    },
+    "study_id": {"$ref": "#/$defs/safe_id"},
+    "registered_at_utc": {"type": "string", "format": "date-time"},
+    "completed_at_utc": {"type": "string", "format": "date-time"},
+    "preregistration": {
+      "type": "object",
+      "required": [
+        "registry_name",
+        "registration_id",
+        "protocol_sha256",
+        "statistical_analysis_plan_sha256",
+        "frozen_before_outcome_access"
+      ],
+      "properties": {
+        "registry_name": {"type": "string", "minLength": 1},
+        "registration_id": {"type": "string", "minLength": 1},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"},
+        "statistical_analysis_plan_sha256": {"$ref": "#/$defs/sha256"},
+        "frozen_before_outcome_access": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "governance": {
+      "type": "object",
+      "required": [
+        "independent_external_governance",
+        "data_or_analysis_independent_of_system_developers",
+        "data_not_used_to_modify_system_or_claim_thresholds",
+        "conflicts_of_interest_disclosed",
+        "complete_registered_outcome_reporting",
+        "trusted_key_provisioned_out_of_band"
+      ],
+      "properties": {
+        "independent_external_governance": {"const": true},
+        "data_or_analysis_independent_of_system_developers": {"const": true},
+        "data_not_used_to_modify_system_or_claim_thresholds": {"const": true},
+        "conflicts_of_interest_disclosed": {"const": true},
+        "complete_registered_outcome_reporting": {"const": true},
+        "trusted_key_provisioned_out_of_band": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "population": {
+      "type": "object",
+      "required": [
+        "real_world_data",
+        "data_context",
+        "site_count",
+        "independent_site_count",
+        "participant_count",
+        "eligible_unit_count",
+        "evaluated_unit_count",
+        "excluded_unit_count",
+        "exclusion_reason_counts",
+        "coverage_fraction",
+        "coverage_evidence_sha256",
+        "identity_disjoint_from_development"
+      ],
+      "properties": {
+        "real_world_data": {"const": true},
+        "data_context": {"enum": ["real_classroom", "real_learner_study"]},
+        "site_count": {"type": "integer", "minimum": 1},
+        "independent_site_count": {"type": "integer", "minimum": 1},
+        "participant_count": {"type": "integer", "minimum": 1},
+        "eligible_unit_count": {"type": "integer", "minimum": 1},
+        "evaluated_unit_count": {"type": "integer", "minimum": 1},
+        "excluded_unit_count": {"type": "integer", "minimum": 0},
+        "exclusion_reason_counts": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 1}
+        },
+        "coverage_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+        "coverage_evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "identity_disjoint_from_development": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "artifact_bindings": {
+      "type": "object",
+      "required": [
+        "dataset_or_study_data_fingerprint",
+        "evaluated_system_fingerprint",
+        "comparator_fingerprint",
+        "analysis_code_sha256",
+        "statistical_output_sha256",
+        "aggregate_result_table_sha256"
+      ],
+      "properties": {
+        "dataset_or_study_data_fingerprint": {"$ref": "#/$defs/sha256"},
+        "evaluated_system_fingerprint": {"$ref": "#/$defs/sha256"},
+        "comparator_fingerprint": {"$ref": "#/$defs/sha256"},
+        "analysis_code_sha256": {"$ref": "#/$defs/sha256"},
+        "statistical_output_sha256": {"$ref": "#/$defs/sha256"},
+        "aggregate_result_table_sha256": {"$ref": "#/$defs/sha256"}
+      },
+      "additionalProperties": false
+    },
+    "claim": {
+      "oneOf": [
+        {"$ref": "#/$defs/multimodal_claim"},
+        {"$ref": "#/$defs/learner_claim"}
+      ]
+    },
+    "evidence_fingerprint": {"$ref": "#/$defs/sha256"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "evidence_kind": {"const": "confirmatory_multimodal_gain"}
+        }
+      },
+      "then": {
+        "properties": {
+          "claim": {"$ref": "#/$defs/multimodal_claim"},
+          "population": {
+            "properties": {"data_context": {"const": "real_classroom"}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "evidence_kind": {"const": "real_learner_effectiveness"}
+        }
+      },
+      "then": {
+        "properties": {
+          "claim": {"$ref": "#/$defs/learner_claim"},
+          "population": {
+            "properties": {"data_context": {"const": "real_learner_study"}}
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "safe_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "probability": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "nonempty_unique_strings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "multimodal_claim": {
+      "type": "object",
+      "required": [
+        "claim_type",
+        "evaluation_design",
+        "baseline_modalities",
+        "added_modalities",
+        "primary_metric",
+        "baseline_estimate",
+        "multimodal_estimate",
+        "absolute_gain",
+        "confidence_level",
+        "confidence_interval_lower",
+        "confidence_interval_upper",
+        "p_value",
+        "alpha",
+        "minimum_confirmatory_gain",
+        "paired_cluster_aware_inference",
+        "claim_cluster_field",
+        "claim_cluster_count",
+        "all_registered_primary_analyses_reported",
+        "multimodal_gain_established"
+      ],
+      "properties": {
+        "claim_type": {"const": "confirmatory_multimodal_gain"},
+        "evaluation_design": {"const": "paired_same_samples_external_lockbox"},
+        "baseline_modalities": {"$ref": "#/$defs/nonempty_unique_strings"},
+        "added_modalities": {"$ref": "#/$defs/nonempty_unique_strings"},
+        "primary_metric": {
+          "enum": ["accuracy", "macro_f1", "balanced_accuracy"]
+        },
+        "baseline_estimate": {"$ref": "#/$defs/probability"},
+        "multimodal_estimate": {"$ref": "#/$defs/probability"},
+        "absolute_gain": {"type": "number", "minimum": -1, "maximum": 1},
+        "confidence_level": {
+          "type": "number",
+          "minimum": 0.9,
+          "exclusiveMaximum": 1
+        },
+        "confidence_interval_lower": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "confidence_interval_upper": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        "p_value": {"$ref": "#/$defs/probability"},
+        "alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05},
+        "minimum_confirmatory_gain": {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "paired_cluster_aware_inference": {"type": "boolean"},
+        "claim_cluster_field": {
+          "enum": [
+            "session_id",
+            "participant_id",
+            "teacher_id",
+            "classroom_id",
+            "site_id"
+          ]
+        },
+        "claim_cluster_count": {"type": "integer", "minimum": 1},
+        "all_registered_primary_analyses_reported": {"type": "boolean"},
+        "multimodal_gain_established": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "multimodal_gain_established": {"const": true}
+            },
+            "required": ["multimodal_gain_established"]
+          },
+          "then": {
+            "properties": {
+              "claim_cluster_count": {"minimum": 10}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "learner_claim": {
+      "type": "object",
+      "required": [
+        "claim_type",
+        "study_design",
+        "randomization_unit",
+        "comparator_description",
+        "primary_outcome_name",
+        "effect_measure",
+        "effect_direction",
+        "adjusted_effect_estimate",
+        "confidence_level",
+        "confidence_interval_lower",
+        "confidence_interval_upper",
+        "p_value",
+        "alpha",
+        "minimum_educationally_meaningful_effect",
+        "random_assignment",
+        "allocation_concealment",
+        "intention_to_treat",
+        "independent_outcome_assessment",
+        "randomized_unit_count",
+        "analysis_cluster_count",
+        "maximum_preregistered_attrition_fraction",
+        "observed_attrition_fraction",
+        "attrition_handled_under_preregistered_plan",
+        "adverse_events_reported",
+        "all_registered_primary_outcomes_reported",
+        "ethics_approval_id",
+        "informed_consent_or_approved_waiver",
+        "learner_effectiveness_established"
+      ],
+      "properties": {
+        "claim_type": {"const": "real_learner_effectiveness"},
+        "study_design": {
+          "enum": [
+            "individual_randomized_controlled_trial",
+            "cluster_randomized_controlled_trial"
+          ]
+        },
+        "randomization_unit": {"enum": ["learner", "classroom", "teacher"]},
+        "comparator_description": {"type": "string", "minLength": 1},
+        "primary_outcome_name": {"type": "string", "minLength": 1},
+        "effect_measure": {"const": "standardized_mean_difference"},
+        "effect_direction": {"const": "positive_favors_teaching_skill"},
+        "adjusted_effect_estimate": {"type": "number", "minimum": -10, "maximum": 10},
+        "confidence_level": {
+          "type": "number",
+          "minimum": 0.9,
+          "exclusiveMaximum": 1
+        },
+        "confidence_interval_lower": {"type": "number", "minimum": -10, "maximum": 10},
+        "confidence_interval_upper": {"type": "number", "minimum": -10, "maximum": 10},
+        "p_value": {"$ref": "#/$defs/probability"},
+        "alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05},
+        "minimum_educationally_meaningful_effect": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "random_assignment": {"type": "boolean"},
+        "allocation_concealment": {"type": "boolean"},
+        "intention_to_treat": {"type": "boolean"},
+        "independent_outcome_assessment": {"type": "boolean"},
+        "randomized_unit_count": {"type": "integer", "minimum": 1},
+        "analysis_cluster_count": {"type": "integer", "minimum": 0},
+        "maximum_preregistered_attrition_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.2
+        },
+        "observed_attrition_fraction": {"$ref": "#/$defs/probability"},
+        "attrition_handled_under_preregistered_plan": {"type": "boolean"},
+        "adverse_events_reported": {"type": "boolean"},
+        "all_registered_primary_outcomes_reported": {"type": "boolean"},
+        "ethics_approval_id": {"type": "string", "minLength": 1},
+        "informed_consent_or_approved_waiver": {"type": "boolean"},
+        "learner_effectiveness_established": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

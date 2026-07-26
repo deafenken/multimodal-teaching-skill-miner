@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:external-claim-contract:1",
+  "title": "Frozen external classroom-recognition claim contract",
+  "type": "object",
+  "required": [
+    "schema_version", "primary_metric", "minimum_primary_metric",
+    "minimum_accuracy", "minimum_macro_f1", "minimum_accuracy_ci_lower",
+    "minimum_macro_f1_ci_lower", "minimum_per_class_recall",
+    "minimum_per_class_support", "minimum_sessions",
+    "minimum_coverage_fraction", "require_prospective",
+    "require_one_time_lockbox"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "primary_metric": {"enum": ["accuracy", "macro_f1"]},
+    "minimum_primary_metric": {"type": "number", "minimum": 0, "maximum": 1},
+    "minimum_accuracy": {"type": "number", "minimum": 0, "maximum": 1},
+    "minimum_macro_f1": {"type": "number", "minimum": 0, "maximum": 1},
+    "minimum_accuracy_ci_lower": {"type": "number", "minimum": 0, "maximum": 1},
+    "minimum_macro_f1_ci_lower": {"type": "number", "minimum": 0, "maximum": 1},
+    "minimum_per_class_recall": {"type": "number", "minimum": 0, "maximum": 1},
+    "minimum_per_class_support": {"type": "integer", "minimum": 1},
+    "minimum_sessions": {"type": "integer", "minimum": 2},
+    "minimum_coverage_fraction": {"type": "number", "minimum": 0, "maximum": 1},
+    "require_prospective": {"type": "boolean"},
+    "require_one_time_lockbox": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}

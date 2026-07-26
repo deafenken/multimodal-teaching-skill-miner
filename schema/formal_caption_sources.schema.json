@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/teaching-skill-miner/formal_caption_sources.schema.json",
+  "title": "Hash-pinned official caption source index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_kind",
+    "dataset_id",
+    "version",
+    "validated_at_utc",
+    "publisher",
+    "publisher_url",
+    "license_url",
+    "publisher_terms_url",
+    "license_note",
+    "coverage_note",
+    "courses",
+    "videos"
+  ],
+  "properties": {
+    "source_kind": {
+      "const": "mit_ocw_official_caption_index"
+    },
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "validated_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "publisher": {
+      "const": "MIT OpenCourseWare"
+    },
+    "publisher_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://ocw\\.mit\\.edu/"
+    },
+    "license_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "publisher_terms_url": {
+      "type": "string",
+      "format": "uri"
+    },
+    "license_note": {
+      "type": "string",
+      "minLength": 1
+    },
+    "coverage_note": {
+      "type": "string",
+      "minLength": 1
+    },
+    "courses": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["course_id", "name", "instructor", "course_url"],
+        "properties": {
+          "course_id": {"type": "string", "minLength": 1},
+          "name": {"type": "string", "minLength": 1},
+          "instructor": {"type": "string", "minLength": 1},
+          "course_url": {"type": "string", "format": "uri"},
+          "recording_note": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "videos": {
+      "type": "array",
+      "minItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "video_id",
+          "course_id",
+          "title",
+          "source_url",
+          "caption_url",
+          "media_url",
+          "caption_sha256",
+          "reference_media_duration_seconds",
+          "reference_last_caption_cue_end_seconds",
+          "language"
+        ],
+        "properties": {
+          "video_id": {"type": "string", "minLength": 1},
+          "course_id": {"type": "string", "minLength": 1},
+          "title": {"type": "string", "minLength": 1},
+          "source_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://ocw\\.mit\\.edu/"
+          },
+          "caption_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://ocw\\.mit\\.edu/.*\\.vtt$"
+          },
+          "media_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://(www\\.)?archive\\.org/"
+          },
+          "caption_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "reference_media_duration_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "reference_last_caption_cue_end_seconds": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "language": {
+            "const": "en"
+          }
+        }
+      }
+    }
+  }
+}

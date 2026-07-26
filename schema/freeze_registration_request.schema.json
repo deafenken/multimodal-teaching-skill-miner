@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:freeze-registration-request:1",
+  "title": "Frozen external lockbox registration request",
+  "type": "object",
+  "required": [
+    "schema_version", "protocol", "registration_id", "registered_at_utc",
+    "model_fingerprint", "claim_contract_fingerprint",
+    "training_dataset_fingerprint", "training_feature_bundle_fingerprint",
+    "external_dataset_fingerprint", "external_feature_bundle_fingerprint",
+    "external_coverage_evidence_fingerprint",
+    "custodian_attestations", "request_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "protocol": {"const": "frozen_external_lockbox_registration_v1"},
+    "registration_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$"},
+    "registered_at_utc": {"type": "string", "format": "date-time"},
+    "model_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "claim_contract_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "training_dataset_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "training_feature_bundle_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "external_dataset_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "external_feature_bundle_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "external_coverage_evidence_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "request_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "custodian_attestations": {
+      "type": "object",
+      "required": [
+        "held_out_from_model_development",
+        "deployment_target_documented_before_evaluation",
+        "prospective_collection",
+        "labels_not_used_to_modify_model_or_claim_contract",
+        "maximum_evaluations"
+      ],
+      "properties": {
+        "held_out_from_model_development": {"const": true},
+        "deployment_target_documented_before_evaluation": {"const": true},
+        "prospective_collection": {"const": true},
+        "labels_not_used_to_modify_model_or_claim_contract": {"const": true},
+        "maximum_evaluations": {"const": 1}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

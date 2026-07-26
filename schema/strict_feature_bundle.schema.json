@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:strict-feature-bundle:1",
+  "title": "Ordered strict recognition feature bundle",
+  "type": "object",
+  "required": [
+    "schema_version", "dataset_fingerprint", "feature_bundle_fingerprint",
+    "fingerprint_algorithm",
+    "sample_ids", "feature_names_by_modality", "feature_provenance", "matrices"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "dataset_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "feature_bundle_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "fingerprint_algorithm": {
+      "enum": ["strict_feature_bundle_v1", "dipser_feature_bundle_v1"]
+    },
+    "sample_ids": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "feature_names_by_modality": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {
+        "type": "array", "minItems": 1, "uniqueItems": true,
+        "items": {"type": "string", "minLength": 1}
+      }
+    },
+    "feature_provenance": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "extractor_id", "extractor_fingerprint", "frozen_before_evaluation",
+          "uses_ground_truth_labels", "fitted_on_evaluation_records"
+        ],
+        "properties": {
+          "extractor_id": {"type": "string", "minLength": 1},
+          "extractor_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "frozen_before_evaluation": {"const": true},
+          "uses_ground_truth_labels": {"const": false},
+          "fitted_on_evaluation_records": {"const": false}
+        },
+        "additionalProperties": true
+      }
+    },
+    "matrices": {
+      "type": "object", "minProperties": 1,
+      "additionalProperties": {
+        "type": "array", "minItems": 1,
+        "items": {
+          "type": "array", "minItems": 1,
+          "items": {"type": "number"}
+        }
+      }
+    },
+    "raw_source_binding": {
+      "type": "object",
+      "required": [
+        "schema_version", "algorithm", "content_hash_algorithm", "sample_ids",
+        "samples", "claim_scope", "binding_fingerprint"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "algorithm": {"const": "strict_raw_source_binding_v1"},
+        "content_hash_algorithm": {"const": "strict_synchronized_raw_content_v1"},
+        "sample_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "samples": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["sample_id", "content_sha256", "inputs"],
+            "properties": {
+              "sample_id": {"type": "string", "minLength": 1},
+              "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "inputs": {
+                "type": "array", "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": ["input_key", "file_sha256"],
+                  "properties": {
+                    "input_key": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+                    "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "start_offset_seconds": {"type": "number", "minimum": 0},
+                    "duration_seconds": {"type": "number", "exclusiveMinimum": 0}
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "claim_scope": {
+          "type": "object",
+          "required": [
+            "raw_features_extracted", "automatic_recognition_performed",
+            "recognition_accuracy_established", "deployment_accuracy_established",
+            "teaching_effectiveness_established"
+          ],
+          "properties": {
+            "raw_features_extracted": {"const": true},
+            "automatic_recognition_performed": {"const": false},
+            "recognition_accuracy_established": {"const": false},
+            "deployment_accuracy_established": {"const": false},
+            "teaching_effectiveness_established": {"const": false}
+          },
+          "additionalProperties": false
+        },
+        "binding_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "extractor_suite": {
+      "type": "object",
+      "required": [
+        "schema_version", "extractor_suite_id", "configuration_fingerprint",
+        "configuration"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "extractor_suite_id": {"type": "string", "minLength": 1},
+        "configuration_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "configuration": {"type": "object"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

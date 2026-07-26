@@ -1,0 +1,27 @@
+# Exact project dependency closure used for the 2026-07-21 local validation run.
+# Platform: macOS arm64; Python 3.13.11. This is an audit record, not a
+# universal cross-platform lock. Use with requirements-dev.txt on a compatible
+# platform, or reproduce the reported versions in a container for archival runs.
+attrs==26.1.0
+build==1.4.1
+cffi==2.0.0
+cryptography==46.0.3
+iniconfig==2.3.0
+joblib==1.5.3
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+numpy==2.4.3
+packaging==25.0
+pluggy==1.5.0
+pycparser==2.23
+Pygments==2.19.2
+pyproject_hooks==1.2.0
+pytest==9.0.3
+referencing==0.37.0
+rpds-py==0.30.0
+ruff==0.15.22
+scikit-learn==1.8.0
+scipy==1.17.1
+setuptools==80.9.0
+threadpoolctl==3.6.0
+wheel==0.45.1

@@ -1,0 +1,19 @@
+{
+  "video_id": "linear_algebra_l02",
+  "course_id": "mit_1806",
+  "title": "Lecture 2: Elimination with Matrices",
+  "source_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-2-elimination-with-matrices/",
+  "transcript_url": "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-2-elimination-with-matrices/",
+  "language": "en",
+  "transcript_kind": "curated_paraphrase_excerpt",
+  "timestamps_are_approximate": true,
+  "segments": [
+    {"start": 0, "end": 90, "text": "Review the system from the previous lecture and ask for a systematic algorithm that replaces geometric guessing."},
+    {"start": 90, "end": 250, "text": "Use one concrete matrix. First choose a pivot, then multiply the pivot row, and next subtract it from a lower row to eliminate an entry."},
+    {"start": 250, "end": 410, "text": "Write every elimination step beside the changing matrix and explain which equation operation it represents."},
+    {"start": 410, "end": 570, "text": "Show a wrong pivot case where elimination fails. Ask what caused the error and correct it by exchanging rows."},
+    {"start": 570, "end": 750, "text": "Check the result with back substitution. If the recovered variables do not satisfy the original equations, trace the first incorrect row operation."},
+    {"start": 750, "end": 930, "text": "Summarize the algorithm as elimination followed by back substitution, and transfer it to a new three-by-three system."}
+  ]
+}
+

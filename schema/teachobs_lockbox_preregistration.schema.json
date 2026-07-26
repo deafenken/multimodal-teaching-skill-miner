@@ -1,0 +1,594 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:teachobs-lockbox-preregistration:1.2",
+  "title": "TeachObs-style prospective new-site multimodal preregistration",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "protocol",
+    "study_id",
+    "created_at_utc",
+    "scope",
+    "frozen_artifacts",
+    "input_contract",
+    "analysis_plan",
+    "target_lockbox_protocol",
+    "external_governance_gate",
+    "execution_evidence",
+    "claim_status",
+    "preregistration_fingerprint"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.2"},
+    "protocol": {
+      "const": "teachobs_new_site_confirmatory_multimodal_preregistration_v2"
+    },
+    "study_id": {"$ref": "#/$defs/safe_id"},
+    "created_at_utc": {"type": "string", "format": "date-time"},
+    "scope": {
+      "type": "object",
+      "required": [
+        "development_dataset",
+        "development_test_labels_accessible_before_system_freeze",
+        "development_split_eligible_as_confirmatory_lockbox",
+        "required_confirmation_context",
+        "valid_claim_if_completed",
+        "deployment_accuracy_claimed_by_this_protocol",
+        "learner_effectiveness_claimed_by_this_protocol"
+      ],
+      "properties": {
+        "development_dataset": {
+          "const": "TeachObs_v0.1_public_official_23_7_split"
+        },
+        "development_test_labels_accessible_before_system_freeze": {"const": true},
+        "development_split_eligible_as_confirmatory_lockbox": {"const": false},
+        "required_confirmation_context": {"const": "new_site_real_classroom"},
+        "valid_claim_if_completed": {"const": "confirmatory_multimodal_gain"},
+        "deployment_accuracy_claimed_by_this_protocol": {"const": false},
+        "learner_effectiveness_claimed_by_this_protocol": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "frozen_artifacts": {
+      "type": "object",
+      "required": [
+        "system_artifact",
+        "analysis_code_artifact",
+        "arms",
+        "transitive_model_binding",
+        "all_four_arm_models_bound",
+        "frozen_artifact_set_complete"
+      ],
+      "properties": {
+        "system_artifact": {"$ref": "#/$defs/artifact_binding"},
+        "analysis_code_artifact": {"$ref": "#/$defs/artifact_binding"},
+        "arms": {
+          "type": "object",
+          "required": [
+            "transcript_only",
+            "transcript_audio",
+            "transcript_visual",
+            "full"
+          ],
+          "properties": {
+            "transcript_only": {"$ref": "#/$defs/transcript_only_arm"},
+            "transcript_audio": {"$ref": "#/$defs/transcript_audio_arm"},
+            "transcript_visual": {"$ref": "#/$defs/transcript_visual_arm"},
+            "full": {"$ref": "#/$defs/full_arm"}
+          },
+          "additionalProperties": false
+        },
+        "transitive_model_binding": {"$ref": "#/$defs/transitive_model_binding"},
+        "all_four_arm_models_bound": {"type": "boolean"},
+        "frozen_artifact_set_complete": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "input_contract": {
+      "type": "object",
+      "required": [
+        "scene_unit",
+        "transcript_source",
+        "audio_and_visual_bound_to_same_media_sha256",
+        "ocr_frames_time_aligned_to_scene",
+        "feature_extraction_frozen_before_target_outcome_access",
+        "target_labels_never_used_for_feature_fitting_or_threshold_selection"
+      ],
+      "properties": {
+        "scene_unit": {"const": "fixed_15_second_scene_or_preregistered_equivalent"},
+        "transcript_source": {"const": "official_caption_or_media_bound_audited_asr"},
+        "audio_and_visual_bound_to_same_media_sha256": {"const": true},
+        "ocr_frames_time_aligned_to_scene": {"const": true},
+        "feature_extraction_frozen_before_target_outcome_access": {"const": true},
+        "target_labels_never_used_for_feature_fitting_or_threshold_selection": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "analysis_plan": {
+      "type": "object",
+      "required": [
+        "task",
+        "arm_order",
+        "same_eligible_samples_scored_by_every_arm",
+        "primary_metric",
+        "primary_metric_definition",
+        "primary_comparison",
+        "secondary_comparisons",
+        "decision_threshold_policy",
+        "threshold_and_hyperparameters_frozen_before_target_outcome_access",
+        "minimum_confirmatory_gain",
+        "alpha",
+        "paired_cluster_bootstrap",
+        "significance_test",
+        "multiplicity_policy"
+      ],
+      "properties": {
+        "task": {"const": "39_label_multilabel_teaching_behavior_recognition"},
+        "arm_order": {"const": [
+          "transcript_only",
+          "transcript_audio",
+          "transcript_visual",
+          "full"
+        ]},
+        "same_eligible_samples_scored_by_every_arm": {"const": true},
+        "primary_metric": {"const": "macro_f1"},
+        "primary_metric_definition": {
+          "const": "unweighted_mean_of_39_per_label_f1_values"
+        },
+        "primary_comparison": {
+          "const": {
+            "name": "full_minus_transcript_only",
+            "numerator_arm": "full",
+            "denominator_arm": "transcript_only"
+          }
+        },
+        "secondary_comparisons": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/comparison"}
+        },
+        "decision_threshold_policy": {
+          "$ref": "#/$defs/decision_threshold_policy"
+        },
+        "threshold_and_hyperparameters_frozen_before_target_outcome_access": {
+          "const": true
+        },
+        "minimum_confirmatory_gain": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "alpha": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05},
+        "paired_cluster_bootstrap": {
+          "type": "object",
+          "required": [
+            "paired_resampling",
+            "cluster_field",
+            "cluster_unit_definition",
+            "replicates",
+            "seed",
+            "confidence_level",
+            "interval_method"
+          ],
+          "properties": {
+            "paired_resampling": {"const": true},
+            "cluster_field": {"enum": ["classroom_id", "session_id"]},
+            "cluster_unit_definition": {
+              "const": "one complete classroom lesson/session; every scene from a cluster is resampled together"
+            },
+            "replicates": {"const": 2000},
+            "seed": {"const": 20260723},
+            "confidence_level": {"const": 0.95},
+            "interval_method": {"const": "percentile"}
+          },
+          "additionalProperties": false
+        },
+        "significance_test": {
+          "type": "object",
+          "required": [
+            "method",
+            "null_delta",
+            "alternative",
+            "formula",
+            "uses_same_2000_paired_cluster_replicates"
+          ],
+          "properties": {
+            "method": {"const": "paired_cluster_bootstrap_tail_with_plus_one_correction"},
+            "null_delta": {"const": "minimum_confirmatory_gain"},
+            "alternative": {"const": "gain_greater_than_registered_minimum"},
+            "formula": {"const": "(1 + count(bootstrap_delta <= minimum_confirmatory_gain)) / (replicates + 1)"},
+            "uses_same_2000_paired_cluster_replicates": {"const": true}
+          },
+          "additionalProperties": false
+        },
+        "multiplicity_policy": {
+          "const": "only full_minus_transcript_only is confirmatory; all other four-arm contrasts are secondary"
+        }
+      },
+      "additionalProperties": false
+    },
+    "target_lockbox_protocol": {
+      "type": "object",
+      "required": [
+        "new_site_identity_disjoint_from_all_development_data_required",
+        "prospective_collection_required",
+        "labels_held_by_external_custodian_until_freeze_required",
+        "maximum_primary_evaluations",
+        "minimum_independent_clusters",
+        "minimum_coverage_fraction",
+        "coverage_denominator_defined_before_outcome_access",
+        "exclusions_must_be_preregistered_and_count_reconciled",
+        "one_time_consumption_ledger_required",
+        "public_teachobs_23_7_explicitly_excluded"
+      ],
+      "properties": {
+        "new_site_identity_disjoint_from_all_development_data_required": {"const": true},
+        "prospective_collection_required": {"const": true},
+        "labels_held_by_external_custodian_until_freeze_required": {"const": true},
+        "maximum_primary_evaluations": {"const": 1},
+        "minimum_independent_clusters": {"type": "integer", "minimum": 10},
+        "minimum_coverage_fraction": {"type": "number", "minimum": 0.8, "maximum": 1},
+        "coverage_denominator_defined_before_outcome_access": {"const": true},
+        "exclusions_must_be_preregistered_and_count_reconciled": {"const": true},
+        "one_time_consumption_ledger_required": {"const": true},
+        "public_teachobs_23_7_explicitly_excluded": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "external_governance_gate": {
+      "type": "object",
+      "required": [
+        "status",
+        "registry_name",
+        "registration_id",
+        "trusted_public_key_sha256",
+        "registration_attestation_sha256",
+        "registration_signature_verified",
+        "registered_before_target_outcome_access_verified",
+        "independent_external_governance_verified"
+      ],
+      "properties": {
+        "status": {"const": "pending_external_registration"},
+        "registry_name": {"type": "null"},
+        "registration_id": {"type": "null"},
+        "trusted_public_key_sha256": {"type": "null"},
+        "registration_attestation_sha256": {"type": "null"},
+        "registration_signature_verified": {"const": false},
+        "registered_before_target_outcome_access_verified": {"const": false},
+        "independent_external_governance_verified": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "execution_evidence": {
+      "type": "object",
+      "required": [
+        "target_dataset_fingerprint",
+        "target_feature_bundle_fingerprint",
+        "eligible_sample_set_sha256",
+        "evaluated_sample_order_sha256",
+        "cluster_assignment_sha256",
+        "development_overlap_audit_sha256",
+        "known_development_overlap_count",
+        "coverage_evidence_sha256",
+        "paired_prediction_table_sha256",
+        "statistical_output_sha256",
+        "eligible_unit_count",
+        "evaluated_unit_count",
+        "actual_independent_cluster_count",
+        "collection_started_at_utc",
+        "labels_unsealed_at_utc",
+        "one_time_consumption_receipt_sha256",
+        "external_result_attestation_sha256",
+        "results_computed"
+      ],
+      "properties": {
+        "target_dataset_fingerprint": {"type": "null"},
+        "target_feature_bundle_fingerprint": {"type": "null"},
+        "eligible_sample_set_sha256": {"type": "null"},
+        "evaluated_sample_order_sha256": {"type": "null"},
+        "cluster_assignment_sha256": {"type": "null"},
+        "development_overlap_audit_sha256": {"type": "null"},
+        "known_development_overlap_count": {"type": "null"},
+        "coverage_evidence_sha256": {"type": "null"},
+        "paired_prediction_table_sha256": {"type": "null"},
+        "statistical_output_sha256": {"type": "null"},
+        "eligible_unit_count": {"type": "null"},
+        "evaluated_unit_count": {"type": "null"},
+        "actual_independent_cluster_count": {"type": "null"},
+        "collection_started_at_utc": {"type": "null"},
+        "labels_unsealed_at_utc": {"type": "null"},
+        "one_time_consumption_receipt_sha256": {"type": "null"},
+        "external_result_attestation_sha256": {"type": "null"},
+        "results_computed": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "claim_status": {
+      "type": "object",
+      "required": [
+        "preregistration_execution_ready",
+        "external_lockbox_established",
+        "confirmatory_multimodal_gain_established",
+        "deployment_accuracy_established",
+        "learner_effectiveness_established",
+        "reason"
+      ],
+      "properties": {
+        "preregistration_execution_ready": {"const": false},
+        "external_lockbox_established": {"const": false},
+        "confirmatory_multimodal_gain_established": {"const": false},
+        "deployment_accuracy_established": {"const": false},
+        "learner_effectiveness_established": {"const": false},
+        "reason": {
+          "const": "A preregistration draft contains no target outcomes and no independent external registration/result signatures."
+        }
+      },
+      "additionalProperties": false
+    },
+    "preregistration_fingerprint": {"$ref": "#/$defs/sha256"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "safe_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "artifact_binding": {
+      "type": "object",
+      "required": ["logical_name", "sha256", "byte_count", "bound"],
+      "properties": {
+        "logical_name": {"type": "string", "minLength": 1},
+        "sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+        "byte_count": {"oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]},
+        "bound": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"bound": {"const": true}}, "required": ["bound"]},
+          "then": {
+            "properties": {
+              "sha256": {"$ref": "#/$defs/sha256"},
+              "byte_count": {"type": "integer", "minimum": 1}
+            }
+          },
+          "else": {
+            "properties": {
+              "sha256": {"type": "null"},
+              "byte_count": {"type": "null"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "nullable_sha256": {
+      "oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]
+    },
+    "frozen_arm_transitive_binding": {
+      "type": "object",
+      "required": [
+        "manifest_file_sha256",
+        "manifest_sha256",
+        "arrays_file_sha256",
+        "model_thresholds_sha256",
+        "model_threshold_count"
+      ],
+      "properties": {
+        "manifest_file_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "manifest_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "arrays_file_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "model_thresholds_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "model_threshold_count": {
+          "oneOf": [{"const": 39}, {"type": "null"}]
+        }
+      },
+      "additionalProperties": false
+    },
+    "transitive_model_binding": {
+      "type": "object",
+      "required": [
+        "schema",
+        "bound",
+        "bundle_manifest_file_sha256",
+        "bundle_fingerprint",
+        "label_order_sha256",
+        "training_provenance_sha256",
+        "software_provenance_sha256",
+        "arms",
+        "companion_arrays_loaded_with_allow_pickle_false",
+        "paths_included",
+        "artifact_set_fingerprint"
+      ],
+      "properties": {
+        "schema": {
+          "const": "teaching_skill_miner.teachobs_frozen_lockbox_artifact_set.v2"
+        },
+        "bound": {"type": "boolean"},
+        "bundle_manifest_file_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "bundle_fingerprint": {"$ref": "#/$defs/nullable_sha256"},
+        "label_order_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "training_provenance_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "software_provenance_sha256": {"$ref": "#/$defs/nullable_sha256"},
+        "arms": {
+          "type": "object",
+          "required": [
+            "transcript_only",
+            "transcript_audio",
+            "transcript_visual",
+            "full"
+          ],
+          "properties": {
+            "transcript_only": {"$ref": "#/$defs/frozen_arm_transitive_binding"},
+            "transcript_audio": {"$ref": "#/$defs/frozen_arm_transitive_binding"},
+            "transcript_visual": {"$ref": "#/$defs/frozen_arm_transitive_binding"},
+            "full": {"$ref": "#/$defs/frozen_arm_transitive_binding"}
+          },
+          "additionalProperties": false
+        },
+        "companion_arrays_loaded_with_allow_pickle_false": {"type": "boolean"},
+        "paths_included": {"const": false},
+        "artifact_set_fingerprint": {"$ref": "#/$defs/nullable_sha256"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"bound": {"const": true}}, "required": ["bound"]},
+          "then": {
+            "properties": {
+              "bundle_manifest_file_sha256": {"$ref": "#/$defs/sha256"},
+              "bundle_fingerprint": {"$ref": "#/$defs/sha256"},
+              "label_order_sha256": {"$ref": "#/$defs/sha256"},
+              "training_provenance_sha256": {"$ref": "#/$defs/sha256"},
+              "software_provenance_sha256": {"$ref": "#/$defs/sha256"},
+              "companion_arrays_loaded_with_allow_pickle_false": {"const": true},
+              "artifact_set_fingerprint": {"$ref": "#/$defs/sha256"}
+            }
+          },
+          "else": {
+            "properties": {
+              "bundle_manifest_file_sha256": {"type": "null"},
+              "bundle_fingerprint": {"type": "null"},
+              "label_order_sha256": {"type": "null"},
+              "training_provenance_sha256": {"type": "null"},
+              "software_provenance_sha256": {"type": "null"},
+              "companion_arrays_loaded_with_allow_pickle_false": {"const": false},
+              "artifact_set_fingerprint": {"type": "null"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "decision_threshold_policy": {
+      "type": "object",
+      "required": [
+        "policy",
+        "label_count",
+        "one_threshold_per_label_per_arm",
+        "threshold_values_included",
+        "arm_model_thresholds_sha256",
+        "frozen_artifact_set_fingerprint",
+        "binding_complete"
+      ],
+      "properties": {
+        "policy": {
+          "const": "per_arm_per_label_thresholds_from_verified_frozen_numeric_state_v1"
+        },
+        "label_count": {"const": 39},
+        "one_threshold_per_label_per_arm": {"const": true},
+        "threshold_values_included": {"const": false},
+        "arm_model_thresholds_sha256": {
+          "type": "object",
+          "required": [
+            "transcript_only",
+            "transcript_audio",
+            "transcript_visual",
+            "full"
+          ],
+          "properties": {
+            "transcript_only": {"$ref": "#/$defs/nullable_sha256"},
+            "transcript_audio": {"$ref": "#/$defs/nullable_sha256"},
+            "transcript_visual": {"$ref": "#/$defs/nullable_sha256"},
+            "full": {"$ref": "#/$defs/nullable_sha256"}
+          },
+          "additionalProperties": false
+        },
+        "frozen_artifact_set_fingerprint": {
+          "$ref": "#/$defs/nullable_sha256"
+        },
+        "binding_complete": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"binding_complete": {"const": true}},
+            "required": ["binding_complete"]
+          },
+          "then": {
+            "properties": {
+              "arm_model_thresholds_sha256": {
+                "properties": {
+                  "transcript_only": {"$ref": "#/$defs/sha256"},
+                  "transcript_audio": {"$ref": "#/$defs/sha256"},
+                  "transcript_visual": {"$ref": "#/$defs/sha256"},
+                  "full": {"$ref": "#/$defs/sha256"}
+                }
+              },
+              "frozen_artifact_set_fingerprint": {"$ref": "#/$defs/sha256"}
+            }
+          },
+          "else": {
+            "properties": {
+              "arm_model_thresholds_sha256": {
+                "properties": {
+                  "transcript_only": {"type": "null"},
+                  "transcript_audio": {"type": "null"},
+                  "transcript_visual": {"type": "null"},
+                  "full": {"type": "null"}
+                }
+              },
+              "frozen_artifact_set_fingerprint": {"type": "null"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "comparison": {
+      "type": "object",
+      "required": ["name", "numerator_arm", "denominator_arm"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "numerator_arm": {"enum": ["transcript_only", "transcript_audio", "transcript_visual", "full"]},
+        "denominator_arm": {"enum": ["transcript_only", "transcript_audio", "transcript_visual", "full"]}
+      },
+      "additionalProperties": false
+    },
+    "transcript_only_arm": {
+      "type": "object",
+      "required": ["modalities", "feature_blocks", "model_artifact"],
+      "properties": {
+        "modalities": {"const": ["transcript"]},
+        "feature_blocks": {"const": ["training_only_transcript_char_tfidf"]},
+        "model_artifact": {"$ref": "#/$defs/artifact_binding"}
+      },
+      "additionalProperties": false
+    },
+    "transcript_audio_arm": {
+      "type": "object",
+      "required": ["modalities", "feature_blocks", "model_artifact"],
+      "properties": {
+        "modalities": {"const": ["transcript", "audio"]},
+        "feature_blocks": {"const": ["training_only_transcript_char_tfidf", "scene_aligned_audio_numeric"]},
+        "model_artifact": {"$ref": "#/$defs/artifact_binding"}
+      },
+      "additionalProperties": false
+    },
+    "transcript_visual_arm": {
+      "type": "object",
+      "required": ["modalities", "feature_blocks", "model_artifact"],
+      "properties": {
+        "modalities": {"const": ["transcript", "visual"]},
+        "feature_blocks": {"const": ["training_only_transcript_char_tfidf", "training_only_ocr_char_tfidf", "training_only_ocr_word_tfidf", "scene_aligned_visual_numeric", "hash_bound_clip_embedding"]},
+        "model_artifact": {"$ref": "#/$defs/artifact_binding"}
+      },
+      "additionalProperties": false
+    },
+    "full_arm": {
+      "type": "object",
+      "required": ["modalities", "feature_blocks", "model_artifact"],
+      "properties": {
+        "modalities": {"const": ["transcript", "audio", "visual"]},
+        "feature_blocks": {"const": ["training_only_transcript_char_tfidf", "scene_aligned_audio_numeric", "training_only_ocr_char_tfidf", "training_only_ocr_word_tfidf", "scene_aligned_visual_numeric", "hash_bound_clip_embedding"]},
+        "model_artifact": {"$ref": "#/$defs/artifact_binding"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
