@@ -25,13 +25,14 @@
 | 明确触发条件与前提 | 完成 | `trigger`、`preconditions`、严格 schema | `tsm validate skill` |
 | 可执行步骤与教师动作 | 完成 | `procedure`、`teacher_actions`、状态机 | `tsm teach`、`tsm interact` |
 | 题目二输入：目标、画像、掌握、历史、Skill 列表 | 完成工程能力 | `goal`、匿名 `student_profile`、四维初始掌握度、相关历史压缩和 16 项 v2 Skill Library 均有严格校验；不要求学生真实身份 | `data/teacher_agent_demo_input.json`、`data/teacher_agent_skill_library_v2.json`、`teacher-agent-dashboard` |
+| 题目二答案图片证据 | 完成受限工程链路；OCR 部署准确率未建立 | 学生可提交文字、答案图片或两者；PNG/JPEG/WebP 原图仅在本机内存和临时目录处理。受支持 macOS 优先 Apple Vision extractor，失败或无结果时回退 Tesseract，其他平台使用 Tesseract；随后只把长度受限并经常见直接标识符模式替换的 OCR 文字包络交给 DeepSeek。附件绑定 session/question/round/profile/context、幂等且单次消费；单元、loopback HTTP 和合成印刷文字 image-only Chrome 用例覆盖该链路 | `teacher_agent_vision.py`、`teacher_agent_dashboard.py::upload_attachment`、`tests/test_teacher_agent_vision.py`、`tests/test_teacher_agent_dashboard.py`、`scripts/run_teacher_agent_browser_acceptance.py` |
 | 题目二显式学生状态 | 完成工程能力 | 每轮保存前置/概念/过程/迁移四维掌握度、误解生命周期、当前理解信号和下一教学重点；session 带 canonical SHA-256 完整性校验 | `teacher_agent.py`、`schema/teacher_agent_session.schema.json` |
-| 题目二 Skill 选择、组合、切换与原因 | 完成工程能力 | DeepSeek 在每轮对自由文本作结构化诊断并提出主/支持 Skill；控制器只接受库内 Skill，限制支持数量和连续重复，记录选择理由、候选排名、上一 Skill、自动/手动来源与切换标志 | `teacher_agent_live.py`、`teacher-agent-dashboard` |
-| 题目二实时交互而非整段输出 | 完成工程能力并完成浏览器实测 | `start` 只发首动作；每个 `turn` 只消费一条学生自然语言反馈、调用一次模型并返回一个下一动作；页面在响应返回前不存在后续对话。实测三轮使用真实 DeepSeek、无 fallback | `teacher_agent_live.py`、网页 `/api/session/*`、`tests/test_teacher_agent_live.py` |
+| 题目二 Skill 选择、组合、切换与原因 | 完成工程能力 | DeepSeek 在每轮对学生文字或本机 OCR 文字证据作结构化诊断并提出主/支持 Skill；控制器只接受库内 Skill，限制支持数量和连续重复，记录选择理由、候选排名、上一 Skill、自动/手动来源与切换标志 | `teacher_agent_live.py`、`teacher-agent-dashboard` |
+| 题目二实时交互而非整段输出 | 完成工程能力与自动交互验收入口 | `start` 只发首动作；每个 `turn` 只消费一条学生反馈（文字、答案图片的本地 OCR 文字证据或两者），执行一次逻辑“诊断—路由—行动”模型操作（传输层可有界重试）并返回一个下一动作；页面在响应返回前不存在后续对话。控制器测试覆盖逐轮状态，黑箱 runner 以真实 HTTP 覆盖 start/resume/replace/step/command/conflict，dashboard 测试覆盖 attachment→step，Chrome runner 覆盖 image-only；收费 API 和受限环境中的浏览器操作不作为公共 CI 前提 | `teacher_agent_live.py`、`api/attachment`、`api/step`、`scripts/run_teacher_agent_system_acceptance.py`、`scripts/run_teacher_agent_browser_acceptance.py`、`tests/test_teacher_agent_dashboard.py` |
 | 题目二成功 / 无法继续停止 | 完成工程能力 | 四维门槛、无活跃误解和最新正确信号共同触发成功；连续无进展、达到最大轮数、控制器判断无法继续或显式 `/stop` 触发停止并转人工 | `tests/test_teacher_agent.py`、`tests/test_teacher_agent_live.py` |
-| 题目二状态、决策、行为评测 | 完成结构化回归与在线 development benchmark；外部待验证 | 4 条确定性合成轨迹含 3 条成功恢复与 1 条无进展转人工：状态一致率 1.0、允许决策匹配率 0.916667、行为约束/多 Skill 覆盖/终止匹配率 1.0。另有 28 条平衡的作者构造自由文本样例，固定 DeepSeek v4-flash 运行的 Signal Accuracy/Macro-F1 为 0.892857/0.875325，allowed-Skill hit 为 0.785714；这是 post-hoc development 回归，不是专家或 held-out 结论 | `teacher-agent-evaluate`、`teacher-agent-benchmark`、`data/teacher_agent_free_text_benchmark_receipt.json` |
+| 题目二状态、决策、行为评测 | 完成结构化回归与在线 development benchmark；外部待验证 | 4 条确定性合成轨迹含 3 条成功恢复与 1 条无进展转人工：状态一致率 1.0、允许决策匹配率 0.916667、行为约束/多 Skill 覆盖/终止匹配率 1.0。另有 28 条平衡的作者构造自由文本样例，固定 DeepSeek v4-flash 运行的 Signal Accuracy/Macro-F1 为 0.892857/0.875325，allowed-Skill hit 为 0.750000、switch F1 为 0.787879，P50/P95 为 994.887/1250.134 ms。新 benchmark 与 live question-contract 共享 v3 诊断 taxonomy / 语义量表，但 prompt 不是完整 live Session prompt，只验证单轮诊断/路由；这是 post-hoc development 回归，不是专家、held-out 或完整 Session 结论 | `teacher-agent-evaluate`、`teacher-agent-benchmark`、`data/teacher_agent_free_text_benchmark_receipt.json` |
 | 题目二固定基线与教学效果 | 完成模拟基线；真实学习效果外部待完成 | 自适应/固定逐步支架的内部模拟平均增益为 37.3333/20.4168，差 +16.9165；模拟迁移通过率 0.75/0.0，其中失败轨迹按设计不通过。报告固定声明这不是实际前后测或因果效果 | `teacher-agent-evaluate`、`schema/teacher_agent_evaluation_report.schema.json` |
-| 题目二现场演示 | 完成 | 可输入新目标/学情，连续作答，查看 Skill 原因与切换、显式状态、误解、停止条件和基线表；本机 capability URL、no-store、内存会话 | `打开题目二教学Agent.command`、`tsm teacher-agent-dashboard` |
+| 题目二现场演示 | 完成 | 可输入新目标/学情，以文字或答案图片继续作答，查看本机 OCR 证据、Skill 原因与切换、显式状态、误解、停止条件和基线表；本机 capability URL、no-store、内存会话 | `打开题目二教学Agent.command`、`tsm teacher-agent-dashboard` |
 | 成功标准、失败模式 | 完成 | `success_criteria`、`failure_modes`、`verification` | schema + tests |
 | 新任务测试 | 完成能力覆盖 | 6 个留出主题与静态基线 | `tsm benchmark` |
 | 自动评估 | 完成内部一致性 | 七个维度：结构 12%、证据 18%、可执行 18%、方法忠实度 22%、教学质量 12%、迁移 9%、溯源 9%；`method_fidelity` 从被引用 evidence 反推 observed 步骤主张，是唯一在诚实产物之间产生区分度的维度（83.3–89.8），其余六个维度在 10 份演示 Skill 上标准差为 0.000。五个硬门槛之外新增 `method_distilled_from_video`。不等于 Accuracy/F1、独立 Skill 质量或学习效果 | `tsm evaluate`、`tests/test_method_fidelity.py` |
@@ -48,7 +49,7 @@
 | 环境与依赖自检 | 完成 | 资源、Python、工具、recognition、API 安全 | `tsm doctor` |
 | wheel 非 editable 安装 | 完成验收入口 | 干净双构建字节一致、bundled data/schema/config/governance、核心隔离 smoke、recognition/签名入口及 exact release wheel 验收 | `verify_project.sh`、`build_release_wheel.sh`、`verify_release_wheel.sh` |
 | 发布与隐私 | 完成工程边界 | private paths、0600/0700、aggregate export、release audit；acceptance 的 verification scope 绑定完整包源码、看板、测试、脚本、schema/config、README/治理文档与研究说明。当 TeachObs 私有输入可用时还校验 annotation/caption/ASR receipts；四臂 result、public receipt 和冻结 JSON+NPZ bundle 必须同时通过。本次证据文件 SHA 写入项目 receipt并在生成 acceptance 时重算；仍需人工披露风险审查 | `PRIVACY.md`、`tsm release-audit`、`scripts/verify_project.sh` |
-| CI | 已验证已推送 HEAD；本轮变更待重跑 | GitHub Actions run 30209305856 已在已推送 HEAD `13e12c172ae3…` 上通过 Python 3.10–3.13、package/privacy 与 acceptance；当前本地后续修改尚未推送，必须重新运行。`remote_github_actions_run_verified=false` 表示本地 acceptance 不把外部 run 状态写入证明链 | `.github/workflows/ci.yml`、`artifacts/release_acceptance_1.2.0.json` |
+| CI | 当前本地发布验收通过；远端 CI 独立核验 | 当前工作树已通过 661/1,234/0-skipped 全量测试、双次洁净构建与 exact-wheel 验收。GitHub Actions run 30209305856 只证明已推送 HEAD `13e12c172ae3…` 通过 Python 3.10–3.13、package/privacy 与 acceptance；当前分支的新提交仍须以其自己的 GitHub run 结果为准。`remote_github_actions_run_verified=false` 表示本地 acceptance 不把外部 run 状态写入证明链 | `.github/workflows/ci.yml`、`artifacts/release_acceptance_1.2.0.json` |
 
 ## 答辩时必须主动说明
 
@@ -60,3 +61,4 @@
 6. `interact` 的达标信号由教师、上层 Agent 或独立判分器提供，运行时不冒充学科答案判分器。
 7. DIPSER 的 0.902 是 `offline full-session transductive post-selection development estimate`，不是 raw-video、实时、单学生、跨学校或部署 0.9。
 8. 只有 checkpoint v3 在新目标站点的一次性前瞻 lockbox 上通过全部 ClaimContract、coverage、逐类、claim-cluster 与签名登记 gate，并由预先固定的外部可信公钥验证最终 receipt，才能建立部署准确率；开发者自签名不构成独立锁箱。
+9. 题目二的图片能力是“原图本机 OCR → 有界脱敏文字 → DeepSeek 文本推理”，不是远程多模态看图。image-only Chrome 用例使用合成高对比度印刷文字，只证明工程链路；手写、复杂版面和公式部署准确率未建立，公式样证据必须由学生核对。

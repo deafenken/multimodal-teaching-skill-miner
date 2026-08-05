@@ -53,7 +53,7 @@
         "thinking_mode"
       ],
       "properties": {
-        "prompt_version": {"const": "teacher_agent_free_text_diagnose_route_v2"},
+        "prompt_version": {"const": "teacher_agent_free_text_diagnose_route_v3_shared_taxonomy"},
         "online_enabled": {"type": "boolean"},
         "repeats": {"type": "integer", "minimum": 1, "maximum": 10},
         "case_order": {"const": "dataset_order"},

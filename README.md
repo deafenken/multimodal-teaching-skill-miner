@@ -31,11 +31,15 @@ tsm dashboard --check
 
 ### 题目二：实时自适应教学 Agent
 
-题目二已实现逐轮运行的混合 Teaching Agent：`deepseek-v4-flash` 负责理解学生自由文本、提议 Skill 并生成当前一个教学动作；确定性控制器负责显式状态、Skill 白名单、重复上限和终止安全。系统不会一次性预写多轮对话。每收到一条学生回答，它都会更新四维掌握、误解、当前理解信号、下一关注点和交互统计，再从 v2 Library 的 **13 个主 Skill + 3 个支持 Skill** 中重新选择、组合或切换，并公开理由。每个通过约束层验证的 DeepSeek 回合还会在 `student_profile.adaptive_observations` 追加一条 `candidate_unconfirmed` 候选画像，记录回答质量、参与度、误解、下一重点、脱敏证据和置信度；最多保留 12 条，低置信度候选要求人工复核。候选不会覆盖教师提供的画像字段，规则 fallback 不会生成候选；当前仍无跨 session 的长期画像。在线模式支持 `/+skill 名称`、`/auto` 和 `/stop`。
+题目二已实现逐轮运行的混合 Teaching Agent：`deepseek-v4-flash` 负责理解学生自由文本、判断与当前问题的对齐关系，并提议主/支持 Skill；确定性控制器负责显式状态、Skill 白名单、重复上限和终止安全；最终教师话语由服务端按已选 Skill 的 `action_type`、执行契约、教学材料和上一问判据物化。模型给出的自由文本 action 不会直接发给学生，即使 action type 看似正确，也不能夹带完整答案或绕过 Skill。系统不会一次性预写多轮对话。每收到一条学生回答，它都会更新四维掌握、误解、当前理解信号、下一关注点和交互统计，再从 v2 Library 的 **13 个主 Skill + 3 个支持 Skill** 中重新选择、组合或切换，并公开理由。每个问题都附带服务端生成的 `question_id + question_contract`（目标概念、可接受同义表达、回答类型和成功判据）；诊断先判断回答是否真正对齐当前问题，再决定状态和 Skill。相关但没有回答本问的内容会保守记为 `partial / related_but_not_answer`，不会仅因未命中预设词就写成“仍然困惑”，也不会凭一次相邻概念回答确认误解。页面把诊断来源分为原始 `deepseek_v4_flash`、经确定性契约修正的 `deepseek_v4_flash_constrained_by_deterministic_contract`、本问短概念精确命中的 `active_question_contract_exact_match`，以及不属于自由文本识别结果的 `deterministic_safety_fallback`；不能把后三者笼统冒充未经修正的模型判断。每个通过约束层验证的 DeepSeek 回合还会在 `student_profile.adaptive_observations` 追加一条 `candidate_unconfirmed` 候选画像；候选不会覆盖教师提供字段，规则 fallback 不会生成候选；候选若没有绑定到学生原话，会明确记录 `no_grounded_excerpt` 并强制进入人工复核。在线模式支持 `/+skill 名称`、`/auto` 和 `/stop`：手动 Skill 从收到第一条学生回答后持续锁定，直到教师恢复自动模式，或适用信号、纠错证据、`max_repeat` / fallback 等安全门主动释放，不能借人工命令绕过契约。
 
-每次模型请求只发送一个经过校验的 `teaching_context`：固定教学目标与教师画像、当前 Goal 计划、近期逐轮工作记忆、较早历史的确定性聚合与原文抽取检查点、知识/误解状态、未确认的低权重画像假设，以及对应证据指针。当前回答只出现一次；默认保留最多 6 个相关回合并受 14,000 字符硬上限约束。未显式填写知识点时，直接使用教师输入的教学概念作为最小检索锚点；多知识点目标则只给每轮动作标注当前实际知识点，不再把整份目标复制到每个历史回合。合法超长会话会逐层裁剪成可验证的最小上下文，而不是越过预算或让整轮崩溃。
+每个主 Skill 的 `supporting_skill_ids` 是该主 Skill 自己声明的 **硬组合 allowlist**，不是给模型参考的推荐列表：未声明的 support 即使存在于 Library 中也不能组合；已声明的 support 仍须是 `support` 角色，并通过自身的适用条件、局部前置条件和 `max_repeat`。主 Skill 与规则 fallback 共用机器门禁，覆盖 Skill ID/角色、`applicable_signals`、纠错证据、若干会导致阶段越级的高风险前置条件、目标材料是否真实存在、主/支持 Skill 重复上限、主 Skill 的 support allowlist 以及 support 自身门禁；没有任何安全 Skill 可执行时会停止自动推进并转人工。其余写在 `preconditions / contraindications / postconditions / failure_transition` 中的自然语言合同仍会进入提示词与审计，但系统不声称已经理解并自动证明了全部自然语言条件。
 
-题目二网页已改为学生对话优先的三栏学习工作台：左侧管理目标和学习阶段，中间是连续对话与固定输入框，右侧可折叠查看状态、Skill 选择依据和上下文记忆；冻结 benchmark、基线和学习结果接口移入独立的“实验 / 评估”视图。每个 step 由 `session_id + expected_round + idempotency_key` 保护；启动会话也有独立幂等键，替换现有会话必须携带其精确 ID，同一请求重试不会重复调用模型或错误推进教学轮次。
+学生本轮可以提交文字、答案图片或两者。答案原图只在本机内存和临时目录中短暂处理：受支持的 macOS 主机优先使用 Apple Vision 本机 extractor，Apple Vision 不可用、失败或未识别出文字时回退到 Tesseract；其他平台在安装 Tesseract 后使用 Tesseract。本机只把有界 OCR 观察写入教学上下文，并在发送前经过与学生文字相同的常见直接标识符模式替换；DeepSeek 不接收原图。这是“本地 OCR 后把文字证据交给文本模型”，不是 DeepSeek 原生视觉理解，也不是实时视频输入。高对比度印刷文字已进入 image-only 浏览器验收，但手写、复杂版面和公式的部署准确率没有建立。OCR 置信度低、没有文字、检测到公式/代码样表达，或附件明确要求确认时，即使学生同时输入“答案见图”“照片这样显然是对的”，也不能绕过确认：该轮强制记为 `partial / ambiguous`、置信度 `0.0`，不增加掌握、不解除误解，并清空未执行的 support。确认动作只允许在 `skill_self_explanation` 与 `skill_socratic_understanding_check` 中选择；控制器优先使用自我解释，达到其连续 `max_repeat` 后切换到苏格拉底理解检查，后续继续按各自门禁和重复上限轮换，而不是无限重复一个 Skill。模型计划失效后的 fallback 也执行同一轮换合同。
+
+每次模型请求只发送一个经过校验的 `teaching_context`：固定教学目标与教师画像、当前 Goal 计划、当前问题契约、近期逐轮工作记忆、较早历史的确定性统计与证据关联检查点、知识/误解状态、未确认的低权重画像假设，以及对应证据指针。较早历史的 `teaching_checkpoints` 最多保留 6 条，只从被省略回合中的明确师生原话或已记录结构化信号抽取，例如尚未被后续正确信号清除的困难、学生明确问题/偏好、已验证前置知识或教师明确下一步；每条都必须指向 `evidence_ledger`。它们是选择性审计事实，不是完整语义总结；未知的完成或解决状态保持未知，系统明确记录 `omitted_turn_semantics_are_exhaustive=false`。网页“既往上下文（未标注）”按行写入 `background_history`，在上下文中标为 `teacher_provided_unlabeled_background`；它不携带 `signal` 或 `focus_dimension`，不会直接改变初始掌握、当前理解信号或误解，只有之后提交的真实学生回答才触发学情更新。当前回答只出现一次；默认保留最多 6 个相关回合并受 14,000 字符硬上限约束。未显式填写知识点时，直接使用教师输入的教学概念作为最小检索锚点；多知识点目标则只给每轮动作标注当前实际知识点。合法超长会话会逐层裁剪成仍保留当前问题和回答的可验证最小上下文，而不是越过预算或让整轮崩溃。
+
+题目二网页采用原创的 Codex-inspired 学习工作台：左侧是任务与三种合成学生画像，中间只保留实时对话和固定输入框，右侧用“学情 / 方法 / 证据”三页检查器解释状态、Skill 与上下文；冻结 benchmark、基线和学习结果接口移入独立的“实验 / 评估”视图。三张 AI 合成头像不对应真实学生，也不参与能力判断；环形图只表示四项掌握估计的等权平均。参考官方开源 Codex 固定版本 `f2d825533c9423728f319a6dbcbb31c21768aa69` 的是 thread/turn identity、预期轮次核验、陈旧异步结果隔离和 running/cold resume 等可靠性模式，而不是品牌、Shell 或多 Agent 能力；本项目的请求指纹与有界响应缓存、画像 prepare-then-commit、16 槽会话注册表、问题契约和分层教学上下文均为本项目实现。画像切换先完整生成、校验并构造可返回的新 Session，再原子提交并退休旧 Session；替换请求还必须匹配旧会话的 `round + question_id + context_version + profile_revision`，因此一个较慢的切换请求不能覆盖刚提交的新教学轮次。远程模型失败时，若醒目标注的 `deterministic_safety_fallback` 仍通过完整结构、Skill 与 Session 校验，它可以作为合法的新画像 Session 提交，否则真正失败会保留旧会话。start、step 和 command 都使用独立幂等键；step/command 同时绑定 `session_id + expected_round + expected_question_id + expected_context_version + profile_revision`，过期、跨画像或冲突重放均 fail-closed。刷新只用一个随机、无业务语义的 opaque `session_id` 查询同一进程中的服务端内存状态；这不是 Codex 的持久化 running/cold resume，也不是数据库恢复。候选画像和对话不会自动跨 session 合并；16 个会话槽位都正被并发请求占用时，新建会话会明确拒绝，而不会越过容量或删除仍在运行的会话。
 
 先把外置盘密钥链接到本机私有目录；`.private/` 已被 Git 忽略：
 
@@ -56,13 +60,24 @@ tsm teacher-agent-dashboard \
 # 不调用 API 的模板自检 / 规则基线
 tsm teacher-agent-dashboard --check
 tsm teacher-agent-dashboard --agent-backend deterministic
+
+# 首次运行真实浏览器验收：安装轻量测试 extra 与 Playwright Chromium
+python3 -m pip install -e '.[browser-test]'
+python3 -m playwright install chromium
+
+# 先启动上面的本机服务，再把它打印的 127.0.0.1 capability URL 传入。
+# 使用下载的 Chromium；若本机已装 Google Chrome，可改成 --browser chrome。
+python3 scripts/run_teacher_agent_browser_acceptance.py \
+  --base-url '<loopback-capability-url>' \
+  --browser chromium \
+  --acknowledge-remote-demo-text
 ```
 
-也可设置 `DEEPSEEK_API_KEY_FILE` 直接指向私有密钥文件。网页只绑定 `127.0.0.1`，使用随机 capability URL、CSP 和 `no-store`，会话只保存在服务内存。在线模式会把经过上下文最小化和常见直接标识符模式替换的必要教学文本发送给 DeepSeek；真实媒体不会发送，但不能把它表述为“所有处理完全离线”。若调用或校验失败，页面会把规则降级明确标为 `deterministic_safety_fallback`，不得冒充 DeepSeek 结果。
+双击启动脚本可设置 `DEEPSEEK_API_KEY_FILE`；直接运行 `tsm` 时可设置 `TSM_DEEPSEEK_API_KEY_FILE`，两者都只应指向本机私有密钥文件。网页只绑定 `127.0.0.1`，使用随机 capability URL、CSP 和 `no-store`；教学内容只在服务端内存。浏览器 `sessionStorage` 保存一个随机、无业务语义但可被同源 JavaScript 或 DevTools 读取的 opaque 会话句柄，`localStorage` 仅保存主题与密度等非敏感显示偏好；服务进程一旦停止或重启，全部 Session 都会丢失，旧句柄不能恢复教学会话。在线模式会把经过上下文最小化和常见直接标识符模式替换的必要教学文本发送给 DeepSeek；若学生提交答案图片，远程请求中只增加本机 OCR 生成、长度受限并经过同一模式替换的文字证据，原图、缩略图、本机路径和临时文件均不发送。声明 `contains_direct_identity=true` 或给出非 JSON 布尔值的画像会在任何远程请求前被拒绝。模式替换仍无法证明自然语言姓名、学校、普通学号或 OCR 误识别出的身份信息已全部移除，因此隐私 trace 固定保留 `raw_identity_fields_sent=not_established` 与 `residual_identity_risk=true`；不能把页面表述为“所有处理完全离线”或“完全匿名”。若远程调用或模型校验失败，页面会把规则降级明确标为 `deterministic_safety_fallback`，不得冒充 DeepSeek 结果；fallback 仍须通过与在线计划相同的 Skill ID/角色、适用信号、高风险前置条件、材料、重复上限与 support 组合门禁；无安全 Skill 时停止并转人工。仓库保留三层不同验收：静态 UI 合同、复用浏览器 API 的 HTTP 黑箱 runner，以及 Playwright 驱动本机 Chrome/Chromium 的真实 DOM runner。真实浏览器层包含一条输入框留空的 image-only 回合，并主动制造一次画像替换竞态：页面仍持有旧 `replace_expected_*` 时，runner 通过同一 loopback API 在 UI 外先推进旧 Session；第一次替换按预期返回一次 HTTP 400，前端随后调用 `api/session` 同步权威 round/question/context/profile guards，丢弃旧 start 幂等键、生成新键并恰好重试一次，最终成功切换到画像 B。runner 同时检查独立掌握状态、旧手动 Skill 不继承、opaque handle 刷新恢复、画像表单回填、评估视图和 390/768/1440 三种宽度；这次预期 400 单独计数，不冒充零错误路径。这里记录的是可复现 runner 的结果，不把 Codex 内置浏览器是否可用或一次人工点击当作验收证据。该自动样例只证明这一条印刷文字 Chrome 与一次受控陈旧替换恢复路径；低置信/公式确认安全语义另由 live 单元测试覆盖，loopback 测试验证的是附件绑定、幂等、消费与过期拒绝，不建立手写/公式 OCR 准确率、Firefox/Safari 兼容、屏幕阅读器认证、真实学生部署或学习效果。
 
 当前有三层互相独立的评估证据：
 
-- 28 个作者构造的一轮自由文本开发案例，第三次在线运行（v3 报告文件、prompt v2）的信号 Accuracy / Macro-F1 为 **0.892857 / 0.875325**，允许主 Skill 命中率为 **0.785714**；该数据未经专家复核、不是提示词开发后的锁箱集，只能称 post-hoc development regression。
+- 28 个作者构造的一轮自由文本开发案例，最新在线运行使用与 live question-contract 共享的 v3 诊断 taxonomy / 语义量表；信号 Accuracy / Macro-F1 为 **0.892857 / 0.875325**，允许主 Skill 命中率为 **0.750000**。benchmark prompt 并非完整 live Session prompt，因此只验证单轮诊断与路由，不等同完整 live Session 评测；该数据未经专家复核、不是提示词开发后的锁箱集，只能称 post-hoc development regression。
 - 4 条结构化合成轨迹与固定 `skill_stepwise_scaffolding` 基线的机制回归：状态一致率 1.000000、允许决策匹配率 0.916667、终止匹配率 1.000000；自适应/固定内部模拟平均增益为 37.333250/20.416750。它不检验自由文本理解，也不是实际学习效果。
 - `teacher-agent-outcome-evaluate` 接受前测、后测、迁移测和可选延迟测；随附 0.4→0.8 的记录是作者构造 fixture，只验证计算接口。
 

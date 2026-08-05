@@ -175,6 +175,29 @@ class TeacherAgentTests(unittest.TestCase):
             "resolved",
         )
 
+    def test_named_resolution_parameter_cannot_bypass_core_correction_contract(self) -> None:
+        session = self._start()
+        session = advance_teacher_agent_session(
+            session,
+            learner_response="状态只看上一步。",
+            signal="misconception",
+            misconception_tag="missing_transition",
+        )
+        before = deepcopy(session)
+
+        with self.assertRaisesRegex(
+            TeacherAgentError, "correct, targeted correction turn"
+        ):
+            advance_teacher_agent_session(
+                session,
+                learner_response="我还不确定。",
+                signal="partial",
+                resolve_all_on_correction=False,
+                resolved_misconception_tags=["missing_transition"],
+            )
+
+        self.assertEqual(session, before)
+
     def test_three_no_progress_signals_stop_and_escalate(self) -> None:
         session = self._start()
         for signal in ("confused", "no_response", "confused"):

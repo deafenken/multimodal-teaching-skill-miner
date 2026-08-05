@@ -84,19 +84,28 @@
           "uniqueItems": true,
           "items": {"enum": ["not_observed", "correct", "partial", "misconception", "confused", "no_response"]}
         },
-        "supporting_skill_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^skill_[a-z0-9_]+$"}},
+        "supporting_skill_ids": {
+          "description": "For a primary Skill, this is its hard composition allowlist. Runtime support composition may only use IDs declared here; each selected item must also resolve to a support-role Skill and pass that support Skill's locally enforced eligibility, precondition subset, and max_repeat checks. An empty array forbids support composition for this Skill; support-role Skills do not use this field to authorize nested composition.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^skill_[a-z0-9_]+$"}
+        },
         "selection_rationale": {"type": "string", "minLength": 1},
         "message_template": {"type": "string", "minLength": 1},
         "expected_signal": {"type": "string", "minLength": 1},
         "action_type": {"type": "string", "minLength": 1},
         "direct_answer_prohibited": {"const": true},
         "execution_contract": {
+          "description": "Auditable execution contract. JSON Schema validates field shape; the runtime additionally formalizes only a documented safety-critical subset, including applicable signal, evidence-backed correction, selected high-risk stage/material preconditions, material availability, max_repeat, and support eligibility. Remaining natural-language conditions are supplied to the model and audit trail but are not claimed to be fully machine-understood.",
           "type": "object",
           "required": ["applicable_when", "contraindications", "preconditions", "postconditions", "failure_transition", "max_repeat", "addition_reason"],
           "properties": {
             "applicable_when": {"type": "string", "minLength": 1},
             "contraindications": {"$ref": "#/$defs/stringList"},
-            "preconditions": {"$ref": "#/$defs/nonemptyStrings"},
+            "preconditions": {
+              "description": "Natural-language preconditions. The runtime has explicit local checks for a documented high-risk subset; presence in this array alone does not prove every condition was automatically verified.",
+              "$ref": "#/$defs/nonemptyStrings"
+            },
             "postconditions": {"$ref": "#/$defs/nonemptyStrings"},
             "failure_transition": {
               "anyOf": [

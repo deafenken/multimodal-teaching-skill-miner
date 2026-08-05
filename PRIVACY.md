@@ -10,7 +10,7 @@
 | Identifiable classroom media | faces, voices, raw video/audio, archives | No |
 | Frame- and row-level research data | frames, OCR text, CLIP embeddings/scores, timestamps, participant/sample IDs, labels, pose/watch features, predictions | No |
 | Local real-dashboard inputs and browser responses | non-displayed OCR/features plus browser-served video, frames, captions, teacher-behavior projection, labels, per-sample four-arm predictions, capability URL/token | No |
-| Task-two Agent sessions | locally entered goals, anonymous learner profiles, response excerpts, misconception tags, state trajectories, capability URL/token | No |
+| Task-two Agent sessions | locally entered goals, anonymous learner profiles, typed responses, transient answer images, bounded OCR evidence, misconception tags, state trajectories, capability URL/token | No |
 | Secrets | API keys, credentials, private keys | No |
 
 ## Storage boundary
@@ -21,9 +21,9 @@
 - Store TeachObs repository audits, source URLs, complete videos, subtitle tracks, ASR job/results, transcript coverage matrices, frames, audio rows, OCR, embeddings, scene labels, predictions, double-annotation assignments, and disagreement records under `artifacts/private/external_datasets/teachobs/`. Public TeachObs receipts must remain aggregate/hash-only and omit lesson/scene identifiers and row-level content.
 - Store participant-level derivatives under `artifacts/dipser_credible/`, `artifacts/real_classroom/`, or other `artifacts/private/` paths; these paths are not public artifacts.
 - Keep every input read by `tsm dashboard-real` in an ignored private path. OCR text remains a non-displayed frozen-model input. The TeachObs view may return video, frames, subtitles, behavior projections, labels, timestamps and predictions; the MIT view may return a field-allowlisted Skill projection, short cited subtitle evidence and sanitized candidate-event summaries. Raw Skill JSON fields such as local/job paths, source URLs and OCR text are not returned. Neither private inputs nor browser responses become eligible for GitHub, a wheel, `artifacts/public/`, CI, or a hosted dashboard.
-- `tsm teacher-agent-dashboard` keeps its active teaching session in process memory, sends `Cache-Control: no-store`, and does not put goals, responses, misconceptions, or state trajectories in browser storage. Only paper/night and density display preferences may be stored locally. Command-line session files use user-only permissions and belong under `artifacts/private/`; the packaged task-two fixtures are synthetic.
+- `tsm teacher-agent-dashboard` keeps its active teaching session in process memory and sends `Cache-Control: no-store`. It does not put goals, responses, profiles, misconceptions, or state trajectories in browser storage. `sessionStorage` holds only a random opaque session handle so the same tab can resume while the local process remains alive; that handle is not teaching content but can still be read by same-origin JavaScript or DevTools. `localStorage` is limited to paper/night and density display preferences. Command-line session files use user-only permissions and belong under `artifacts/private/`; the packaged task-two fixtures are synthetic.
 - Store only aggregate publication candidates that have passed dataset-specific disclosure review under `artifacts/public/`; the directory name does not itself certify anonymity.
-- Do not upload raw or row-level data to CI, issue trackers, public artifact stores, model hubs, or remote LLM APIs.
+- Do not upload raw classroom/research media or row-level research derivatives to CI, issue trackers, public artifact stores, model hubs, or remote LLM APIs. The only separate exception implemented here is an explicitly authorized task-two learner-answer image: the original image remains local, while a bounded OCR text envelope may be sent to DeepSeek under the consent and minimization controls described below.
 
 The recorded 10-lecture visual-semantic run kept videos, frames, captions, OCR, embeddings, and events on the local workstation. A GPU server was used only to process publicly available CLIP model weights; no private project media or derivatives were uploaded to it. Final inference over all 2,553 frames ran locally on CPU. Future operators must not infer that server transfer is authorized merely because a model can run faster on GPU: moving any project frame, audio, caption, OCR, embedding, or event record requires a separate documented authorization and transfer-risk review.
 
@@ -42,14 +42,22 @@ DeepSeek backend is fail-closed until the presenter explicitly enables
 `TSM_ALLOW_REMOTE_STUDENT_DATA=1` or supplies the equivalent dashboard flag.
 Each turn sends only the redacted teaching goal, the minimum relevant anonymous
 profile/history, the current structured state, the allowed Skill summary, and
-the learner's current text response.  Classroom video, audio, captions, OCR,
-embeddings, private evidence pointers, local paths, and capability tokens are
-never included in that request.  The local controller stores only hashes,
-latency, token counts, and the validated structured result in its audit trace;
-it does not persist the provider response body.  Remote processing is still a
-data transfer: use synthetic or properly authorized learner text, review the
-provider's current retention and regional terms, and do not describe the live
-DeepSeek mode as fully offline.
+the learner's current typed response. If the learner attaches an answer image,
+the original image is processed locally and is never sent to DeepSeek; the
+request may additionally contain a bounded, direct-identifier-pattern-redacted
+`[LOCAL_VISUAL_EVIDENCE]` text envelope with OCR status, heuristic confidence,
+confirmation requirement, and recognized text. Formula-like or low-confidence
+OCR is marked for student confirmation and cannot be treated as trusted exact
+answer evidence. Classroom video, audio, captions, research-dataset OCR,
+embeddings, private evidence pointers, local paths, thumbnails, raw image bytes,
+and capability tokens are never included in that request. The local controller
+stores hashes, latency, token counts, the bounded visual-evidence record, and the
+validated structured result in process memory for the active session; it does
+not persist the provider response body. Remote processing is still a data
+transfer: use synthetic or properly authorized learner text/OCR, remove identity
+information before upload, review the provider's current retention and regional
+terms, and do not describe the live DeepSeek mode as fully offline or fully
+anonymous.
 
 ## Retention and deletion
 

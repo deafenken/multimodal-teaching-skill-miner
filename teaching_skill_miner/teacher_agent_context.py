@@ -67,6 +67,15 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 _TRAILING_PATH_PUNCTUATION = ".,;!?)]}，。；！？）》】」』"
 _TEXT_TRUNCATION_MARKER = "…[truncated]"
+_EXPLICIT_LEARNER_QUESTION_RE = re.compile(
+    r"(?:[?？]\s*$|(?:为什么|怎么|如何|哪一步|哪里|是否|能否|是不是|会不会))"
+)
+_EXPLICIT_LEARNER_REQUEST_RE = re.compile(
+    r"(?:^|[，。！？；,.!?;\s])(?:请|能不能|可不可以|我(?:希望|想要|更喜欢|需要)|不要|别)"
+)
+_TEACHER_NEXT_STEP_RE = re.compile(
+    r"(?:下一步|接下来|随后|之后(?:我|我们)?|然后(?:我|我们)?|我会|我们会|我们将)"
+)
 
 
 def _trim_candidate(kind: str, text: str, start: int, end: int) -> tuple[int, int]:
@@ -337,6 +346,9 @@ def _rebuild_context(
             "remote_text_redacted": bool(finding_counts),
             "finding_counts": dict(sorted(finding_counts.items())),
             "original_values_retained": False,
+            "known_pattern_identifiers_redacted": bool(finding_counts),
+            "raw_identity_fields_sent": "not_established",
+            "residual_identity_risk": True,
         },
         "selection": {
             "priority": "same_knowledge_component_then_same_focus_then_recency",
@@ -470,7 +482,9 @@ def build_relevant_history(
         "privacy": {
             "remote_text_redacted": bool(finding_counts),
             "finding_counts": dict(sorted(finding_counts.items())),
-            "original_values_retained": False,
+            "known_pattern_identifiers_redacted": bool(finding_counts),
+            "raw_identity_fields_sent": "not_established",
+            "residual_identity_risk": True,
         },
         "selection": {
             "priority": "same_knowledge_component_then_same_focus_then_recency",
@@ -494,15 +508,27 @@ def _bounded_text(value: Any, limit: int) -> str:
 
 
 def _redact_structure(value: Any, counts: Counter[str]) -> Any:
-    """Deep-copy and redact every textual leaf of a JSON-compatible value."""
+    """Deep-copy and redact every textual key and leaf in a JSON value.
+
+    Teacher-authored mappings can place identifiers in field names as well as
+    values.  Key collisions after redaction are resolved with an opaque,
+    deterministic suffix so no source key is leaked and no sibling value is
+    silently overwritten.
+    """
 
     if isinstance(value, str):
         return _redact_value(value, counts)
     if isinstance(value, Mapping):
-        return {
-            str(key): _redact_structure(item, counts)
-            for key, item in value.items()
-        }
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            safe_key = _redact_value(str(key), counts)
+            candidate = safe_key
+            collision_index = 2
+            while candidate in result:
+                candidate = f"{safe_key}__{collision_index}"
+                collision_index += 1
+            result[candidate] = _redact_structure(item, counts)
+        return result
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_redact_structure(item, counts) for item in value]
     return deepcopy(value)
@@ -604,6 +630,33 @@ def _teacher_profile_layer(
             )
         )
 
+    background = profile.get("background_history", [])
+    if not isinstance(background, list):
+        background = []
+    background_start = max(0, len(background) - prior_limit)
+    background_view: list[dict[str, Any]] = []
+    for index, item in enumerate(background[background_start:], background_start):
+        excerpt = _bounded_text(item, min(400, content_limit))
+        if not excerpt:
+            continue
+        evidence_id = f"teacher_profile:background_history:{index}"
+        background_view.append(
+            {
+                "index": index,
+                "response_excerpt": excerpt,
+                "label_status": "unlabeled_background_not_state_evidence",
+                "evidence_refs": [evidence_id],
+            }
+        )
+        evidence.append(
+            _evidence_record(
+                evidence_id,
+                source="teacher_provided_unlabeled_background",
+                field=f"background_history[{index}]",
+                excerpt=excerpt,
+            )
+        )
+
     for dimension, value in initial_mastery.items():
         evidence.append(
             _evidence_record(
@@ -633,13 +686,66 @@ def _teacher_profile_layer(
         "initial_mastery": dict(initial_mastery),
         "declared_known_misconceptions": known_view,
         "provided_prior_context": {
-            "total_turn_count": len(prior),
-            "retained_turn_count": len(prior_view),
+            "total_turn_count": len(prior) + len(background),
+            "retained_turn_count": len(prior_view) + len(background_view),
             "turns": prior_view,
+            "unlabeled_notes": background_view,
+            "unlabeled_notes_may_update_state": False,
         },
         "source": "teacher_input_normalized_locally",
         "mutable_by_model": False,
     }
+
+
+def _bounded_question_contract(value: Any, *, content_limit: int) -> dict[str, Any]:
+    """Keep the current grading contract useful without letting it own the budget."""
+
+    if not isinstance(value, Mapping) or not value:
+        return {}
+    item_limit = max(24, min(content_limit, 120))
+    criterion_limit = max(32, min(content_limit, 160))
+
+    def strings(field: str, maximum_items: int, maximum_chars: int) -> list[str]:
+        raw = value.get(field, [])
+        if not isinstance(raw, list):
+            return []
+        return [
+            bounded
+            for item in raw[:maximum_items]
+            if (bounded := _bounded_text(item, maximum_chars))
+        ]
+
+    result = {
+        "answer_type": _bounded_text(value.get("answer_type", "open"), 32),
+        "target_concepts": strings("target_concepts", 4, item_limit),
+        "accepted_aliases": strings("accepted_aliases", 8, item_limit),
+        "success_criteria": strings("success_criteria", 4, criterion_limit),
+        "grading_scope": _bounded_text(
+            value.get("grading_scope", "current_question_only"), 40
+        ),
+    }
+    if content_limit <= 48:
+        source_counts = {
+            field: len(value.get(field, []))
+            if isinstance(value.get(field), list)
+            else 0
+            for field in (
+                "target_concepts",
+                "accepted_aliases",
+                "success_criteria",
+            )
+        }
+        result["context_projection"] = {
+            "text_truncated": any(
+                len(str(source)) > len(str(projected))
+                for field in source_counts
+                for source, projected in zip(
+                    value.get(field, []), result[field], strict=False
+                )
+            ),
+            "source_item_counts": source_counts,
+        }
+    return result
 
 
 def _current_plan_layer(
@@ -717,6 +823,13 @@ def _current_plan_layer(
                 for item in supporting
                 if isinstance(item, Mapping) and item.get("skill_id")
             ],
+            "target_misconception_tags": [
+                _bounded_text(item, 120)
+                for item in action.get("target_misconception_tags", [])[:4]
+                if _bounded_text(item, 120)
+            ]
+            if isinstance(action.get("target_misconception_tags"), list)
+            else [],
             "selection_reason": _bounded_text(
                 action.get("selection_reason", ""), content_limit
             ),
@@ -725,6 +838,11 @@ def _current_plan_layer(
             ),
             "expected_signal": _bounded_text(
                 teacher_action.get("expected_signal", ""), content_limit
+            ),
+            "question_id": teacher_action.get("question_id"),
+            "question_contract": _bounded_question_contract(
+                teacher_action.get("question_contract", {}),
+                content_limit=content_limit,
             ),
         },
         "source": "deterministic_session_plan_and_last_validated_action",
@@ -752,7 +870,9 @@ def _latest_unresolved_events(events: Sequence[dict[str, Any]]) -> list[dict[str
                 for item in candidate.get("knowledge_components", [])
                 if str(item).strip()
             }
-            return candidate_focus == focus or bool(event_kcs & candidate_kcs)
+            if event_kcs and candidate_kcs:
+                return bool(event_kcs & candidate_kcs)
+            return candidate_focus == focus
 
         signal = event.get("signal")
         if signal == "correct":
@@ -938,6 +1058,12 @@ def _candidate_memory_layer(
                 "status": item.get("status"),
                 "candidate": deepcopy(dict(candidate)),
                 "confidence": evidence_value.get("confidence"),
+                "assessment_source": evidence_value.get("assessment_source"),
+                "model_raw_signal": evidence_value.get("model_raw_signal"),
+                "final_signal": evidence_value.get("final_signal"),
+                "normalization_reasons": deepcopy(
+                    evidence_value.get("normalization_reasons", [])
+                ),
                 "needs_human_review": evidence_value.get("needs_human_review"),
                 "evidence_refs": [evidence_id],
             }
@@ -945,7 +1071,11 @@ def _candidate_memory_layer(
         evidence.append(
             _evidence_record(
                 evidence_id,
-                source=str(item.get("source") or "candidate_profile"),
+                source=str(
+                    evidence_value.get("assessment_source")
+                    or item.get("source")
+                    or "candidate_profile"
+                ),
                 field="adaptive_observation.evidence",
                 round_number=round_number,
                 excerpt=excerpt,
@@ -971,6 +1101,217 @@ def _deduplicate_evidence(records: Sequence[dict[str, Any]]) -> list[dict[str, A
             continue
         seen.add(evidence_id)
         result.append(item)
+    return result
+
+
+def _teaching_checkpoints(
+    events: Sequence[dict[str, Any]],
+    *,
+    selected_rounds: set[int],
+    content_limit: int,
+    evidence_excerpt_limit: int,
+    evidence: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Extract a bounded set of audit-friendly facts from omitted turns.
+
+    These checkpoints are deliberately narrower than a narrative summary.  A
+    checkpoint is emitted only from an explicit learner/teacher utterance or a
+    recorded structured signal.  Unknown resolution/completion states remain
+    unknown instead of being inferred by a language model.
+    """
+
+    omitted = [
+        event
+        for event in events
+        if _safe_round(event.get("round"), 0) not in selected_rounds
+    ]
+    if not omitted:
+        return []
+
+    def component_keys(event: Mapping[str, Any]) -> list[str]:
+        components = [
+            str(item).strip()
+            for item in event.get("knowledge_components", [])
+            if str(item).strip()
+        ]
+        if components:
+            return list(dict.fromkeys(components))
+        focus = str(event.get("focus_dimension") or "unspecified").strip()
+        return [f"focus:{focus}"]
+
+    unresolved_by_component: dict[str, dict[str, Any]] = {}
+    verified_prerequisite_by_component: dict[str, dict[str, Any]] = {}
+    for event in events:
+        signal = str(event.get("signal") or "not_recorded")
+        for key in component_keys(event):
+            if signal in {"partial", "confused", "misconception"}:
+                unresolved_by_component[key] = event
+            elif signal == "correct":
+                unresolved_by_component.pop(key, None)
+                if event.get("focus_dimension") == "prerequisite":
+                    verified_prerequisite_by_component[key] = event
+
+    candidates: list[tuple[int, int, dict[str, Any]]] = []
+
+    def append_candidate(
+        *,
+        priority: int,
+        kind: str,
+        status: str,
+        event: Mapping[str, Any],
+        text_field: str,
+        include_signal: bool,
+        derivation: str,
+    ) -> None:
+        round_number = _safe_round(event.get("round"), 0)
+        if round_number in selected_rounds:
+            return
+        if text_field == "teacher_message":
+            evidence_id = f"session_history:r{round_number}:teacher_action"
+            ledger_field = "action.teacher_action.message"
+        else:
+            evidence_id = f"session_history:r{round_number}:learner_response"
+            ledger_field = "learner_response"
+        excerpt = _bounded_text(
+            event.get(text_field, ""), min(140, content_limit)
+        )
+        refs = [evidence_id]
+        evidence.append(
+            _evidence_record(
+                evidence_id,
+                source="session_history",
+                field=ledger_field,
+                round_number=round_number,
+                excerpt=_bounded_text(excerpt, evidence_excerpt_limit),
+            )
+        )
+        if include_signal:
+            signal_id = f"session_history:r{round_number}:structured_signal"
+            refs.append(signal_id)
+            evidence.append(
+                _evidence_record(
+                    signal_id,
+                    source=event.get("signal_source") or "not_recorded",
+                    field="structured_signal",
+                    round_number=round_number,
+                    confidence=event.get("signal_confidence"),
+                )
+            )
+        candidates.append(
+            (
+                priority,
+                round_number,
+                {
+                    "checkpoint_version": 1,
+                    "kind": kind,
+                    "status": status,
+                    "round": round_number,
+                    "focus_dimension": event.get("focus_dimension"),
+                    "knowledge_components": deepcopy(
+                        event.get("knowledge_components", [])
+                    ),
+                    "signal": event.get("signal") if include_signal else None,
+                    "excerpt": excerpt,
+                    "evidence_refs": refs,
+                    "derivation": derivation,
+                },
+            )
+        )
+
+    unresolved_events = sorted(
+        {
+            _safe_round(event.get("round"), 0): event
+            for event in unresolved_by_component.values()
+            if _safe_round(event.get("round"), 0) not in selected_rounds
+        }.values(),
+        key=lambda event: _safe_round(event.get("round"), 0),
+        reverse=True,
+    )[:2]
+    for event in unresolved_events:
+        append_candidate(
+            priority=0,
+            kind="unresolved_learning_signal",
+            status="not_cleared_by_later_correct_signal",
+            event=event,
+            text_field="learner_response",
+            include_signal=True,
+            derivation="structured_signal_and_later_same_component_scan",
+        )
+
+    explicit_kinds = (
+        (
+            1,
+            "explicit_learner_question",
+            "resolution_not_established",
+            "learner_response",
+            _EXPLICIT_LEARNER_QUESTION_RE,
+            "explicit_question_pattern",
+        ),
+        (
+            2,
+            "explicit_learner_preference_or_constraint",
+            "candidate_until_confirmed",
+            "learner_response",
+            _EXPLICIT_LEARNER_REQUEST_RE,
+            "explicit_request_or_constraint_pattern",
+        ),
+        (
+            4,
+            "teacher_next_step_statement",
+            "completion_not_established",
+            "teacher_message",
+            _TEACHER_NEXT_STEP_RE,
+            "explicit_teacher_next_step_pattern",
+        ),
+    )
+    for priority, kind, status, text_field, pattern, derivation in explicit_kinds:
+        latest = next(
+            (
+                event
+                for event in reversed(omitted)
+                if pattern.search(str(event.get(text_field, "")))
+            ),
+            None,
+        )
+        if latest is not None:
+            append_candidate(
+                priority=priority,
+                kind=kind,
+                status=status,
+                event=latest,
+                text_field=text_field,
+                include_signal=False,
+                derivation=derivation,
+            )
+
+    verified_events = sorted(
+        {
+            _safe_round(event.get("round"), 0): event
+            for event in verified_prerequisite_by_component.values()
+            if _safe_round(event.get("round"), 0) not in selected_rounds
+        }.values(),
+        key=lambda event: _safe_round(event.get("round"), 0),
+        reverse=True,
+    )[:1]
+    for event in verified_events:
+        append_candidate(
+            priority=3,
+            kind="verified_prerequisite",
+            status="verified_by_recorded_correct_signal",
+            event=event,
+            text_field="learner_response",
+            include_signal=True,
+            derivation="recorded_correct_signal_on_prerequisite_focus",
+        )
+
+    selected = sorted(candidates, key=lambda item: (item[0], -item[1]))[:6]
+    selected.sort(key=lambda item: (item[1], item[0]))
+    result: list[dict[str, Any]] = []
+    for index, (_priority, round_number, checkpoint) in enumerate(selected, 1):
+        checkpoint["checkpoint_id"] = (
+            f"omitted:r{round_number}:{checkpoint['kind']}:{index}"
+        )
+        result.append(checkpoint)
     return result
 
 
@@ -1121,6 +1462,14 @@ def _layered_context_candidate(
             ]
         )
 
+    teaching_checkpoints = _teaching_checkpoints(
+        events,
+        selected_rounds=selected_rounds,
+        content_limit=content_limit,
+        evidence_excerpt_limit=evidence_excerpt_limit,
+        evidence=evidence,
+    )
+
     profile = session.get("student_profile", {})
     if not isinstance(profile, Mapping):
         profile = {}
@@ -1192,6 +1541,7 @@ def _layered_context_candidate(
         "semantic_summary": {
             **deepcopy(relevant.get("earlier_summary", {})),
             "focus_checkpoints": focus_checkpoints,
+            "teaching_checkpoints": teaching_checkpoints,
             "compression_method": (
                 "deterministic_aggregate_and_extractive_checkpoints_"
                 "no_model_generation"
@@ -1207,12 +1557,19 @@ def _layered_context_candidate(
             "selected_rounds": [item.get("round") for item in recent_turns],
             "fixed_context_always_included": True,
             "current_plan_always_included": True,
-            "semantic_summary_covers_omitted_turns": True,
+            "omitted_turns_accounted_for_statistically": True,
+            "teaching_checkpoints_are_selective_extracts": True,
             "candidate_memory_policy": "latest_validated_candidates_only",
         },
         "privacy": {
             **deepcopy(relevant.get("privacy", {})),
-            "raw_identity_fields_sent": False,
+            "known_pattern_identifiers_redacted": bool(
+                relevant.get("privacy", {}).get(
+                    "known_pattern_identifiers_redacted"
+                )
+            ),
+            "raw_identity_fields_sent": "not_established",
+            "residual_identity_risk": True,
             "original_values_retained_in_context": False,
         },
         "budget": {
@@ -1235,6 +1592,7 @@ def _layered_context_candidate(
             "fallback_observations_are_labeled_by_actual_source": True,
             "context_is_evidence_not_learner_ground_truth": True,
             "model_may_not_mutate_fixed_context": True,
+            "omitted_turn_semantics_are_exhaustive": False,
         },
     }
     counts: Counter[str] = Counter()
@@ -1245,6 +1603,9 @@ def _layered_context_candidate(
     combined_counts = Counter(relevant.get("privacy", {}).get("finding_counts", {}))
     combined_counts.update(counts)
     redacted["privacy"]["finding_counts"] = dict(sorted(combined_counts.items()))
+    redacted["privacy"]["known_pattern_identifiers_redacted"] = bool(
+        combined_counts
+    )
     _set_serialized_size(redacted)
     return redacted
 
@@ -1293,6 +1654,9 @@ def build_minimal_layered_context(
     primary = action.get("primary_skill", {})
     if not isinstance(primary, Mapping):
         primary = {}
+    teacher_action = action.get("teacher_action", {})
+    if not isinstance(teacher_action, Mapping):
+        teacher_action = {}
     mastery = state.get("knowledge_mastery", {})
     if not isinstance(mastery, Mapping):
         mastery = {}
@@ -1320,7 +1684,7 @@ def build_minimal_layered_context(
     if not isinstance(adaptive_summary, Mapping):
         adaptive_summary = {}
 
-    for response_limit in (512, 256, 128, 64):
+    for response_limit in (512, 256, 128, 64, 48):
         evidence: list[dict[str, Any]] = []
         current_response_id: str | None = None
         current_response = _bounded_text(learner_response or "", response_limit)
@@ -1402,6 +1766,7 @@ def build_minimal_layered_context(
         if not isinstance(next_focus, Mapping):
             next_focus = {}
         provided_history = profile.get("conversation_history", [])
+        background_history = profile.get("background_history", [])
         known = profile.get("known_misconceptions", [])
         initial_mastery = profile.get("initial_mastery", {})
         preferences = profile.get("preferences", [])
@@ -1409,14 +1774,23 @@ def build_minimal_layered_context(
         components = goal.get("knowledge_components", [])
         if not isinstance(components, list):
             components = []
-        safe_components = [
+        safe_goal_components = [
             _bounded_text(item, 24)
             for item in components[:4]
             if _bounded_text(item, 24)
         ]
-        current_components = safe_components or [
-            _bounded_text(goal.get("concept", ""), 32)
+        current_focus, raw_current_components = _current_focus_and_kcs(session)
+        current_components = [
+            _bounded_text(item, 24)
+            for item in raw_current_components[:4]
+            if _bounded_text(item, 24)
         ]
+        if not current_components:
+            current_components = [
+                item
+                for item in [_bounded_text(goal.get("concept", ""), 32)]
+                if item
+            ]
 
         context: dict[str, Any] = {
             "schema": LAYERED_CONTEXT_SCHEMA,
@@ -1431,9 +1805,9 @@ def build_minimal_layered_context(
             "fixed_context": {
                 "teaching_goal": {
                     "concept": _bounded_text(goal.get("concept", ""), 96),
-                        "objective": _bounded_text(goal.get("objective", ""), 64),
-                        "knowledge_components": safe_components,
-                        "total_knowledge_component_count": len(components),
+                    "objective": _bounded_text(goal.get("objective", ""), 64),
+                    "knowledge_components": safe_goal_components,
+                    "total_knowledge_component_count": len(components),
                     "success_thresholds": dict(thresholds),
                     "max_rounds": goal.get("max_rounds"),
                     "materials": {},
@@ -1444,16 +1818,16 @@ def build_minimal_layered_context(
                     "learner_level": _bounded_text(
                         profile.get("learner_level", ""), 64
                     ),
-                        "preferences": [],
-                        "total_preference_count": (
-                            len(preferences) if isinstance(preferences, list) else 0
-                        ),
-                        "accessibility_needs": [],
-                        "total_accessibility_need_count": (
-                            len(accessibility)
-                            if isinstance(accessibility, list)
-                            else 0
-                        ),
+                    "preferences": [],
+                    "total_preference_count": (
+                        len(preferences) if isinstance(preferences, list) else 0
+                    ),
+                    "accessibility_needs": [],
+                    "total_accessibility_need_count": (
+                        len(accessibility)
+                        if isinstance(accessibility, list)
+                        else 0
+                    ),
                     "initial_mastery": (
                         dict(initial_mastery)
                         if isinstance(initial_mastery, Mapping)
@@ -1468,10 +1842,15 @@ def build_minimal_layered_context(
                             len(provided_history)
                             if isinstance(provided_history, list)
                             else 0
-                        ),
-                        "retained_turn_count": 0,
-                        "turns": [],
-                    },
+                        )
+                        + (
+                            len(background_history)
+                            if isinstance(background_history, list)
+                            else 0
+                            ),
+                            "retained_turn_count": 0,
+                            "turns": [],
+                        },
                     "source": "teacher_input_normalized_locally",
                     "mutable_by_model": False,
                 },
@@ -1479,7 +1858,7 @@ def build_minimal_layered_context(
             "current_plan": {
                 "plan_schema": plan.get("schema"),
                 "plan_status": plan.get("status"),
-                    "progress": {},
+                "progress": {},
                 "active_step": plan.get("active_step"),
                 "step_statuses": [],
                 "current_action": {
@@ -1487,14 +1866,33 @@ def build_minimal_layered_context(
                     "primary_skill_id": primary.get("skill_id"),
                     "focus_dimension": primary.get("focus_dimension"),
                     "knowledge_components": current_components,
-                        "teacher_message": "",
-                        "expected_signal": "",
+                    "target_misconception_tags": [
+                        _bounded_text(item, 120)
+                        for item in action.get(
+                            "target_misconception_tags", []
+                        )[:4]
+                        if _bounded_text(item, 120)
+                    ]
+                    if isinstance(
+                        action.get("target_misconception_tags"), list
+                    )
+                    else [],
+                    "teacher_message": _bounded_text(
+                        teacher_action.get("message", ""), 160
+                    ),
+                    "expected_signal": _bounded_text(
+                        teacher_action.get("expected_signal", ""), 160
+                    ),
+                    "question_id": teacher_action.get("question_id"),
+                    "question_contract": _bounded_question_contract(
+                        teacher_action.get("question_contract", {}),
+                        content_limit=24,
+                    ),
                 },
                 "source": "deterministic_session_plan_and_last_validated_action",
             },
             "working_memory": {
-                "current_focus": next_focus.get("dimension")
-                or primary.get("focus_dimension"),
+                "current_focus": current_focus,
                 "current_knowledge_components": current_components,
                 "current_learner_response": current_response,
                 "current_response_evidence_id": current_response_id,
@@ -1503,6 +1901,7 @@ def build_minimal_layered_context(
             "semantic_summary": {
                 "turn_count": history_count,
                 "focus_checkpoints": [],
+                "teaching_checkpoints": [],
                 "compression_method": (
                     "deterministic_aggregate_and_extractive_checkpoints_"
                     "no_model_generation"
@@ -1559,14 +1958,16 @@ def build_minimal_layered_context(
                 "selected_rounds": [],
                 "fixed_context_always_included": True,
                 "current_plan_always_included": True,
-                "semantic_summary_covers_omitted_turns": True,
+                "omitted_turns_accounted_for_statistically": True,
+                "teaching_checkpoints_are_selective_extracts": True,
                 "candidate_memory_policy": "latest_validated_candidates_only",
             },
             "privacy": {
                 "remote_text_redacted": False,
                 "finding_counts": {},
-                "original_values_retained": False,
-                "raw_identity_fields_sent": False,
+                "known_pattern_identifiers_redacted": False,
+                "raw_identity_fields_sent": "not_established",
+                "residual_identity_risk": True,
                 "original_values_retained_in_context": False,
             },
             "budget": {
@@ -1585,12 +1986,14 @@ def build_minimal_layered_context(
                 "fallback_observations_are_labeled_by_actual_source": True,
                 "context_is_evidence_not_learner_ground_truth": True,
                 "model_may_not_mutate_fixed_context": True,
+                "omitted_turn_semantics_are_exhaustive": False,
             },
         }
         counts: Counter[str] = Counter()
         redacted = _redact_structure(context, counts)
         redacted["privacy"]["remote_text_redacted"] = bool(counts)
         redacted["privacy"]["finding_counts"] = dict(sorted(counts.items()))
+        redacted["privacy"]["known_pattern_identifiers_redacted"] = bool(counts)
         _set_serialized_size(redacted)
         if _serialized_length(redacted) <= max_chars:
             validate_layered_context(redacted)
@@ -1751,6 +2154,46 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
         or len(semantic["focus_checkpoints"]) > 4
     ):
         raise ValueError("layered context semantic summary is invalid")
+    teaching_checkpoints = semantic.get("teaching_checkpoints")
+    allowed_checkpoint_kinds = {
+        "unresolved_learning_signal",
+        "explicit_learner_question",
+        "explicit_learner_preference_or_constraint",
+        "verified_prerequisite",
+        "teacher_next_step_statement",
+    }
+    if (
+        not isinstance(teaching_checkpoints, list)
+        or len(teaching_checkpoints) > 6
+        or any(
+            not isinstance(item, Mapping)
+            or item.get("checkpoint_version") != 1
+            or not isinstance(item.get("checkpoint_id"), str)
+            or not item.get("checkpoint_id")
+            or item.get("kind") not in allowed_checkpoint_kinds
+            or not isinstance(item.get("status"), str)
+            or not item.get("status")
+            or isinstance(item.get("round"), bool)
+            or not isinstance(item.get("round"), int)
+            or item.get("round", -1) < 0
+            or not isinstance(item.get("knowledge_components"), list)
+            or not isinstance(item.get("excerpt"), str)
+            or not isinstance(item.get("evidence_refs"), list)
+            or not item.get("evidence_refs")
+            or not isinstance(item.get("derivation"), str)
+            or not item.get("derivation")
+            for item in teaching_checkpoints
+        )
+        or len(
+            {
+                str(item.get("checkpoint_id"))
+                for item in teaching_checkpoints
+                if isinstance(item, Mapping)
+            }
+        )
+        != len(teaching_checkpoints)
+    ):
+        raise ValueError("layered context teaching checkpoints are invalid")
     knowledge = context.get("knowledge_state")
     if (
         not isinstance(knowledge, Mapping)
@@ -1782,7 +2225,9 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
         not isinstance(retrieval, Mapping)
         or retrieval.get("fixed_context_always_included") is not True
         or retrieval.get("current_plan_always_included") is not True
-        or retrieval.get("semantic_summary_covers_omitted_turns") is not True
+        or retrieval.get("omitted_turns_accounted_for_statistically") is not True
+        or retrieval.get("teaching_checkpoints_are_selective_extracts") is not True
+        or "semantic_summary_covers_omitted_turns" in retrieval
         or retrieval.get("candidate_memory_policy")
         != "latest_validated_candidates_only"
     ):
@@ -1790,7 +2235,12 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
     privacy = context.get("privacy")
     if (
         not isinstance(privacy, Mapping)
-        or privacy.get("raw_identity_fields_sent") is not False
+        or not isinstance(privacy.get("remote_text_redacted"), bool)
+        or not isinstance(
+            privacy.get("known_pattern_identifiers_redacted"), bool
+        )
+        or privacy.get("raw_identity_fields_sent") != "not_established"
+        or privacy.get("residual_identity_risk") is not True
         or privacy.get("original_values_retained_in_context") is not False
     ):
         raise ValueError("layered context privacy metadata is invalid")
@@ -1830,6 +2280,7 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
             "fallback_observations_are_labeled_by_actual_source": True,
             "context_is_evidence_not_learner_ground_truth": True,
             "model_may_not_mutate_fixed_context": True,
+            "omitted_turn_semantics_are_exhaustive": False,
         }.items()
     ):
         raise ValueError("layered context claim boundary is invalid")

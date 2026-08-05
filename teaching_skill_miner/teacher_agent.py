@@ -339,6 +339,14 @@ def _normalized_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
                 "focus_dimension": focus,
             }
         )
+    background_history_raw = profile.get("background_history", [])
+    if not isinstance(background_history_raw, list):
+        raise TeacherAgentError("student_profile.background_history must be a list")
+    background_history = [
+        str(item).strip()[:500]
+        for item in background_history_raw[:12]
+        if str(item).strip()
+    ]
     return {
         "profile_ref": str(profile.get("profile_ref", "anonymous_student_profile"))[:80],
         "learner_level": learner_level,
@@ -352,6 +360,7 @@ def _normalized_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
         "initial_mastery": mastery,
         "known_misconceptions": misconceptions,
         "conversation_history": safe_history,
+        "background_history": background_history,
         "contains_direct_identity": bool(profile.get("contains_direct_identity", False)),
         "identity_assessment": (
             "user_declared_present"
@@ -675,7 +684,17 @@ def _validate_adaptive_student_profile(
         )
     if len(observations) > ADAPTIVE_OBSERVATION_LIMIT:
         raise TeacherAgentError("adaptive_observations exceeds its retention limit")
-    allowed_review_reasons = {"low_confidence", "model_requested_review"}
+    allowed_review_reasons = {
+        "low_confidence",
+        "model_requested_review",
+        "deterministic_contract_normalization",
+        "no_grounded_excerpt",
+    }
+    allowed_assessment_sources = {
+        "deepseek_v4_flash",
+        "deepseek_v4_flash_constrained_by_deterministic_contract",
+        "active_question_contract_exact_match",
+    }
     for index, observation in enumerate(observations):
         if not isinstance(observation, Mapping) or set(observation) != {
             "round",
@@ -739,6 +758,10 @@ def _validate_adaptive_student_profile(
         if not isinstance(evidence, Mapping) or set(evidence) != {
             "excerpt",
             "confidence",
+            "assessment_source",
+            "model_raw_signal",
+            "final_signal",
+            "normalization_reasons",
             "grounding",
             "needs_human_review",
             "review_reasons",
@@ -755,20 +778,43 @@ def _validate_adaptive_student_profile(
             evidence["confidence"],
             field=f"adaptive_observations[{index}].evidence.confidence",
         )
+        normalization_reasons = evidence["normalization_reasons"]
+        if (
+            evidence["assessment_source"] not in allowed_assessment_sources
+            or evidence["model_raw_signal"] not in SIGNALS
+            or evidence["final_signal"] not in SIGNALS
+            or not isinstance(normalization_reasons, list)
+            or len(normalization_reasons) > 12
+            or len(normalization_reasons) != len(set(normalization_reasons))
+            or any(
+                not isinstance(reason, str) or not reason or len(reason) > 120
+                for reason in normalization_reasons
+            )
+        ):
+            raise TeacherAgentError(
+                f"adaptive_observations[{index}].evidence assessment trace is invalid"
+            )
         if evidence["grounding"] not in {
             "verified_current_response_substring",
             "empty_response_no_excerpt",
+            "no_grounded_excerpt",
         } or evidence["privacy_status"] != "redacted_before_candidate_storage":
             raise TeacherAgentError(
                 f"adaptive_observations[{index}].evidence provenance is invalid"
             )
         reasons = evidence["review_reasons"]
+        grounding = evidence["grounding"]
+        grounding_review_consistent = isinstance(reasons, list) and (
+            (grounding == "no_grounded_excerpt")
+            == ("no_grounded_excerpt" in reasons)
+        )
         if (
             not isinstance(evidence["needs_human_review"], bool)
             or not isinstance(reasons, list)
             or len(reasons) != len(set(reasons))
             or not set(reasons) <= allowed_review_reasons
             or bool(reasons) != evidence["needs_human_review"]
+            or not grounding_review_consistent
         ):
             raise TeacherAgentError(
                 f"adaptive_observations[{index}].evidence review state is invalid"
@@ -1004,6 +1050,7 @@ def _update_misconceptions(
     response: str,
     misconception_tag: str | None,
     confidence: float,
+    resolve_all_on_correction: bool,
 ) -> None:
     state = session["student_state"]
     action = session["current_action"]
@@ -1029,7 +1076,11 @@ def _update_misconceptions(
             existing["status"] = "active"
             existing["confidence"] = max(float(existing["confidence"]), confidence)
             existing["last_observed_round"] = int(session["round"]) + 1
-    elif signal == "correct" and action["primary_skill"]["role"] == "correction":
+    elif (
+        resolve_all_on_correction
+        and signal == "correct"
+        and action["primary_skill"]["role"] == "correction"
+    ):
         for item in state["misconceptions"]:
             if item["status"] == "active":
                 item["status"] = "resolved"
@@ -1044,6 +1095,7 @@ def _apply_student_signal(
     signal: str,
     misconception_tag: str | None,
     confidence: float,
+    resolve_all_on_correction: bool,
 ) -> None:
     action = session["current_action"]
     focus = action["primary_skill"]["focus_dimension"]
@@ -1071,6 +1123,7 @@ def _apply_student_signal(
         response=response,
         misconception_tag=misconception_tag,
         confidence=confidence,
+        resolve_all_on_correction=resolve_all_on_correction,
     )
     if signal in {"correct", "partial"} and confidence >= 0.5:
         session["control"]["consecutive_no_progress"] = 0
@@ -1101,6 +1154,8 @@ def advance_teacher_agent_session(
     signal: str,
     misconception_tag: str | None = None,
     signal_confidence: float = 1.0,
+    resolve_all_on_correction: bool = True,
+    resolved_misconception_tags: list[str] | None = None,
 ) -> dict[str, Any]:
     """Consume one response and emit exactly one subsequent action or termination."""
 
@@ -1120,7 +1175,42 @@ def advance_teacher_agent_session(
         signal=signal,
         misconception_tag=misconception_tag,
         confidence=confidence,
+        resolve_all_on_correction=resolve_all_on_correction,
     )
+    resolved_tags = resolved_misconception_tags or []
+    if (
+        not isinstance(resolved_tags, list)
+        or len(resolved_tags) > 4
+        or any(
+            not isinstance(tag, str) or not tag or len(tag) > 120
+            for tag in resolved_tags
+        )
+    ):
+        raise TeacherAgentError("resolved_misconception_tags is invalid")
+    resolved_tag_set = set(resolved_tags)
+    if resolved_tag_set:
+        primary = action_before.get("primary_skill", {})
+        targets = action_before.get("target_misconception_tags", [])
+        active_tags = {
+            str(item.get("tag"))
+            for item in current["student_state"]["misconceptions"]
+            if isinstance(item, Mapping) and item.get("status") == "active"
+        }
+        if (
+            signal != "correct"
+            or not isinstance(primary, Mapping)
+            or primary.get("role") != "correction"
+            or not isinstance(targets, list)
+            or not resolved_tag_set <= set(str(item) for item in targets)
+            or not resolved_tag_set <= active_tags
+        ):
+            raise TeacherAgentError(
+                "resolved_misconception_tags requires a correct, targeted correction turn"
+            )
+    for item in current["student_state"]["misconceptions"]:
+        if item.get("tag") in resolved_tag_set and item.get("status") == "active":
+            item["status"] = "resolved"
+            item["resolved_round"] = int(current["round"]) + 1
     current["round"] += 1
     event = {
         "round": current["round"],

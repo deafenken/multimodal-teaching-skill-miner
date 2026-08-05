@@ -207,6 +207,33 @@ def test_correct_same_kc_clears_an_older_cross_focus_unresolved_event() -> None:
     assert context["knowledge_state"]["unresolved_issues"] == []
 
 
+def test_correct_different_kc_does_not_clear_same_focus_unresolved_event() -> None:
+    session = _session()
+    session["history"] = [
+        _event(
+            1,
+            focus="conceptual",
+            kc="状态定义",
+            signal="misconception",
+            learner_response="状态就是当前输入值。",
+        ),
+        _event(
+            2,
+            focus="conceptual",
+            kc="状态转移",
+            signal="correct",
+            learner_response="转移同时考虑两个前驱状态。",
+        ),
+    ]
+
+    context = build_layered_context(session, "继续", max_chars=14_000)
+    unresolved = context["knowledge_state"]["unresolved_issues"]
+
+    assert len(unresolved) == 1
+    assert unresolved[0]["knowledge_components"] == ["状态定义"]
+    assert unresolved[0]["observed_signal"] == "misconception"
+
+
 def test_history_context_redacts_outbound_text_without_leaking_findings() -> None:
     session = _session()
     posix_path = "/" + "Volumes/Drive/private.txt"
@@ -234,6 +261,9 @@ def test_history_context_redacts_outbound_text_without_leaking_findings() -> Non
         "url": 1,
     }
     assert context["privacy"]["original_values_retained"] is False
+    assert context["privacy"]["known_pattern_identifiers_redacted"] is True
+    assert context["privacy"]["raw_identity_fields_sent"] == "not_established"
+    assert context["privacy"]["residual_identity_risk"] is True
 
 
 def test_history_summary_redacts_sensitive_metadata_from_omitted_turns() -> None:
@@ -253,6 +283,27 @@ def test_history_summary_redacts_sensitive_metadata_from_omitted_turns() -> None
         "skill_procedural": 2,
         "skill_transfer": 2,
     }
+
+
+def test_layered_context_redacts_pii_in_mapping_keys_without_collision_loss() -> None:
+    session = _session()
+    session["goal"]["materials"] = {
+        "learner@example.com": "first",
+        "teacher@example.com": "second",
+        "practice": "safe material",
+    }
+
+    context = build_layered_context(session, "继续", max_chars=14_000)
+    payload = json.dumps(context, ensure_ascii=False)
+    materials = context["fixed_context"]["teaching_goal"]["materials"]
+
+    assert "learner@example.com" not in payload
+    assert "teacher@example.com" not in payload
+    assert materials["[REDACTED_EMAIL]"] == "first"
+    assert materials["[REDACTED_EMAIL]__2"] == "second"
+    assert materials["practice"] == "safe material"
+    assert context["privacy"]["remote_text_redacted"] is True
+    assert context["privacy"]["finding_counts"]["email"] == 2
 
 
 def test_history_context_never_exceeds_character_budget() -> None:
@@ -441,6 +492,27 @@ def test_layered_context_uses_real_goal_anchor_and_separates_memory_layers() -> 
     assert json.dumps(context, ensure_ascii=False).count("UNIQUE_CURRENT_ANSWER_7d35") == 1
 
 
+def test_layered_context_reports_residual_identity_risk_honestly() -> None:
+    session = _production_session_without_injected_kcs()
+    session["student_profile"]["background_history"] = [
+        "联系 learner@example.edu 获取旧作业。"
+    ]
+    context = build_layered_context(session, "我继续回答当前问题。")
+    payload = json.dumps(context, ensure_ascii=False)
+
+    validate_layered_context(context)
+    assert "learner@example.edu" not in payload
+    assert context["privacy"]["known_pattern_identifiers_redacted"] is True
+    assert context["privacy"]["raw_identity_fields_sent"] == "not_established"
+    assert context["privacy"]["residual_identity_risk"] is True
+
+    dishonest = deepcopy(context)
+    dishonest["privacy"]["raw_identity_fields_sent"] = False
+    dishonest["budget"]["serialized_chars"] = _json_length(dishonest)
+    with pytest.raises(ValueError, match="privacy metadata"):
+        validate_layered_context(dishonest)
+
+
 def test_layered_context_retrieval_and_budget_are_deterministic() -> None:
     session = _production_session_without_injected_kcs()
     for index in range(2, 11):
@@ -459,12 +531,154 @@ def test_layered_context_retrieval_and_budget_are_deterministic() -> None:
     assert first["budget"]["serialized_chars"] <= 8_000
     assert first["budget"]["truncated"] is True
     assert first["retrieval"]["fixed_context_always_included"] is True
-    assert first["retrieval"]["semantic_summary_covers_omitted_turns"] is True
+    assert first["retrieval"]["omitted_turns_accounted_for_statistically"] is True
+    assert first["retrieval"]["teaching_checkpoints_are_selective_extracts"] is True
+    assert "semantic_summary_covers_omitted_turns" not in first["retrieval"]
+    assert first["claim_boundary"]["omitted_turn_semantics_are_exhaustive"] is False
     assert first["semantic_summary"]["turn_count"] >= 1
     assert first["semantic_summary"]["focus_checkpoints"]
     assert all(
         item["evidence_refs"]
         for item in first["semantic_summary"]["focus_checkpoints"]
+    )
+
+
+def test_layered_context_keeps_selective_evidence_linked_teaching_checkpoints() -> None:
+    session = _session()
+    prerequisite = _event(
+        1,
+        focus="prerequisite",
+        kc="递归",
+        signal="correct",
+        learner_response="递归会把原问题化成更小的同类问题。",
+    )
+    preference = _event(
+        2,
+        focus="conceptual",
+        kc="状态定义",
+        signal="partial",
+        learner_response="请先用一个图解释，不要直接给最终答案。",
+    )
+    question = _event(
+        3,
+        focus="conceptual",
+        kc="状态转移",
+        signal="confused",
+        learner_response="为什么这个状态必须同时查看两个前驱？",
+    )
+    unresolved = _event(
+        4,
+        focus="procedural",
+        kc="边界条件",
+        signal="misconception",
+        learner_response="边界条件可以最后再补。",
+    )
+    commitment = _event(
+        5,
+        focus="conceptual",
+        kc="最优子结构",
+        signal="correct",
+        learner_response="我能说明局部最优与整体最优的关系。",
+    )
+    commitment["action"]["teacher_action"]["message"] = (
+        "接下来我会让你用一个反例检查这个条件。"
+    )
+    latest = _event(
+        6,
+        focus="transfer",
+        kc="新情境",
+        signal="correct",
+        learner_response="我可以在新题里先找状态。",
+    )
+    session["history"] = [
+        prerequisite,
+        preference,
+        question,
+        unresolved,
+        commitment,
+        latest,
+    ]
+    session["student_state"]["next_focus"] = {
+        "dimension": "transfer",
+        "knowledge_component": "新情境",
+    }
+    session["current_action"]["primary_skill"] = {
+        "focus_dimension": "transfer",
+        "knowledge_components": ["新情境"],
+    }
+
+    context = build_layered_context(
+        session,
+        "继续做当前迁移题。",
+        max_chars=14_000,
+        max_recent_turns=1,
+    )
+    validate_layered_context(context)
+
+    checkpoints = context["semantic_summary"]["teaching_checkpoints"]
+    kinds = [item["kind"] for item in checkpoints]
+    assert kinds.count("unresolved_learning_signal") == 2
+    assert "explicit_learner_question" in kinds
+    assert "explicit_learner_preference_or_constraint" in kinds
+    assert "verified_prerequisite" in kinds
+    assert "teacher_next_step_statement" in kinds
+    ledger_ids = {
+        item["evidence_id"] for item in context["evidence_ledger"]
+    }
+    assert all(
+        set(item["evidence_refs"]) <= ledger_ids for item in checkpoints
+    )
+    assert next(
+        item for item in checkpoints if item["kind"] == "explicit_learner_question"
+    )["status"] == "resolution_not_established"
+    assert next(
+        item for item in checkpoints if item["kind"] == "teacher_next_step_statement"
+    )["status"] == "completion_not_established"
+
+
+def test_later_correct_signal_clears_omitted_unresolved_checkpoint() -> None:
+    session = _session()
+    session["history"] = [
+        _event(
+            1,
+            focus="conceptual",
+            kc="状态定义",
+            signal="misconception",
+            learner_response="状态就是当前输入。",
+        ),
+        _event(
+            2,
+            focus="conceptual",
+            kc="状态定义",
+            signal="correct",
+            learner_response="状态是子问题的最小充分描述。",
+        ),
+        _event(
+            3,
+            focus="transfer",
+            kc="新情境",
+            signal="correct",
+        ),
+    ]
+    session["student_state"]["next_focus"] = {
+        "dimension": "transfer",
+        "knowledge_component": "新情境",
+    }
+    session["current_action"]["primary_skill"] = {
+        "focus_dimension": "transfer",
+        "knowledge_components": ["新情境"],
+    }
+
+    context = build_layered_context(
+        session,
+        "继续",
+        max_chars=14_000,
+        max_recent_turns=1,
+    )
+
+    assert all(
+        item["kind"] != "unresolved_learning_signal"
+        for item in context["semantic_summary"]["teaching_checkpoints"]
     )
 
 
@@ -486,6 +700,20 @@ def test_layered_context_rejects_dangling_evidence_and_false_claims() -> None:
     fabricated["budget"]["serialized_chars"] = _json_length(fabricated)
     with pytest.raises(ValueError, match="claim boundary"):
         validate_layered_context(fabricated)
+
+    exhaustive = deepcopy(context)
+    exhaustive["claim_boundary"]["omitted_turn_semantics_are_exhaustive"] = True
+    exhaustive["budget"]["serialized_chars"] = _json_length(exhaustive)
+    with pytest.raises(ValueError, match="claim boundary"):
+        validate_layered_context(exhaustive)
+
+    legacy_overclaim = deepcopy(context)
+    legacy_overclaim["retrieval"]["semantic_summary_covers_omitted_turns"] = True
+    legacy_overclaim["budget"]["serialized_chars"] = _json_length(
+        legacy_overclaim
+    )
+    with pytest.raises(ValueError, match="retrieval metadata"):
+        validate_layered_context(legacy_overclaim)
 
 
 def test_minimum_budget_retains_current_answer_for_large_legal_session_shape() -> None:
@@ -584,9 +812,45 @@ def test_minimum_budget_retains_current_answer_for_large_legal_session_shape() -
     assert context["retrieval"]["priority"] == (
         "minimum_safety_envelope_after_budget_degradation"
     )
+    assert context["semantic_summary"]["teaching_checkpoints"] == []
+    assert context["retrieval"]["omitted_turns_accounted_for_statistically"] is True
+    assert context["claim_boundary"]["omitted_turn_semantics_are_exhaustive"] is False
+    assert context["working_memory"]["current_knowledge_components"] == [
+        "状态转移"
+    ]
     assert "UNIQUE_MINIMUM_CONTEXT_43c1" in (
         context["working_memory"]["current_learner_response"]
     )
     assert json.dumps(context, ensure_ascii=False).count(
         "UNIQUE_MINIMUM_CONTEXT_43c1"
     ) == 1
+
+
+def test_maximum_legal_question_contract_is_bounded_at_minimum_budget() -> None:
+    session = _session()
+    session["current_action"]["teacher_action"] = {
+        "message": "请回答当前问题。",
+        "expected_signal": "学生直接回答本问。",
+        "question_id": "question-large-contract",
+        "question_contract": {
+            "answer_type": "comparison",
+            "target_concepts": ["目标" * 80 for _ in range(8)],
+            "accepted_aliases": ["别名" * 80 for _ in range(12)],
+            "success_criteria": ["判据" * 120 for _ in range(8)],
+            "grading_scope": "current_question_only",
+        },
+    }
+
+    context = build_layered_context(
+        session,
+        "这是当前回答。",
+        max_chars=6_000,
+        max_recent_turns=12,
+    )
+
+    validate_layered_context(context)
+    contract = context["current_plan"]["current_action"]["question_contract"]
+    assert context["budget"]["serialized_chars"] <= 6_000
+    assert len(contract["target_concepts"]) <= 4
+    assert len(contract["accepted_aliases"]) <= 8
+    assert len(contract["success_criteria"]) <= 4

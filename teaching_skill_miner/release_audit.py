@@ -69,6 +69,17 @@ FORBIDDEN_SUFFIXES = {
     ".ssa",
     ".ttml",
 }
+REVIEWED_PUBLIC_BINARY_RESOURCES = {
+    "teaching_skill_miner/web/assets/student-xiaoyu.png": (
+        "4ad1c2066bce2c84933acd8e81e8e9f9a1b3bf851b23f9cf54ebfff11af5076d"
+    ),
+    "teaching_skill_miner/web/assets/student-zimo.png": (
+        "65b281444a28b698ab6940850b7bbba81f41f40f2b7c02aaf6d621abc6792691"
+    ),
+    "teaching_skill_miner/web/assets/student-zhixing.png": (
+        "2117557b0eced2c41bf11203594c338869dbe5860a41e5f009bd6ecaa58d1f9a"
+    ),
+}
 FORBIDDEN_PARTS = {
     "data/real",
     "archive_cache",
@@ -568,6 +579,10 @@ def _inspect_member(name: str, payload: bytes) -> list[dict[str, Any]]:
     normalized = _normalized(name)
     lowered = normalized.lower()
     suffix = PurePosixPath(lowered).suffix
+    reviewed_digest = REVIEWED_PUBLIC_BINARY_RESOURCES.get(normalized)
+    reviewed_binary = bool(
+        reviewed_digest and hashlib.sha256(payload).hexdigest() == reviewed_digest
+    )
     findings: list[dict[str, Any]] = []
     for reason in _unsafe_member_path_reasons(name):
         findings.append(
@@ -577,7 +592,7 @@ def _inspect_member(name: str, payload: bytes) -> list[dict[str, Any]]:
                 "detail": reason,
             }
         )
-    if suffix in FORBIDDEN_SUFFIXES:
+    if suffix in FORBIDDEN_SUFFIXES and not reviewed_binary:
         findings.append(
             {
                 "path": normalized,
@@ -586,7 +601,7 @@ def _inspect_member(name: str, payload: bytes) -> list[dict[str, Any]]:
             }
         )
     binary_kind = forbidden_binary_payload_kind(payload)
-    if binary_kind:
+    if binary_kind and not reviewed_binary:
         findings.append(
             {
                 "path": normalized,
@@ -594,7 +609,7 @@ def _inspect_member(name: str, payload: bytes) -> list[dict[str, Any]]:
                 "detail": binary_kind,
             }
         )
-    elif decode_text_payload(payload) is None:
+    elif not reviewed_binary and decode_text_payload(payload) is None:
         findings.append(
             {
                 "path": normalized,

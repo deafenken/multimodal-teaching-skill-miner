@@ -26,7 +26,8 @@ from scripts.verify_wheel_allowlist import (
 
 class ReleasePackagingTests(unittest.TestCase):
     def _fixture_repository(self, root: Path) -> None:
-        files = {
+        project = Path(__file__).resolve().parents[1]
+        files: dict[str, str | bytes] = {
             "teaching_skill_miner/__init__.py": '__version__ = "1.2.0"\n',
             "LICENSE": "test-only license\n",
             "schema/example.json": "{}\n",
@@ -35,12 +36,14 @@ class ReleasePackagingTests(unittest.TestCase):
                 "configs/example.json\nschema/example.json\n"
             ),
         }
-        files.update(
-            {
-                name: "<!doctype html><title>fixture</title>\n"
-                for name in PACKAGE_RESOURCE_FILES
-            }
-        )
+        files.update({
+            name: (
+                (project / name).read_bytes()
+                if Path(name).suffix == ".png"
+                else "<!doctype html><title>fixture</title>\n"
+            )
+            for name in PACKAGE_RESOURCE_FILES
+        })
         files.update({f"data/{name}": "{}\n" for name in PUBLIC_DATA_FILES})
         files.update(
             {
@@ -52,7 +55,10 @@ class ReleasePackagingTests(unittest.TestCase):
         for relative, payload in files.items():
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(payload, encoding="utf-8")
+            if isinstance(payload, bytes):
+                path.write_bytes(payload)
+            else:
+                path.write_text(payload, encoding="utf-8")
 
     def _fixture_wheel(
         self,
@@ -220,7 +226,10 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn('"private_skill_demo.js"', pyproject)
         for resource in PACKAGE_RESOURCE_FILES:
             self.assertIn(resource, build_script)
-            self.assertIn(f'"{Path(resource).name}"', pyproject)
+            package_resource = Path(resource).relative_to(
+                "teaching_skill_miner/web"
+            )
+            self.assertIn(f'"{package_resource.as_posix()}"', pyproject)
         for filename in PUBLIC_DATA_FILES:
             self.assertIn(f"data/{filename}", pyproject)
             self.assertIn(f"data/{filename}", build_script)

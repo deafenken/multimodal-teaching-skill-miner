@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; worker-src 'none'; manifest-src 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' blob:; base-uri 'none'; object-src 'none'; form-action 'none'; worker-src 'none'; manifest-src 'none'">
+  <link rel="icon" type="image/png" href="assets/student-xiaoyu.png">
   <title>TeachLab · 自适应学习工作台</title>
   <link rel="stylesheet" href="assets/teacher_agent_demo.css">
 </head>
@@ -37,7 +38,7 @@
             <span id="neuralBadge" class="system-badge provisional"><i></i><strong>Skill</strong><span id="neuralState">PROVISIONAL</span></span>
           </summary>
           <div class="runtime-popover">
-            <section><span>模型层</span><strong id="providerHeadline">等待 DeepSeek 状态</strong><p id="providerDetail">语义诊断与教学话语由服务端模型生成；故障时必须明确标记降级。</p></section>
+            <section><span>模型层</span><strong id="providerHeadline">等待 DeepSeek 状态</strong><p id="providerDetail">DeepSeek 负责语义诊断与 Skill 提议；最终话语由服务端 Skill Runtime 按契约生成。</p></section>
             <section><span>Skill 来源</span><strong id="neuralHeadline">neural-v1 provisional gate</strong><p id="neuralDetail">门槛未通过前，不把候选 Skill 称为正式 neural-v1。</p></section>
           </div>
         </details>
@@ -47,7 +48,8 @@
     </header>
 
     <main id="learningView" class="learning-workspace app-view">
-      <aside id="setupPanel" class="setup-panel" data-screen-label="01 Session setup" aria-labelledby="setupTitle">
+      <button id="drawerBackdrop" class="drawer-backdrop" type="button" aria-label="关闭侧栏" hidden></button>
+      <aside id="setupPanel" class="setup-panel" data-screen-label="01 Session setup" aria-labelledby="setupTitle" tabindex="-1">
         <div class="rail-head">
           <div><span>学习任务</span><h1 id="setupTitle">新建会话</h1></div>
           <button id="sidebarClose" class="icon-button mobile-only" type="button" aria-label="关闭任务侧栏">×</button>
@@ -71,13 +73,38 @@
         </nav>
 
         <form id="setupForm" class="setup-form">
+          <section class="profile-picker" aria-labelledby="profilePickerTitle">
+            <div class="profile-picker-head">
+              <div><span class="section-kicker">学生画像</span><h2 id="profilePickerTitle">选择本次学习者</h2></div>
+              <small>切换后新建独立会话</small>
+            </div>
+            <div id="profileCards" class="profile-cards" role="radiogroup" aria-label="选择学生初始画像">
+              <button class="profile-card selected" type="button" role="radio" aria-checked="true" tabindex="0" data-profile-id="xiaoyu">
+                <img src="assets/student-xiaoyu.png" alt="小雨的合成插画头像" width="96" height="96">
+                <span class="profile-card-copy"><strong>小雨</strong><em>例子驱动型 · 初学</em><small>先看直观例子，再自己解释。</small></span>
+                <span class="profile-mini-ring" style="--profile-score: 14" aria-label="综合初始掌握度 14%"><b>14%</b></span>
+              </button>
+              <button class="profile-card" type="button" role="radio" aria-checked="false" tabindex="-1" data-profile-id="zimo">
+                <img src="assets/student-zimo.png" alt="子墨的合成插画头像" width="96" height="96">
+                <span class="profile-card-copy"><strong>子墨</strong><em>稳步练习型 · 中等</em><small>喜欢分步提示与即时练习。</small></span>
+                <span class="profile-mini-ring" style="--profile-score: 33" aria-label="综合初始掌握度 33%"><b>33%</b></span>
+              </button>
+              <button class="profile-card" type="button" role="radio" aria-checked="false" tabindex="-1" data-profile-id="zhixing">
+                <img src="assets/student-zhixing.png" alt="知行的合成插画头像" width="96" height="96">
+                <span class="profile-card-copy"><strong>知行</strong><em>迁移挑战型 · 进阶</em><small>偏好比较、反例与新情境挑战。</small></span>
+                <span class="profile-mini-ring" style="--profile-score: 55" aria-label="综合初始掌握度 55%"><b>55%</b></span>
+              </button>
+            </div>
+            <p class="synthetic-note">头像由 AI 合成，仅用于区分演示画像，不对应真实学生，也不参与能力判断。</p>
+          </section>
+
           <details class="setup-group" open>
             <summary><span>基本任务</span><small>必填</small></summary>
             <div class="setup-group-body">
               <label class="field"><span>学习概念</span><input id="conceptInput" required maxlength="120" autocomplete="off"></label>
               <label class="field"><span>本次目标</span><textarea id="objectiveInput" required maxlength="500" rows="3"></textarea></label>
               <div class="split-fields">
-                <label class="field"><span>当前水平</span><select id="learnerLevelInput"><option value="beginner">初学者</option><option value="intermediate">中等基础</option><option value="advanced">进阶学习者</option></select></label>
+                <label class="field legacy-level-field" hidden><span>当前水平</span><select id="learnerLevelInput"><option value="beginner">初学者</option><option value="intermediate">中等基础</option><option value="advanced">进阶学习者</option></select></label>
                 <label class="field"><span>最多轮次</span><input id="maxRoundsInput" type="number" min="3" max="50" value="12"></label>
               </div>
             </div>
@@ -94,7 +121,7 @@
               </div>
               <label class="field"><span>学习偏好</span><textarea id="preferencesInput" rows="2" maxlength="500" placeholder="例如：先看例子，再分步练习"></textarea></label>
               <label class="field"><span>已知误解</span><textarea id="knownMisconceptionsInput" rows="2" maxlength="800" placeholder="每行一个，只写与学习有关的信息"></textarea></label>
-              <label class="field"><span>既往回答摘要</span><textarea id="historyInput" rows="3" maxlength="1600" placeholder="每行一条脱敏历史，用于建立上下文"></textarea></label>
+              <label class="field"><span>既往上下文（未标注）</span><textarea id="historyInput" rows="3" maxlength="1600" placeholder="每行一条脱敏记录；只作背景，不会伪装成对错标签"></textarea></label>
             </div>
           </details>
 
@@ -119,9 +146,10 @@
 
           <label class="consent-row">
             <input id="remoteConsent" type="checkbox">
-            <span>我已人工移除姓名、学号、学校、地址等身份信息。系统只发送完成本轮教学所需的脱敏文字，绝不发送课堂媒体。</span>
+            <span>我已人工移除姓名、学号、学校、地址等身份信息。原图不发送给远程模型；若添加答案图片，只发送本机提取并脱敏后的 OCR 文字证据。</span>
           </label>
           <button id="startButton" class="primary-button" type="submit"><span>开始学习</span><small>先生成一个教学动作</small></button>
+          <p id="setupError" class="inline-error" role="alert" hidden></p>
         </form>
 
         <section class="goal-board" aria-labelledby="goalBoardTitle">
@@ -137,6 +165,10 @@
             <span class="conversation-eyebrow">实时一对一教学</span>
             <h2 id="liveTitle"><span id="conversationTitle">准备开始</span><small id="roundCounter">R0</small></h2>
           </div>
+          <div class="conversation-student" aria-label="当前学生画像">
+            <img id="conversationStudentAvatar" src="assets/student-xiaoyu.png" alt="当前学生的合成插画头像" width="44" height="44">
+            <span><small>当前学生</small><strong id="conversationStudentName">小雨</strong></span>
+          </div>
           <div class="session-state"><i></i><span id="sessionStatus">等待开始</span></div>
         </header>
 
@@ -145,14 +177,14 @@
           <h2>今天想学会什么？</h2>
           <p>在左侧设置目标后开始。老师每次只给出一个解释、提示或问题，然后停下来等你回答。</p>
           <div class="empty-rules" aria-label="学习方式">
-            <span><b>1</b> 你用自己的话回答</span>
+            <span><b>1</b> 文字回答或上传答案照片</span>
             <span><b>2</b> 系统判断当前卡点</span>
             <span><b>3</b> 下一步会随反馈改变</span>
           </div>
         </div>
 
         <div id="activeSession" class="active-session" hidden>
-          <div id="conversationScroll" class="conversation-scroll" aria-live="polite">
+          <div id="conversationScroll" class="conversation-scroll">
             <section class="timeline-section" aria-labelledby="historyTitle">
               <div class="section-title visually-hidden"><span id="historyTitle">学习对话记录</span><small id="historyCount">0 轮</small></div>
               <div id="historyList" class="history-list"></div>
@@ -163,14 +195,31 @@
               <div class="message-content">
                 <header><span>老师 · 当前步骤</span><b id="actionType">—</b></header>
                 <blockquote id="teacherMessage">—</blockquote>
-                <div class="expected"><span>老师在观察什么</span><p id="expectedSignal">—</p></div>
+                <details class="teacher-audit-hint"><summary>查看本轮判断标准（教师 / 答辩）</summary><div class="expected"><span>老师在观察什么</span><p id="expectedSignal">—</p></div></details>
               </div>
             </article>
           </div>
 
           <form id="turnForm" class="response-card">
+            <div class="quick-prompts" aria-label="快捷学习反馈">
+              <button type="button" data-quick-response="请换一个更直观的例子。">换个例子</button>
+              <button type="button" data-quick-response="先只提示我下一小步，不要直接给答案。">只提示一步</button>
+              <button type="button" data-quick-response="我还没有听懂，请换一种方式解释。">我没听懂</button>
+              <button type="button" data-quick-response="系统可能误解了我的意思：">系统误解了我的意思</button>
+            </div>
+            <div class="attachment-toolbar">
+              <button id="attachImageButton" class="attachment-button" type="button" aria-controls="answerImageInput attachmentPreview"><span aria-hidden="true">＋</span>添加答案图片</button>
+              <span>PNG / JPEG / WebP · 原图仅本机短暂处理</span>
+              <label class="visually-hidden" for="answerImageInput">选择答案图片</label>
+              <input id="answerImageInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            </div>
+            <figure id="attachmentPreview" class="attachment-preview" hidden>
+              <img id="attachmentThumbnail" alt="待提交答案图片预览">
+              <figcaption><strong id="attachmentName">答案图片</strong><span id="attachmentStatus">等待本机识别</span><small id="attachmentEvidencePreview">发送时提取 OCR，原图不会交给 DeepSeek。</small></figcaption>
+              <button id="removeAttachmentButton" type="button" aria-label="移除答案图片">×</button>
+            </figure>
             <label class="visually-hidden" for="learnerResponse">输入你的回答</label>
-            <textarea id="learnerResponse" rows="3" maxlength="2000" required placeholder="用自己的话回答老师……"></textarea>
+            <textarea id="learnerResponse" rows="3" maxlength="2000" placeholder="用自己的话回答老师，或直接添加答案照片……"></textarea>
             <label id="fallbackSignalField" class="fallback-signal" hidden>
               <span>降级演示信号</span>
               <select id="fallbackSignalInput"><option value="partial">部分理解</option><option value="correct">理解正确</option><option value="misconception">存在误解</option><option value="confused">仍然困惑</option><option value="no_response">没有回应</option></select>
@@ -186,39 +235,55 @@
               <button type="button" data-command="/stop">结束并转人工</button>
               <span>命令不会消耗教学轮次。</span>
             </div>
+            <p id="turnError" class="inline-error" role="alert" hidden></p>
           </form>
+          <p id="newMessageAnnouncer" class="visually-hidden" aria-live="polite"></p>
         </div>
       </section>
 
-      <aside id="statePanel" class="state-panel" data-screen-label="03 Student state" aria-labelledby="stateTitle">
+      <aside id="statePanel" class="state-panel" data-screen-label="03 Student state" aria-labelledby="stateTitle" tabindex="-1">
         <div class="inspector-head">
           <div><span>学习检查器</span><h2 id="stateTitle">系统现在怎么判断</h2></div>
           <button id="inspectorClose" class="icon-button" type="button" aria-label="收起学习状态">×</button>
         </div>
 
+        <div class="inspector-tabs" role="tablist" aria-label="学习检查器栏目">
+          <button id="stateTab" class="active" type="button" role="tab" aria-selected="true" aria-controls="stateInspectorPrimary stateInspectorDetails" tabindex="0" data-inspector-tab="state">学情</button>
+          <button id="methodTab" type="button" role="tab" aria-selected="false" aria-controls="methodInspectorPanel" tabindex="-1" data-inspector-tab="method">方法</button>
+          <button id="evidenceTab" type="button" role="tab" aria-selected="false" aria-controls="evidenceInspectorContext evidenceInspectorRuntime" tabindex="-1" data-inspector-tab="evidence">证据</button>
+        </div>
+
         <div class="state-body">
+          <div id="stateInspectorPrimary" class="inspector-panel-group" role="tabpanel" aria-labelledby="stateTab" data-inspector-panel="state">
           <details class="inspector-section" open>
             <summary><span>当前理解</span><small id="assessmentStatus">等待第一条回答</small></summary>
             <div class="inspector-section-body">
               <article class="assessment-card">
-                <header><span id="assessmentSourceLabel">DEEPSEEK ASSESSMENT</span><strong id="assessmentLabel">尚未观察</strong></header>
+                <header><span id="assessmentSourceLabel">等待诊断来源</span><strong id="assessmentLabel">尚未观察</strong></header>
+                <div class="alignment-line"><span>回答与本问</span><strong id="answerAlignmentLabel">尚未作答</strong></div>
                 <div class="assessment-confidence"><span>判断把握</span><strong id="assessmentConfidence">—</strong></div>
                 <p id="assessmentEvidence">开始会话后显示与学生原话直接相关的证据。</p>
               </article>
 
               <section class="mastery-board">
                 <div class="section-title"><span>知识掌握度</span><small>本轮变化</small></div>
-                <div class="mastery-row"><div><span>前置知识</span><strong id="prerequisiteValue">—</strong><em id="prerequisiteDelta">—</em></div><progress id="prerequisiteBar" max="1" value="0"></progress></div>
-                <div class="mastery-row"><div><span>概念理解</span><strong id="conceptualValue">—</strong><em id="conceptualDelta">—</em></div><progress id="conceptualBar" max="1" value="0"></progress></div>
-                <div class="mastery-row"><div><span>操作过程</span><strong id="proceduralValue">—</strong><em id="proceduralDelta">—</em></div><progress id="proceduralBar" max="1" value="0"></progress></div>
-                <div class="mastery-row"><div><span>迁移能力</span><strong id="transferValue">—</strong><em id="transferDelta">—</em></div><progress id="transferBar" max="1" value="0"></progress></div>
+                <div class="mastery-overview">
+                  <div id="masteryRing" class="mastery-ring" style="--mastery-score: 14" role="img" aria-label="综合掌握度 14%，选中画像的四项初始估计等权平均"><span><strong id="masteryAverage">14%</strong><small>四项等权概览</small></span></div>
+                  <p>环形图是四项掌握估计的等权平均；细分值不是总体的组成占比。</p>
+                </div>
+                <div class="mastery-row"><div><span>前置知识</span><strong id="prerequisiteValue">25%</strong><em id="prerequisiteDelta">初始</em></div><progress id="prerequisiteBar" max="1" value="0.25" aria-label="前置知识 25%"></progress></div>
+                <div class="mastery-row"><div><span>概念理解</span><strong id="conceptualValue">15%</strong><em id="conceptualDelta">初始</em></div><progress id="conceptualBar" max="1" value="0.15" aria-label="概念理解 15%"></progress></div>
+                <div class="mastery-row"><div><span>操作过程</span><strong id="proceduralValue">10%</strong><em id="proceduralDelta">初始</em></div><progress id="proceduralBar" max="1" value="0.1" aria-label="操作过程 10%"></progress></div>
+                <div class="mastery-row"><div><span>迁移能力</span><strong id="transferValue">5%</strong><em id="transferDelta">初始</em></div><progress id="transferBar" max="1" value="0.05" aria-label="迁移能力 5%"></progress></div>
               </section>
 
               <section class="state-fact"><span>这轮理解信号</span><strong id="understandingSignal">尚未观察</strong><p id="responseExcerpt">等待第一轮作答。</p></section>
               <section class="state-fact focus-fact"><span>接下来重点</span><strong id="nextFocus">—</strong><p id="nextFocusReason">开始后显示选择这个重点的原因。</p></section>
             </div>
           </details>
+          </div>
 
+          <div id="methodInspectorPanel" class="inspector-panel-group" role="tabpanel" aria-labelledby="methodTab" data-inspector-panel="method">
           <details class="inspector-section" open>
             <summary><span>正在使用的教学方法</span><small id="switchBadge">首个 Skill</small></summary>
             <div class="inspector-section-body">
@@ -237,7 +302,9 @@
               </div>
             </div>
           </details>
+          </div>
 
+          <div id="evidenceInspectorContext" class="inspector-panel-group" role="tabpanel" aria-labelledby="evidenceTab" data-inspector-panel="evidence">
           <details class="inspector-section" open>
             <summary><span>上一次模型请求快照</span><small id="contextWindowText">暂无请求快照</small></summary>
             <div class="inspector-section-body context-board">
@@ -251,7 +318,9 @@
               <small id="contextBoundaryText">本区不会使用处理后的会话历史或学生状态回填请求快照，也不展示模型私有推理。</small>
             </div>
           </details>
+          </div>
 
+          <div id="stateInspectorDetails" class="inspector-panel-group" role="tabpanel" aria-labelledby="stateTab" data-inspector-panel="state">
           <details class="inspector-section">
             <summary><span>候选学生画像</span><small id="adaptiveProfileStatus" class="profile-review-status">等待观察</small></summary>
             <div id="adaptiveProfileBoard" class="inspector-section-body adaptive-profile-board" aria-labelledby="adaptiveProfileTitle">
@@ -274,7 +343,9 @@
               <section class="ranking-board"><div class="section-title"><span>候选 Skill 排名</span><small>Top 4</small></div><div id="candidateRanking" class="candidate-ranking"><p>开始会话后显示。</p></div></section>
             </div>
           </details>
+          </div>
 
+          <div id="evidenceInspectorRuntime" class="inspector-panel-group" role="tabpanel" aria-labelledby="evidenceTab" data-inspector-panel="evidence">
           <details class="inspector-section runtime-inspector">
             <summary><span>运行记录</span><small>审计信息</small></summary>
             <div class="inspector-section-body">
@@ -282,6 +353,7 @@
               <div class="trace-strip"><span><b>MODEL</b><strong id="traceModel">—</strong></span><span><b>LATENCY</b><strong id="traceLatency">—</strong></span><span><b>FALLBACK</b><strong id="traceFallback">—</strong></span></div>
             </div>
           </details>
+          </div>
         </div>
       </aside>
     </main>
@@ -318,11 +390,11 @@
         </section>
 
         <section id="freeTextBenchmark" class="free-text-benchmark" hidden aria-labelledby="freeTextBenchmarkTitle">
-          <header><div><span>在线开发集</span><h3 id="freeTextBenchmarkTitle">DeepSeek 自由文本诊断与路由</h3></div><strong id="freeTextBenchmarkStatus">—</strong></header>
+          <header><div><span>在线单轮开发评测</span><h3 id="freeTextBenchmarkTitle">DeepSeek 自由文本诊断与路由</h3><small id="benchmarkVersionNotice">等待载入评测与实时会话版本</small></div><strong id="freeTextBenchmarkStatus">—</strong></header>
           <div class="benchmark-metrics">
             <article><span>SIGNAL ACC.</span><strong id="benchmarkSignalAccuracy">—</strong><small>端到端全部调用</small></article><article><span>SIGNAL MACRO-F1</span><strong id="benchmarkSignalMacroF1">—</strong><small>七类信号等权</small></article><article><span>SKILL HIT</span><strong id="benchmarkSkillHit">—</strong><small>命中允许 Skill 集</small></article><article><span>SWITCH F1</span><strong id="benchmarkSwitchF1">—</strong><small>是否切换 Skill</small></article><article><span>TERMINATE F1</span><strong id="benchmarkTerminationF1">—</strong><small>是否终止教学</small></article><article><span>FAILURE RATE</span><strong id="benchmarkFailureRate">—</strong><small>API + 校验失败</small></article><article class="latency-metric"><span>WALL LATENCY</span><strong id="benchmarkLatency">—</strong><small>P50 / P95</small></article>
           </div>
-          <p id="freeTextBenchmarkBoundary">作者构造 development set；非专家验证、非锁箱测试、非真实学生、非部署准确率。</p>
+          <p id="freeTextBenchmarkBoundary">共享诊断语义量表，但不是完整 live Session 评测；非专家验证、非锁箱测试、非真实学生、非部署准确率。</p>
         </section>
 
         <section class="case-study" aria-labelledby="caseStudyTitle">
@@ -332,8 +404,8 @@
       </section>
 
       <section class="trust-boundary" aria-labelledby="trustTitle">
-        <div><span>可信边界</span><h2 id="trustTitle">远程模型只看必要文字，永远看不到课堂媒体。</h2></div>
-        <div class="boundary-grid"><article><strong>允许发送</strong><p>人工去标识后的目标、必要画像、相关历史、Skill 摘要和本轮回答。</p></article><article><strong>永不发送</strong><p>真实视频、帧、音频、字幕全文、OCR、逐样本预测、本机路径和 API Key。</p></article><article><strong>当前未建立</strong><p>专家盲评、真实学习效果和部署准确率。</p></article><article><strong>会话处理</strong><p>只连接本机服务，不在浏览器保存教学内容，并明确标记在线模型或 fallback。</p></article></div>
+        <div><span>可信边界</span><h2 id="trustTitle">图片留在本机；远程模型只看必要的文字证据。</h2></div>
+        <div class="boundary-grid"><article><strong>允许发送</strong><p>人工去标识后的目标、必要画像、相关历史、Skill 摘要、本轮文字回答，以及本机提取并脱敏后的有界 OCR 文字。</p></article><article><strong>永不发送</strong><p>答案原图、真实视频、帧、音频、字幕全文、逐样本预测、本机路径和 API Key。</p></article><article><strong>当前未建立</strong><p>手写公式识别的部署准确率、专家盲评、真实学习效果和部署质量。</p></article><article><strong>会话处理</strong><p>原图只在本机内存与临时目录短暂处理，随后仅保留哈希、OCR、置信度和审计状态。</p></article></div>
       </section>
     </main>
   </div>

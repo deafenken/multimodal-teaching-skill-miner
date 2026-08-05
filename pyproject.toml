@@ -35,6 +35,10 @@ visual = [
   "torch>=2.2,<3",
   "transformers>=4.46,<6",
 ]
+browser-test = [
+  "Pillow>=10,<13",
+  "playwright>=1.50,<2",
+]
 asr-gpu = [
   "ctranslate2>=4.4,<5",
   "faster-whisper>=1.1,<2",
@@ -67,6 +71,9 @@ namespaces = false
   "teacher_agent_demo.html",
   "teacher_agent_demo.css",
   "teacher_agent_demo.js",
+  "assets/student-xiaoyu.png",
+  "assets/student-zimo.png",
+  "assets/student-zhixing.png",
 ]
 
 [tool.setuptools.data-files]

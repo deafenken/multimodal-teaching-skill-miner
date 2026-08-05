@@ -35,7 +35,7 @@
       "properties": {
         "provider": {"const": "deepseek"},
         "model": {"const": "deepseek-v4-flash"},
-        "prompt_version": {"const": "teacher_agent_free_text_diagnose_route_v2"},
+        "prompt_version": {"const": "teacher_agent_free_text_diagnose_route_v3_shared_taxonomy"},
         "thinking_mode": {"const": "disabled"},
         "temperature": {"const": 0.0},
         "repeat_count": {"const": 1},

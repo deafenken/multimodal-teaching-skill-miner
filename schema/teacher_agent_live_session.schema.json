@@ -53,6 +53,9 @@
           "properties": {
             "excerpt": {"type": "string"},
             "reason": {"type": "string", "minLength": 1},
+            "answer_alignment": {"enum": ["not_applicable", "aligned", "partially_aligned", "related_but_not_answer", "contradicted", "ambiguous", "no_response"]},
+            "matched_concepts": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
+            "missing_concepts": {"type": "array", "items": {"type": "string"}, "maxItems": 6},
             "source": {"type": "string", "minLength": 1},
             "needs_human_review": {"type": "boolean"}
           },
@@ -83,7 +86,7 @@
     "control": {"type": "object"},
     "claim_boundary": {
       "type": "object",
-      "required": ["free_text_answer_processing_enabled", "free_text_answer_grading_established", "structured_signal_source", "student_identity_required", "simulated_evaluation_is_real_learning_effect", "real_learning_effectiveness_established", "deployment_quality_established", "student_text_may_be_sent_to_configured_api", "media_sent_to_model"],
+      "required": ["free_text_answer_processing_enabled", "free_text_answer_grading_established", "structured_signal_source", "student_identity_required", "simulated_evaluation_is_real_learning_effect", "real_learning_effectiveness_established", "deployment_quality_established", "student_text_may_be_sent_to_configured_api", "media_sent_to_model", "learner_image_input_enabled", "learner_image_processing", "raw_image_understanding_by_deepseek"],
       "properties": {
         "free_text_answer_processing_enabled": {"const": true},
         "free_text_answer_grading_established": {"const": false},
@@ -93,7 +96,10 @@
         "real_learning_effectiveness_established": {"const": false},
         "deployment_quality_established": {"const": false},
         "student_text_may_be_sent_to_configured_api": {"const": true},
-        "media_sent_to_model": {"const": false}
+        "media_sent_to_model": {"const": false},
+        "learner_image_input_enabled": {"const": true},
+        "learner_image_processing": {"const": "local_ephemeral_ocr_then_text_reasoning"},
+        "raw_image_understanding_by_deepseek": {"const": false}
       },
       "additionalProperties": false
     },
@@ -113,7 +119,7 @@
     },
     "agent_runtime": {
       "type": "object",
-      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "fallback_count", "model_call_count", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "last_context_trace"],
+      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "fallback_count", "model_call_count", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "input_modalities", "raw_image_model_support", "local_visual_evidence_policy", "last_context_trace"],
       "properties": {
         "schema": {"const": "teaching_skill_miner.deepseek_teacher_runtime.v1"},
         "mode": {"const": "deepseek_live"},
@@ -128,6 +134,11 @@
         "remote_student_data_opt_in": {"const": true},
         "api_key_exposed": {"const": false},
         "context_policy": {"const": "layered_bounded_evidence_linked_v1"},
+        "input_modalities": {
+          "const": ["text", "image_via_local_ocr"]
+        },
+        "raw_image_model_support": {"const": false},
+        "local_visual_evidence_policy": {"const": "ephemeral_media_bounded_ocr_text_v1"},
         "last_context_trace": {
           "type": "object",
           "required": ["schema", "content_sha256", "serialized_chars", "max_chars", "retained_recent_turns", "request_outcome", "model_generated_memory_written"],
@@ -190,7 +201,7 @@
         },
         "semantic_summary": {
           "type": "object",
-          "required": ["turn_count", "focus_checkpoints", "compression_method", "source", "narrative_inference_added"],
+          "required": ["turn_count", "focus_checkpoints", "teaching_checkpoints", "compression_method", "source", "narrative_inference_added"],
           "properties": {
             "turn_count": {"type": "integer", "minimum": 0},
             "round_range": {"type": ["array", "null"], "items": {"type": "integer"}},
@@ -199,6 +210,7 @@
             "skill_counts": {"type": "object"},
             "signal_source_counts": {"type": "object"},
             "focus_checkpoints": {"type": "array", "maxItems": 4, "items": {"type": "object"}},
+            "teaching_checkpoints": {"type": "array", "maxItems": 6, "items": {"type": "object"}},
             "compression_method": {"const": "deterministic_aggregate_and_extractive_checkpoints_no_model_generation"},
             "source": {"const": "omitted_local_session_history"},
             "narrative_inference_added": {"const": false}
@@ -254,13 +266,14 @@
         },
         "claim_boundary": {
           "type": "object",
-          "required": ["model_generated_history_summary", "candidate_long_term_memory_is_confirmed", "fallback_observations_are_labeled_by_actual_source", "context_is_evidence_not_learner_ground_truth", "model_may_not_mutate_fixed_context"],
+          "required": ["model_generated_history_summary", "candidate_long_term_memory_is_confirmed", "fallback_observations_are_labeled_by_actual_source", "context_is_evidence_not_learner_ground_truth", "model_may_not_mutate_fixed_context", "omitted_turn_semantics_are_exhaustive"],
           "properties": {
             "model_generated_history_summary": {"const": false},
             "candidate_long_term_memory_is_confirmed": {"const": false},
             "fallback_observations_are_labeled_by_actual_source": {"const": true},
             "context_is_evidence_not_learner_ground_truth": {"const": true},
-            "model_may_not_mutate_fixed_context": {"const": true}
+            "model_may_not_mutate_fixed_context": {"const": true},
+            "omitted_turn_semantics_are_exhaustive": {"const": false}
           },
           "additionalProperties": false
         }
@@ -290,13 +303,17 @@
           },
           "evidence": {
             "type": "object",
-            "required": ["excerpt", "confidence", "grounding", "needs_human_review", "review_reasons", "privacy_status"],
+            "required": ["excerpt", "confidence", "assessment_source", "model_raw_signal", "final_signal", "normalization_reasons", "grounding", "needs_human_review", "review_reasons", "privacy_status"],
             "properties": {
               "excerpt": {"type": "string", "maxLength": 240},
               "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-              "grounding": {"enum": ["verified_current_response_substring", "empty_response_no_excerpt"]},
+              "assessment_source": {"enum": ["deepseek_v4_flash", "deepseek_v4_flash_constrained_by_deterministic_contract", "active_question_contract_exact_match"]},
+              "model_raw_signal": {"enum": ["correct", "partial", "misconception", "confused", "no_response"]},
+              "final_signal": {"enum": ["correct", "partial", "misconception", "confused", "no_response"]},
+              "normalization_reasons": {"type": "array", "maxItems": 12, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
+              "grounding": {"enum": ["verified_current_response_substring", "empty_response_no_excerpt", "no_grounded_excerpt"]},
               "needs_human_review": {"type": "boolean"},
-              "review_reasons": {"type": "array", "uniqueItems": true, "items": {"enum": ["low_confidence", "model_requested_review"]}},
+              "review_reasons": {"type": "array", "uniqueItems": true, "items": {"enum": ["low_confidence", "model_requested_review", "deterministic_contract_normalization", "no_grounded_excerpt"]}},
               "privacy_status": {"const": "redacted_before_candidate_storage"}
             },
             "additionalProperties": false

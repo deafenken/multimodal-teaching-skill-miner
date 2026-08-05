@@ -61,7 +61,10 @@ for relative_path in \
   teaching_skill_miner/web/private_skill_demo.js \
   teaching_skill_miner/web/teacher_agent_demo.css \
   teaching_skill_miner/web/teacher_agent_demo.html \
-  teaching_skill_miner/web/teacher_agent_demo.js
+  teaching_skill_miner/web/teacher_agent_demo.js \
+  teaching_skill_miner/web/assets/student-xiaoyu.png \
+  teaching_skill_miner/web/assets/student-zimo.png \
+  teaching_skill_miner/web/assets/student-zhixing.png
 do
   copy_release_file "$relative_path"
 done

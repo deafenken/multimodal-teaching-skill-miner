@@ -1,22 +1,22 @@
 {
   "schema": "teaching_skill_miner.teacher_agent_free_text_benchmark_receipt.v1",
   "artifact_kind": "public_aggregate_online_development_benchmark_receipt",
-  "run_date": "2026-08-05",
+  "run_date": "2026-08-06",
   "run_status": "completed",
   "source_report": {
-    "filename": "teacher_agent_free_text_benchmark_deepseek_v4_flash_v3_20260805.json",
-    "content_sha256": "95546d4d53f6918debb9773a1757d6fb9185853415e1cbc02e8023b216edaf85",
-    "run_fingerprint": "cc8c6d33c10950099ce7d2ef7b192e51e322821ae6af9eb4c690ae63767f98af"
+    "filename": "teacher_agent_free_text_benchmark_deepseek_v4_flash_v4_20260806.json",
+    "content_sha256": "e9b050ba927fa5c33d33ec6a1abeb8e3e714e027157be7e7c900e80d4b3e4125",
+    "run_fingerprint": "d25cd004b87f2be8375914acb0fa23baa4362624f1be9f18c6505dd275b28a01"
   },
   "input_fingerprints": {
     "benchmark_sha256": "2083f172a78d9dfb26331e5f4c37e5486712889803eac99b0a7aea16c029acfb",
     "skill_library_sha256": "c79ad5f4fc1318b9a754f8df1cf8b9ff7c25a197b9e6a4a17f73f94716ed9a2b",
-    "protocol_sha256": "766bdae3cd53e414147f3a1f2e2c29ae58a939f0174c92583d79d54418bfb458"
+    "protocol_sha256": "57f43d60d17393fd39a65fc092797b688c327b2c04fc150c4b2be125bea39e08"
   },
   "configuration": {
     "provider": "deepseek",
     "model": "deepseek-v4-flash",
-    "prompt_version": "teacher_agent_free_text_diagnose_route_v2",
+    "prompt_version": "teacher_agent_free_text_diagnose_route_v3_shared_taxonomy",
     "thinking_mode": "disabled",
     "temperature": 0.0,
     "repeat_count": 1,
@@ -26,12 +26,12 @@
     "signal_accuracy": 0.892857,
     "signal_macro_f1": 0.875325,
     "misconception_tag_exact_match": 1.0,
-    "allowed_primary_skill_hit_rate": 0.785714,
-    "skill_switch_f1": 0.833333,
+    "allowed_primary_skill_hit_rate": 0.75,
+    "skill_switch_f1": 0.787879,
     "termination_f1": 1.0,
     "end_to_end_failure_rate": 0.0,
-    "p50_latency_ms": 1531.827,
-    "p95_latency_ms": 2384.102
+    "p50_latency_ms": 994.887,
+    "p95_latency_ms": 1250.134
   },
   "baselines": {
     "constant_partial_signal_accuracy": 0.142857,

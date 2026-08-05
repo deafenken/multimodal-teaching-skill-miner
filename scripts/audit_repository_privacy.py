@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 import re
 import subprocess
@@ -14,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from teaching_skill_miner.release_audit import (  # noqa: E402
+    REVIEWED_PUBLIC_BINARY_RESOURCES,
     absolute_local_path_value,
     decode_text_payload,
     forbidden_binary_payload_kind,
@@ -48,6 +50,9 @@ ALLOWED_SYNTHETIC_MEDIA = {
     "data/demo/slide_example.png",
     "data/demo/slide_code.png",
     "data/demo/synthetic_lesson.mp4",
+    "teaching_skill_miner/web/assets/student-xiaoyu.png",
+    "teaching_skill_miner/web/assets/student-zimo.png",
+    "teaching_skill_miner/web/assets/student-zhixing.png",
 }
 FORBIDDEN_SUFFIXES = {
     ".zip",
@@ -258,6 +263,11 @@ def main() -> int:
             )
         with path.open("rb") as handle:
             payload = handle.read() if size_bytes <= 2_000_000 else handle.read(65536)
+        reviewed_digest = REVIEWED_PUBLIC_BINARY_RESOURCES.get(relative)
+        if reviewed_digest is not None and sha256(payload).hexdigest() != reviewed_digest:
+            findings.append(
+                f"reviewed synthetic resource digest changed: {relative}"
+            )
         if relative not in ALLOWED_SYNTHETIC_MEDIA:
             binary_kind = forbidden_binary_payload_kind(payload)
             if binary_kind:
