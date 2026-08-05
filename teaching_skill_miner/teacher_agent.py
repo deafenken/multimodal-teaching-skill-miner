@@ -241,9 +241,22 @@ def _normalized_goal(goal: Mapping[str, Any]) -> dict[str, Any]:
         safe_materials[_nonempty_string(key, field="goal.materials key")] = _nonempty_string(
             value, field=f"goal.materials.{key}"
         )
+    raw_components = goal.get("knowledge_components")
+    if raw_components is None:
+        # The teacher-provided concept is the minimum faithful retrieval anchor;
+        # this is not a model-inferred curriculum decomposition.
+        knowledge_components = [concept]
+    else:
+        knowledge_components = _string_list(
+            raw_components,
+            field="goal.knowledge_components",
+        )
+        if len(knowledge_components) > 12:
+            raise TeacherAgentError("goal.knowledge_components must contain at most 12 items")
     return {
         "concept": concept,
         "objective": objective,
+        "knowledge_components": knowledge_components,
         "success_thresholds": thresholds,
         "max_rounds": max_rounds,
         "materials": safe_materials,
@@ -384,6 +397,58 @@ def _curriculum_focus(session: Mapping[str, Any]) -> str:
         if float(mastery[dimension]) < float(thresholds[dimension]):
             return dimension
     return _lowest_mastery_dimension(mastery, thresholds)
+
+
+def _active_knowledge_components(
+    session: Mapping[str, Any],
+    *,
+    focus_dimension: str,
+    action_text: str = "",
+) -> list[str]:
+    """Return the small ordered KC slice actually addressed by one action.
+
+    Goal knowledge components are teacher-authored in dependency order.  A
+    literal mention in the action wins; otherwise the current mastery phase is
+    mapped to its corresponding slice.  This prevents every history turn from
+    being tagged with the whole goal and makes same-KC retrieval meaningful.
+    """
+
+    goal = session.get("goal", {})
+    raw_components = (
+        goal.get("knowledge_components", []) if isinstance(goal, Mapping) else []
+    )
+    components = [
+        str(item).strip()
+        for item in raw_components
+        if isinstance(item, str) and str(item).strip()
+    ]
+    if not components:
+        concept = str(goal.get("concept", "")).strip() if isinstance(goal, Mapping) else ""
+        return [concept] if concept else []
+
+    folded_text = action_text.casefold()
+    literal_matches = [
+        component
+        for component in components
+        if component.casefold() in folded_text
+    ]
+    if literal_matches:
+        return literal_matches[:3]
+
+    try:
+        phase_index = MASTERY_DIMENSIONS.index(focus_dimension)
+    except ValueError:
+        phase_index = 0
+    start = phase_index * len(components) // len(MASTERY_DIMENSIONS)
+    end = (phase_index + 1) * len(components) // len(MASTERY_DIMENSIONS)
+    if end <= start:
+        nearest = min(
+            len(components) - 1,
+            (phase_index * (len(components) - 1) + 1)
+            // (len(MASTERY_DIMENSIONS) - 1),
+        )
+        return [components[nearest]]
+    return components[start : min(end, start + 3)]
 
 
 def _selection_scores(
@@ -534,6 +599,11 @@ def _render_action(
     )
     message = str(selected["message_template"]).format_map(values)
     expected = str(selected["expected_signal"]).format_map(values)
+    active_knowledge_components = _active_knowledge_components(
+        session,
+        focus_dimension=str(selected["focus_dimension"]),
+        action_text=f"{message}\n{expected}",
+    )
     previous_id = session.get("current_action", {}).get("primary_skill", {}).get(
         "skill_id"
     )
@@ -547,6 +617,7 @@ def _render_action(
             "name": selected["name"],
             "role": selected["role"],
             "focus_dimension": selected["focus_dimension"],
+            "knowledge_components": deepcopy(active_knowledge_components),
             "source": deepcopy(selected["source"]),
         },
         "supporting_skills": [
@@ -566,11 +637,13 @@ def _render_action(
             ),
             "wait_for_student_before_next_action": True,
         },
+        "knowledge_components": deepcopy(active_knowledge_components),
     }
     session["student_state"]["next_focus"] = {
         "dimension": selected["focus_dimension"],
         "reason": reason,
         "selected_skill_id": selected_id,
+        "knowledge_components": deepcopy(active_knowledge_components),
     }
     return action
 
@@ -815,6 +888,30 @@ def validate_session(session: Mapping[str, Any]) -> None:
         raise TeacherAgentError("session status is unsupported")
     if status == "active" and not isinstance(session.get("current_action"), Mapping):
         raise TeacherAgentError("active session requires current_action")
+    if session.get("artifact_kind") == "real_time_deepseek_teaching_agent_session":
+        # Local import keeps the deterministic core reusable while making a
+        # live session fail closed on malformed or over-budget model context.
+        from .teacher_agent_context import (  # noqa: PLC0415
+            LAYERED_CONTEXT_SCHEMA,
+            validate_layered_context,
+        )
+
+        try:
+            validate_layered_context(session.get("context_memory", {}))
+        except (TypeError, ValueError) as exc:
+            raise TeacherAgentError("live session context_memory is invalid") from exc
+        runtime = session.get("agent_runtime", {})
+        trace = runtime.get("last_context_trace") if isinstance(runtime, Mapping) else None
+        if (
+            not isinstance(trace, Mapping)
+            or trace.get("schema") != LAYERED_CONTEXT_SCHEMA
+            or trace.get("content_sha256")
+            != canonical_sha256(session["context_memory"])
+            or trace.get("serialized_chars")
+            != session["context_memory"]["budget"]["serialized_chars"]
+            or trace.get("model_generated_memory_written") is not False
+        ):
+            raise TeacherAgentError("live session context trace is invalid")
 
 
 def start_teacher_agent_session(

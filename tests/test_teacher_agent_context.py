@@ -2,16 +2,28 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+from pathlib import Path
 
 import pytest
 
 from teaching_skill_miner.teacher_agent_context import (
     CONTEXT_SCHEMA,
     GOAL_PLAN_SCHEMA,
+    LAYERED_CONTEXT_SCHEMA,
+    build_layered_context,
     build_goal_plan,
     build_relevant_history,
     redact_remote_text,
+    validate_layered_context,
 )
+from teaching_skill_miner.io_utils import read_json
+from teaching_skill_miner.teacher_agent import (
+    advance_teacher_agent_session,
+    start_teacher_agent_session,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _event(
@@ -151,6 +163,48 @@ def test_relevant_history_prioritizes_kc_then_focus_and_keeps_latest_turns() -> 
         "partial": 1,
     }
     assert session == original
+
+
+def test_relevant_history_does_not_treat_every_goal_kc_as_current() -> None:
+    session = _session()
+    session["goal"]["knowledge_components"] = [
+        "递归",
+        "状态定义",
+        "状态转移",
+        "最优子结构",
+    ]
+    context = build_relevant_history(
+        session,
+        "继续检查状态转移",
+        max_recent_turns=4,
+        max_chars=8000,
+    )
+
+    assert context["current_knowledge_components"] == ["状态转移"]
+    assert [item["round"] for item in context["recent_turns"]] == [4, 5, 7, 8]
+
+
+def test_correct_same_kc_clears_an_older_cross_focus_unresolved_event() -> None:
+    session = _session()
+    session["history"] = [
+        _event(
+            1,
+            focus="prerequisite",
+            kc="状态转移",
+            signal="misconception",
+            learner_response="状态只看前一步。",
+        ),
+        _event(
+            2,
+            focus="conceptual",
+            kc="状态转移",
+            signal="correct",
+            learner_response="状态还可以依赖前两步，我已修正。",
+        ),
+    ]
+    context = build_layered_context(session, "继续", max_chars=14_000)
+
+    assert context["knowledge_state"]["unresolved_issues"] == []
 
 
 def test_history_context_redacts_outbound_text_without_leaking_findings() -> None:
@@ -326,3 +380,213 @@ def test_goal_plan_rejects_invalid_contracts(goal: dict) -> None:
 def test_goal_plan_rejects_non_mapping() -> None:
     with pytest.raises(TypeError, match="mapping"):
         build_goal_plan([])  # type: ignore[arg-type]
+
+
+def _production_session_without_injected_kcs() -> dict:
+    library = read_json(ROOT / "data/teacher_agent_skill_library_v2.json")
+    session = start_teacher_agent_session(
+        {
+            "concept": "动态规划的状态与转移",
+            "objective": "能够定义状态、写出转移并判断新问题是否适用。",
+            "max_rounds": 12,
+            "materials": {"practice": "写出爬楼梯问题的状态转移"},
+        },
+        {
+            "learner_level": "beginner",
+            "preferences": ["直观例子"],
+            "initial_mastery": {
+                "prerequisite": 0.2,
+                "conceptual": 0.1,
+                "procedural": 0.0,
+                "transfer": 0.0,
+            },
+            "known_misconceptions": [],
+            "conversation_history": [],
+        },
+        library,
+    )
+    return advance_teacher_agent_session(
+        session,
+        learner_response="我知道递归，但还不会定义状态。",
+        signal="partial",
+        signal_confidence=0.8,
+    )
+
+
+def test_layered_context_uses_real_goal_anchor_and_separates_memory_layers() -> None:
+    session = _production_session_without_injected_kcs()
+    response = "UNIQUE_CURRENT_ANSWER_7d35 我认为状态只需要看上一步。"
+    context = build_layered_context(session, response)
+
+    validate_layered_context(context)
+    assert context["schema"] == LAYERED_CONTEXT_SCHEMA
+    assert session["goal"]["knowledge_components"] == [
+        "动态规划的状态与转移"
+    ]
+    assert context["working_memory"]["current_knowledge_components"] == [
+        "动态规划的状态与转移"
+    ]
+    assert context["fixed_context"]["teaching_goal"]["mutable_by_model"] is False
+    assert context["semantic_summary"]["narrative_inference_added"] is False
+    assert (
+        context["semantic_summary"]["compression_method"]
+        == "deterministic_aggregate_and_extractive_checkpoints_no_model_generation"
+    )
+    assert context["candidate_long_term_memory"]["status"] == "candidate_unconfirmed"
+    assert context["candidate_long_term_memory"]["may_override_teacher_profile"] is False
+    assert context["budget"]["serialized_chars"] == _json_length(context)
+    assert context["budget"]["serialized_chars"] <= context["budget"]["max_chars"]
+    # The current answer has one authority location.  Its ledger row is only a
+    # pointer, which avoids silently weighting the same evidence twice.
+    assert json.dumps(context, ensure_ascii=False).count("UNIQUE_CURRENT_ANSWER_7d35") == 1
+
+
+def test_layered_context_retrieval_and_budget_are_deterministic() -> None:
+    session = _production_session_without_injected_kcs()
+    for index in range(2, 11):
+        session = advance_teacher_agent_session(
+            session,
+            learner_response=f"第 {index} 轮仍需检查状态定义。" + "解释" * 120,
+            signal="partial" if index % 2 else "confused",
+            signal_confidence=0.7,
+        )
+        if session["status"] != "active":
+            break
+    first = build_layered_context(session, "继续检查我的理解。", max_chars=8_000)
+    second = build_layered_context(session, "继续检查我的理解。", max_chars=8_000)
+
+    assert first == second
+    assert first["budget"]["serialized_chars"] <= 8_000
+    assert first["budget"]["truncated"] is True
+    assert first["retrieval"]["fixed_context_always_included"] is True
+    assert first["retrieval"]["semantic_summary_covers_omitted_turns"] is True
+    assert first["semantic_summary"]["turn_count"] >= 1
+    assert first["semantic_summary"]["focus_checkpoints"]
+    assert all(
+        item["evidence_refs"]
+        for item in first["semantic_summary"]["focus_checkpoints"]
+    )
+
+
+def test_layered_context_rejects_dangling_evidence_and_false_claims() -> None:
+    context = build_layered_context(
+        _production_session_without_injected_kcs(),
+        "我还没有完全理解。",
+    )
+    dangling = deepcopy(context)
+    dangling["knowledge_state"]["concept_mastery"][0]["evidence_refs"] = [
+        "missing:evidence"
+    ]
+    dangling["budget"]["serialized_chars"] = _json_length(dangling)
+    with pytest.raises(ValueError, match="dangling"):
+        validate_layered_context(dangling)
+
+    fabricated = deepcopy(context)
+    fabricated["claim_boundary"]["model_generated_history_summary"] = True
+    fabricated["budget"]["serialized_chars"] = _json_length(fabricated)
+    with pytest.raises(ValueError, match="claim boundary"):
+        validate_layered_context(fabricated)
+
+
+def test_minimum_budget_retains_current_answer_for_large_legal_session_shape() -> None:
+    session = _session()
+    session["goal"].update(
+        {
+            "objective": "检查复杂会话的最小上下文。",
+            "knowledge_components": [f"知识点{i}" * 40 for i in range(12)],
+            "success_thresholds": {
+                "prerequisite": 0.6,
+                "conceptual": 0.65,
+                "procedural": 0.6,
+                "transfer": 0.55,
+            },
+            "max_rounds": 50,
+            "materials": {f"材料{i}": "内容" * 500 for i in range(12)},
+        }
+    )
+    session["student_profile"] = {
+        "learner_level": "beginner",
+        "preferences": ["偏好" * 300 for _ in range(20)],
+        "accessibility_needs": ["需求" * 300 for _ in range(20)],
+        "initial_mastery": {
+            "prerequisite": 0.1,
+            "conceptual": 0.1,
+            "procedural": 0.0,
+            "transfer": 0.0,
+        },
+        "known_misconceptions": [
+            {"tag": f"m{i}", "description": "描述" * 300, "confidence": 0.8}
+            for i in range(8)
+        ],
+        "conversation_history": [
+            {
+                "response": "旧回答" * 300,
+                "signal": "partial",
+                "focus_dimension": "conceptual",
+            }
+            for _ in range(20)
+        ],
+        "adaptive_observations": [],
+        "adaptive_summary": {
+            "total_observation_count": 0,
+            "needs_human_review": False,
+        },
+    }
+    session["student_state"].update(
+        {
+            "knowledge_mastery": {
+                "prerequisite": 0.1,
+                "conceptual": 0.2,
+                "procedural": 0.1,
+                "transfer": 0.0,
+            },
+            "misconceptions": [
+                {
+                    "tag": f"m{i}",
+                    "description": "错误描述" * 200,
+                    "confidence": 0.8,
+                    "status": "active",
+                    "last_observed_round": 8,
+                }
+                for i in range(12)
+            ],
+            "understanding_signal": {
+                "label": "partial",
+                "confidence": 0.8,
+                "source": "deepseek_v4_flash",
+            },
+            "assessment_evidence": {
+                "source": "deepseek_v4_flash",
+                "needs_human_review": False,
+            },
+        }
+    )
+    template = deepcopy(session["history"])
+    session["history"] = []
+    for index in range(50):
+        event = deepcopy(template[index % len(template)])
+        event["round"] = index + 1
+        event["learner_response"] = "历史回答" * 500
+        event["structured_signal"]["source"] = "deepseek_v4_flash"
+        session["history"].append(event)
+
+    response = "UNIQUE_MINIMUM_CONTEXT_43c1" + "当前回答" * 1000
+    context = build_layered_context(
+        session,
+        response,
+        max_chars=6_000,
+        max_recent_turns=12,
+    )
+
+    validate_layered_context(context)
+    assert context["budget"]["serialized_chars"] <= 6_000
+    assert context["budget"]["truncated"] is True
+    assert context["retrieval"]["priority"] == (
+        "minimum_safety_envelope_after_budget_degradation"
+    )
+    assert "UNIQUE_MINIMUM_CONTEXT_43c1" in (
+        context["working_memory"]["current_learner_response"]
+    )
+    assert json.dumps(context, ensure_ascii=False).count(
+        "UNIQUE_MINIMUM_CONTEXT_43c1"
+    ) == 1

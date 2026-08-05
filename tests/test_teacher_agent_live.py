@@ -5,6 +5,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 import jsonschema
 
@@ -281,6 +282,184 @@ class LiveTeacherAgentTests(unittest.TestCase):
         self.assertIn("[REDACTED_EMAIL]", captured["prompt"])
         self.assertTrue(session["current_action"]["privacy_trace"]["redaction_applied"])
 
+    def test_prompt_uses_one_layered_context_and_full_v2_skill_contract(self) -> None:
+        captured: list[dict] = []
+        plans = deque(
+            [
+                _plan(
+                    signal="not_observed",
+                    confidence=0.0,
+                    skill_id="skill_diagnostic_questioning",
+                ),
+                _plan(
+                    signal="partial",
+                    confidence=0.82,
+                    skill_id="skill_concrete_example_bridge",
+                ),
+                _plan(
+                    signal="partial",
+                    confidence=0.78,
+                    skill_id="skill_socratic_understanding_check",
+                ),
+            ]
+        )
+
+        def transport(_url: str, _headers: dict, payload: bytes, _timeout: float):
+            body = json.loads(payload)
+            prompt = body["messages"][1]["content"]
+            captured.append(json.loads(prompt.split("\n", 1)[1]))
+            envelope = {
+                "id": "layered_context_test",
+                "choices": [
+                    {"message": {"content": json.dumps(plans.popleft())}}
+                ],
+            }
+            return 200, json.dumps(envelope).encode()
+
+        client = DeepSeekClient(
+            DeepSeekConfig(allow_remote_student_data=True),
+            api_key="secret-test-key",
+            transport=transport,
+        )
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], self.demo["student_profile"], self.library, client
+        )
+        session = advance_live_teacher_agent_session(
+            session,
+            learner_response="我知道递归，但状态的定义还不完整。",
+            client=client,
+        )
+        unique_response = "UNIQUE_LIVE_RESPONSE_91f3 我认为只需要记录上一步。"
+        session = advance_live_teacher_agent_session(
+            session,
+            learner_response=unique_response,
+            client=client,
+        )
+
+        payload = captured[-1]
+        self.assertIn("teaching_context", payload)
+        for obsolete in (
+            "goal",
+            "student_profile",
+            "student_state",
+            "goal_plan",
+            "current_action",
+            "relevant_history",
+            "learner_response",
+        ):
+            self.assertNotIn(obsolete, payload)
+        self.assertEqual(
+            json.dumps(payload, ensure_ascii=False).count(
+                "UNIQUE_LIVE_RESPONSE_91f3"
+            ),
+            1,
+        )
+        context = payload["teaching_context"]
+        self.assertEqual(
+            context["working_memory"]["current_knowledge_components"],
+            ["动态规划的状态与转移"],
+        )
+        self.assertEqual(
+            context["candidate_long_term_memory"]["status"],
+            "candidate_unconfirmed",
+        )
+        self.assertFalse(
+            context["candidate_long_term_memory"]["may_override_teacher_profile"]
+        )
+        self.assertEqual(
+            context["candidate_long_term_memory"]["retained_for_context"], 1
+        )
+        diagnostic = next(
+            item
+            for item in payload["available_skills"]
+            if item["skill_id"] == "skill_diagnostic_questioning"
+        )
+        self.assertEqual(diagnostic["max_repeat"], 2)
+        self.assertEqual(diagnostic["preconditions"], ["目标已定义"])
+        self.assertEqual(
+            diagnostic["failure_transition"], "skill_retrieval_review"
+        )
+        self.assertIn("前置维度已稳定达标", diagnostic["contraindications"])
+        self.assertIn("首轮", diagnostic["applicable_when"])
+        self.assertEqual(
+            session["agent_runtime"]["prompt_version"],
+            "teaching_agent_assess_route_act_v2_layered_context",
+        )
+        self.assertEqual(
+            live_session_view(session)["context_memory"],
+            session["context_memory"],
+        )
+
+    def test_fallback_history_is_labeled_and_never_promoted_to_long_term_memory(self) -> None:
+        captured: list[dict] = []
+        plans = deque(
+            [
+                _plan(
+                    signal="not_observed",
+                    confidence=0.0,
+                    skill_id="skill_diagnostic_questioning",
+                ),
+                _plan(
+                    signal="partial",
+                    confidence=0.8,
+                    skill_id="unknown_skill",
+                ),
+                _plan(
+                    signal="partial",
+                    confidence=0.8,
+                    skill_id="skill_concrete_example_bridge",
+                ),
+            ]
+        )
+
+        def transport(_url: str, _headers: dict, payload: bytes, _timeout: float):
+            body = json.loads(payload)
+            captured.append(
+                json.loads(body["messages"][1]["content"].split("\n", 1)[1])
+            )
+            envelope = {
+                "id": "fallback_context_test",
+                "choices": [
+                    {"message": {"content": json.dumps(plans.popleft())}}
+                ],
+            }
+            return 200, json.dumps(envelope).encode()
+
+        client = DeepSeekClient(
+            DeepSeekConfig(allow_remote_student_data=True),
+            api_key="secret-test-key",
+            transport=transport,
+        )
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], self.demo["student_profile"], self.library, client
+        )
+        session = advance_live_teacher_agent_session(
+            session,
+            learner_response="第一次请求会触发规则回退。",
+            client=client,
+        )
+        self.assertEqual(session["student_profile"]["adaptive_observations"], [])
+        session = advance_live_teacher_agent_session(
+            session,
+            learner_response="请继续，但不要把规则标签冒充模型判断。",
+            client=client,
+        )
+
+        context = captured[-1]["teaching_context"]
+        sources = {
+            item["observation_source"]
+            for item in context["knowledge_state"]["unresolved_issues"]
+        }
+        self.assertIn("deterministic_safety_fallback", sources)
+        self.assertEqual(
+            context["candidate_long_term_memory"]["observations"], []
+        )
+        self.assertTrue(
+            context["claim_boundary"][
+                "fallback_observations_are_labeled_by_actual_source"
+            ]
+        )
+
     def test_fabricated_evidence_excerpt_falls_back_to_redacted_current_answer(self) -> None:
         calls: list[dict] = []
         initial = _plan(
@@ -405,6 +584,35 @@ class LiveTeacherAgentTests(unittest.TestCase):
             summary["retained_observation_count"], ADAPTIVE_OBSERVATION_LIMIT
         )
 
+    def test_live_context_budget_is_runtime_configurable_and_bounded(self) -> None:
+        client = _client(
+            [
+                _plan(
+                    signal="not_observed",
+                    confidence=0.0,
+                    skill_id="skill_diagnostic_questioning",
+                )
+            ]
+        )
+        session = start_live_teacher_agent_session(
+            self.demo["goal"],
+            self.demo["student_profile"],
+            self.library,
+            client,
+            options=LiveAgentOptions(
+                maximum_context_chars=8_000,
+                maximum_context_turns=2,
+            ),
+        )
+        budget = session["context_memory"]["budget"]
+        self.assertEqual(budget["max_chars"], 8_000)
+        self.assertLessEqual(budget["serialized_chars"], 8_000)
+        self.assertLessEqual(budget["max_recent_turns"], 2)
+        with self.assertRaisesRegex(Exception, "maximum_context_chars"):
+            LiveAgentOptions(maximum_context_chars=5_999).validated()
+        with self.assertRaisesRegex(Exception, "maximum_context_turns"):
+            LiveAgentOptions(maximum_context_turns=13).validated()
+
     def test_invalid_model_output_uses_visible_rule_fallback(self) -> None:
         bad = _plan(signal="not_observed", confidence=0.0, skill_id="unknown_skill")
         session = start_live_teacher_agent_session(
@@ -420,6 +628,59 @@ class LiveTeacherAgentTests(unittest.TestCase):
             "deterministic_safety_fallback",
         )
         self.assertEqual(session["student_profile"]["adaptive_observations"], [])
+
+    def test_automatic_skill_must_match_applicable_signal_contract(self) -> None:
+        invalid = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_transfer_check",
+        )
+        session = start_live_teacher_agent_session(
+            self.demo["goal"],
+            self.demo["student_profile"],
+            self.library,
+            _client([invalid]),
+            options=LiveAgentOptions(fallback_to_rules=True),
+        )
+
+        self.assertEqual(session["agent_runtime"]["fallback_count"], 1)
+        self.assertIn(
+            "applicable_signals",
+            session["agent_runtime"]["last_error"],
+        )
+        self.assertEqual(
+            session["current_action"]["decision_origin"],
+            "deterministic_safety_fallback",
+        )
+
+    def test_automatic_correction_requires_evidence_bound_misconception(self) -> None:
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+        )
+        invalid_correction = _plan(
+            signal="misconception",
+            confidence=0.9,
+            skill_id="skill_misconception_contrast",
+            misconception_tag=None,
+        )
+        client = _client([initial, invalid_correction])
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], self.demo["student_profile"], self.library, client
+        )
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="我觉得状态只需要看前一步。",
+            client=client,
+        )
+
+        self.assertEqual(updated["agent_runtime"]["fallback_count"], 1)
+        self.assertIn("misconception tag", updated["agent_runtime"]["last_error"])
+        self.assertEqual(
+            updated["history"][-1]["structured_signal"]["source"],
+            "deterministic_safety_fallback",
+        )
 
     def test_turn_fallback_does_not_create_adaptive_profile_candidate(self) -> None:
         initial = _plan(
@@ -444,7 +705,101 @@ class LiveTeacherAgentTests(unittest.TestCase):
             updated["history"][-1]["structured_signal"]["source"],
             "deterministic_safety_fallback",
         )
+        self.assertEqual(updated["history"][-1]["structured_signal"]["confidence"], 0.0)
+        self.assertEqual(
+            updated["student_state"]["understanding_signal"]["source"],
+            "deterministic_safety_fallback",
+        )
+        self.assertEqual(
+            updated["student_state"]["understanding_signal"]["confidence"],
+            0.0,
+        )
+        self.assertTrue(
+            updated["student_state"]["understanding_signal"]["provisional"]
+        )
+        self.assertEqual(
+            updated["student_state"]["assessment_evidence"]["source"],
+            "deterministic_safety_fallback",
+        )
+        self.assertTrue(
+            updated["student_state"]["assessment_evidence"]["needs_human_review"]
+        )
         validate_session(updated)
+
+    def test_context_build_failure_uses_explicit_rule_fallback(self) -> None:
+        initial_client = _client(
+            [
+                _plan(
+                    signal="not_observed",
+                    confidence=0.0,
+                    skill_id="skill_diagnostic_questioning",
+                )
+            ]
+        )
+        session = start_live_teacher_agent_session(
+            self.demo["goal"],
+            self.demo["student_profile"],
+            self.library,
+            initial_client,
+        )
+        unused_client = _client([])
+        with patch(
+            "teaching_skill_miner.teacher_agent_live.build_layered_context",
+            side_effect=ValueError("injected context failure"),
+        ):
+            updated = advance_live_teacher_agent_session(
+                session,
+                learner_response="上下文失败时仍应保留本轮输入。",
+                client=unused_client,
+            )
+
+        self.assertEqual(updated["round"], 1)
+        self.assertEqual(updated["agent_runtime"]["fallback_count"], 1)
+        self.assertEqual(
+            updated["agent_runtime"]["last_context_trace"]["request_outcome"],
+            "deterministic_safety_fallback",
+        )
+        self.assertEqual(
+            updated["history"][-1]["structured_signal"]["source"],
+            "deterministic_safety_fallback",
+        )
+        self.assertIn(
+            "上下文失败时仍应保留本轮输入",
+            updated["context_memory"]["working_memory"][
+                "current_learner_response"
+            ],
+        )
+        self.assertFalse(
+            updated["context_memory"]["claim_boundary"][
+                "model_generated_history_summary"
+            ]
+        )
+        validate_session(updated)
+
+    def test_initial_context_build_failure_returns_auditable_fallback(self) -> None:
+        unused_client = _client([])
+        with patch(
+            "teaching_skill_miner.teacher_agent_live.build_layered_context",
+            side_effect=ValueError("injected initial context failure"),
+        ):
+            session = start_live_teacher_agent_session(
+                self.demo["goal"],
+                self.demo["student_profile"],
+                self.library,
+                unused_client,
+            )
+
+        self.assertEqual(session["round"], 0)
+        self.assertEqual(session["agent_runtime"]["fallback_count"], 1)
+        self.assertEqual(
+            session["current_action"]["decision_origin"],
+            "deterministic_safety_fallback",
+        )
+        self.assertEqual(
+            session["agent_runtime"]["last_context_trace"]["request_outcome"],
+            "deterministic_safety_fallback",
+        )
+        validate_session(session)
 
     def test_commands_and_manual_stop(self) -> None:
         command = parse_skill_command("/+skill 误解对比纠错", self.library)

@@ -25,6 +25,7 @@ from .teacher_agent import (
     PRIMARY_ROLES,
     SIGNALS,
     TeacherAgentError,
+    _active_knowledge_components,
     _refresh_integrity,
     _selection_scores,
     _skill_index,
@@ -36,9 +37,13 @@ from .teacher_agent import (
     validate_skill_library,
 )
 from .teacher_agent_context import (
+    DEFAULT_LAYERED_CONTEXT_CHARS,
+    LAYERED_CONTEXT_SCHEMA,
+    MINIMUM_LAYERED_CONTEXT_CHARS,
     build_goal_plan,
-    build_relevant_history,
-    redact_remote_text,
+    build_layered_context,
+    build_minimal_layered_context,
+    validate_layered_context,
 )
 
 
@@ -68,12 +73,33 @@ class LiveAgentOptions:
     fallback_to_rules: bool = True
     maximum_supporting_skills: int = 2
     minimum_assessment_confidence: float = 0.35
+    maximum_context_chars: int = DEFAULT_LAYERED_CONTEXT_CHARS
+    maximum_context_turns: int = 6
 
     def validated(self) -> "LiveAgentOptions":
         if not 0 <= self.maximum_supporting_skills <= 2:
             raise LiveTeacherAgentError("maximum_supporting_skills must be in [0, 2]")
         if not 0 <= self.minimum_assessment_confidence <= 1:
             raise LiveTeacherAgentError("minimum_assessment_confidence must be in [0, 1]")
+        if (
+            isinstance(self.maximum_context_chars, bool)
+            or not isinstance(self.maximum_context_chars, int)
+            or not MINIMUM_LAYERED_CONTEXT_CHARS
+            <= self.maximum_context_chars
+            <= 30_000
+        ):
+            raise LiveTeacherAgentError(
+                "maximum_context_chars must be an integer in "
+                f"[{MINIMUM_LAYERED_CONTEXT_CHARS}, 30000]"
+            )
+        if (
+            isinstance(self.maximum_context_turns, bool)
+            or not isinstance(self.maximum_context_turns, int)
+            or not 0 <= self.maximum_context_turns <= 12
+        ):
+            raise LiveTeacherAgentError(
+                "maximum_context_turns must be an integer in [0, 12]"
+            )
         return self
 
 
@@ -81,36 +107,49 @@ def _compact_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
-def _finding_kinds(*groups: list[dict[str, Any]]) -> list[str]:
-    return sorted(
-        {
-            str(item.get("kind"))
-            for group in groups
-            for item in group
-            if item.get("kind")
-        }
-    )
-
-
 def _skill_prompt_view(library: Mapping[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {
+    result: list[dict[str, Any]] = []
+    for skill in library["skills"]:
+        contract = skill.get("execution_contract", {})
+        if not isinstance(contract, Mapping):
+            contract = {}
+        result.append(
+            {
             "skill_id": skill["skill_id"],
             "name": skill["name"],
             "role": skill["role"],
             "focus_dimension": skill["focus_dimension"],
-            "trigger": skill.get("applicable_when", skill.get("selection_rationale", "")),
-            "contraindications": skill.get("contraindications", []),
+            "applicable_signals": list(skill.get("applicable_signals", [])),
+            "applicable_when": contract.get(
+                "applicable_when",
+                skill.get("applicable_when", skill.get("selection_rationale", "")),
+            ),
+            "preconditions": list(
+                contract.get("preconditions", skill.get("preconditions", []))
+            ),
+            "contraindications": list(
+                contract.get(
+                    "contraindications", skill.get("contraindications", [])
+                )
+            ),
+            "postconditions": list(
+                contract.get("postconditions", skill.get("postconditions", []))
+            ),
+            "failure_transition": contract.get(
+                "failure_transition", skill.get("failure_transition")
+            ),
+            "max_repeat": contract.get("max_repeat"),
             "success_signal": skill.get("expected_signal", ""),
             "is_support": skill["role"] == "support",
         }
-        for skill in library["skills"]
-    ]
+        )
+    return result
 
 
 def _system_prompt() -> str:
     return """你是实时 Teaching Agent 的单轮决策器，底层模型为 DeepSeek V4 Flash。
-你只能根据给定 goal、学生状态、相关历史和 Skill Library 处理当前一轮；不要预写后续对话。
+你只能根据给定 teaching_context 和 Skill Library 处理当前一轮；不要预写后续对话。
+teaching_context 是唯一权威上下文：固定目标/教师画像不可改写；working_memory 是近期逐轮证据；semantic_summary 只含确定性聚合与原文抽取检查点，不是模型总结；candidate_long_term_memory 全部是未确认、低权重假设，不得当作已知事实。
 
 必须同时完成：
 1. 诊断当前学生回答，但只给简短、可审计的 diagnosis_reason，不输出思维链；
@@ -153,50 +192,13 @@ def _system_prompt() -> str:
 def _remote_payload(
     session: Mapping[str, Any],
     *,
-    learner_response: str | None,
+    context_memory: Mapping[str, Any],
     manual_skill_id: str | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    goal_text, goal_findings = redact_remote_text(_compact_json(session["goal"]))
-    profile_text, profile_findings = redact_remote_text(
-        _compact_json(
-            {
-                "learner_level": session["student_profile"].get("learner_level"),
-                "preferences": session["student_profile"].get("preferences", []),
-                "accessibility_needs": session["student_profile"].get(
-                    "accessibility_needs", []
-                ),
-                "provided_conversation_history": session["student_profile"].get(
-                    "conversation_history", []
-                )[-6:],
-            }
-        )
-    )
-    response_text, response_findings = redact_remote_text(learner_response or "")
-    relevant = build_relevant_history(
-        session,
-        response_text,
-        max_recent_turns=6,
-        max_chars=8_000,
-    )
-    relevant_text, history_findings = redact_remote_text(_compact_json(relevant))
-    state_text, state_findings = redact_remote_text(
-        _compact_json(session["student_state"])
-    )
-    plan_text, plan_findings = redact_remote_text(
-        _compact_json(session.get("goal_plan", {}))
-    )
-    action_text, action_findings = redact_remote_text(
-        _compact_json(session.get("current_action", {}))
-    )
+    validate_layered_context(context_memory)
     payload = {
-        "operation": "initial_action" if learner_response is None else "assess_and_act",
-        "goal": json.loads(goal_text),
-        "student_profile": json.loads(profile_text),
-        "student_state": json.loads(state_text),
-        "goal_plan": json.loads(plan_text),
-        "current_action": json.loads(action_text),
-        "relevant_history": json.loads(relevant_text),
-        "learner_response": response_text,
+        "operation": context_memory["snapshot"]["operation"],
+        "teaching_context": deepcopy(dict(context_memory)),
         "manual_primary_skill_id": manual_skill_id,
         "available_skills": _skill_prompt_view(session["skill_library"]),
         "constraints": {
@@ -206,33 +208,16 @@ def _remote_payload(
             "manual_skill_is_mandatory_when_present": True,
         },
     }
+    privacy_layer = context_memory.get("privacy", {})
     privacy = {
-        "redaction_applied": bool(
-            goal_findings
-            or profile_findings
-            or response_findings
-            or history_findings
-            or state_findings
-            or plan_findings
-            or action_findings
-            or relevant.get("privacy", {}).get("remote_text_redacted")
-        ),
+        "redaction_applied": bool(privacy_layer.get("remote_text_redacted")),
         "redaction_finding_types": sorted(
-            set(
-                _finding_kinds(
-                    goal_findings,
-                    profile_findings,
-                    response_findings,
-                    history_findings,
-                    state_findings,
-                    plan_findings,
-                    action_findings,
-                )
-            )
-            | set(relevant.get("privacy", {}).get("finding_counts", {}))
+            privacy_layer.get("finding_counts", {})
         ),
         "raw_identity_fields_sent": False,
         "media_sent": False,
+        "context_schema": LAYERED_CONTEXT_SCHEMA,
+        "context_serialized_chars": context_memory["budget"]["serialized_chars"],
     }
     return payload, privacy
 
@@ -291,6 +276,19 @@ def _validated_plan(
         selected_id = manual_skill_id
     if selected_id not in skills or skills[selected_id]["role"] not in PRIMARY_ROLES:
         raise LiveTeacherAgentError("model selected an unknown or non-primary Skill")
+    if not manual_skill_id:
+        applicable_signals = set(skills[selected_id].get("applicable_signals", []))
+        if signal not in applicable_signals:
+            raise LiveTeacherAgentError(
+                f"model selected {selected_id} outside its applicable_signals contract"
+            )
+        if (
+            skills[selected_id]["role"] == "correction"
+            and not str(diagnosis_raw.get("misconception_tag") or "").strip()
+        ):
+            raise LiveTeacherAgentError(
+                "correction Skill requires an evidence-bound misconception tag"
+            )
     if not initial:
         repeat_limit = int(
             skills[selected_id].get("execution_contract", {}).get("max_repeat", 50)
@@ -398,12 +396,13 @@ def _request_plan(
     session: Mapping[str, Any],
     *,
     learner_response: str | None,
+    context_memory: Mapping[str, Any],
     manual_skill_id: str | None,
     options: LiveAgentOptions,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     payload, privacy = _remote_payload(
         session,
-        learner_response=learner_response,
+        context_memory=context_memory,
         manual_skill_id=manual_skill_id,
     )
     raw, trace = client.chat_json(
@@ -420,7 +419,9 @@ def _request_plan(
         raw,
         session,
         initial=learner_response is None,
-        evidence_source=str(payload["learner_response"]),
+        evidence_source=str(
+            context_memory["working_memory"]["current_learner_response"]
+        ),
         manual_skill_id=manual_skill_id,
         options=options,
     )
@@ -434,7 +435,7 @@ def _runtime_metadata(client: DeepSeekClient, options: LiveAgentOptions) -> dict
         "mode": "deepseek_live",
         "provider": public["provider"],
         "model": public["model"],
-        "prompt_version": "teaching_agent_assess_route_act_v1",
+        "prompt_version": "teaching_agent_assess_route_act_v2_layered_context",
         "fallback_to_rules": options.fallback_to_rules,
         "fallback_count": 0,
         "model_call_count": 0,
@@ -442,6 +443,29 @@ def _runtime_metadata(client: DeepSeekClient, options: LiveAgentOptions) -> dict
         "last_error": None,
         "remote_student_data_opt_in": public["remote_student_data_opt_in"],
         "api_key_exposed": False,
+        "context_policy": "layered_bounded_evidence_linked_v1",
+        "last_context_trace": None,
+    }
+
+
+def _store_context_memory(
+    session: dict[str, Any],
+    context_memory: Mapping[str, Any],
+    *,
+    request_outcome: str,
+) -> None:
+    validate_layered_context(context_memory)
+    session["context_memory"] = deepcopy(dict(context_memory))
+    session["agent_runtime"]["last_context_trace"] = {
+        "schema": LAYERED_CONTEXT_SCHEMA,
+        "content_sha256": canonical_sha256(context_memory),
+        "serialized_chars": context_memory["budget"]["serialized_chars"],
+        "max_chars": context_memory["budget"]["max_chars"],
+        "retained_recent_turns": context_memory["budget"][
+            "retained_recent_turns"
+        ],
+        "request_outcome": request_outcome,
+        "model_generated_memory_written": False,
     }
 
 
@@ -458,6 +482,15 @@ def _action_from_plan(
     selected = skills[decision["primary_skill_id"]]
     previous_id = previous_primary_skill_id
     switched = previous_id is not None and previous_id != selected["skill_id"]
+    active_knowledge_components = _active_knowledge_components(
+        session,
+        focus_dimension=str(decision["next_focus"]),
+        action_text=(
+            f"{plan['teacher_action']['message']}\n"
+            f"{plan['teacher_action']['expected_signal']}\n"
+            f"{decision['selection_reason']}"
+        ),
+    )
     candidates = _selection_scores(
         session,
         policy=session["policy"],
@@ -471,6 +504,7 @@ def _action_from_plan(
             "name": selected["name"],
             "role": selected["role"],
             "focus_dimension": selected["focus_dimension"],
+            "knowledge_components": deepcopy(active_knowledge_components),
             "source": deepcopy(selected["source"]),
         },
         "supporting_skills": [
@@ -501,11 +535,13 @@ def _action_from_plan(
         },
         "model_trace": deepcopy(dict(trace)),
         "privacy_trace": deepcopy(dict(privacy)),
+        "knowledge_components": deepcopy(active_knowledge_components),
     }
     session["student_state"]["next_focus"] = {
         "dimension": decision["next_focus"],
         "reason": decision["selection_reason"],
         "selected_skill_id": selected["skill_id"],
+        "knowledge_components": deepcopy(active_knowledge_components),
     }
     return action
 
@@ -525,6 +561,34 @@ def _record_fallback(
     }
     session["current_action"]["decision_origin"] = "deterministic_safety_fallback"
     session["current_action"]["model_trace"] = deepcopy(runtime["last_model_trace"])
+    if isinstance(runtime.get("last_context_trace"), dict):
+        runtime["last_context_trace"]["request_outcome"] = (
+            "deterministic_safety_fallback"
+        )
+
+
+def _mark_rule_fallback_observation(session: dict[str, Any]) -> None:
+    """Make rule-only provenance consistent across event and current state."""
+
+    state = session["student_state"]
+    signal = state["understanding_signal"]
+    signal["confidence"] = 0.0
+    signal["source"] = "deterministic_safety_fallback"
+    signal["provisional"] = True
+    state["assessment_confidence"] = 0.0
+    state["assessment_evidence"] = {
+        "excerpt": "",
+        "reason": "模型语义判断不可用；当前标签仅用于安全回退",
+        "source": "deterministic_safety_fallback",
+        "needs_human_review": True,
+    }
+    if session["history"]:
+        session["history"][-1]["structured_signal"] = {
+            "label": signal["label"],
+            "confidence": 0.0,
+            "source": "deterministic_safety_fallback",
+            "provisional": True,
+        }
 
 
 def _update_runtime_after_call(
@@ -534,6 +598,8 @@ def _update_runtime_after_call(
     runtime["model_call_count"] += 1
     runtime["last_model_trace"] = deepcopy(dict(trace))
     runtime["last_error"] = None
+    if isinstance(runtime.get("last_context_trace"), dict):
+        runtime["last_context_trace"]["request_outcome"] = "validated_model_plan"
 
 
 def _update_interaction_statistics(
@@ -778,12 +844,47 @@ def start_live_teacher_agent_session(
             "media_sent_to_model": False,
         }
     )
+    try:
+        context_memory = build_layered_context(
+            session,
+            None,
+            max_chars=options.maximum_context_chars,
+            max_recent_turns=options.maximum_context_turns,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        if not options.fallback_to_rules:
+            raise LiveTeacherAgentError(
+                "layered context could not be created for the initial action"
+            ) from exc
+        context_memory = build_minimal_layered_context(
+            session,
+            None,
+            max_chars=options.maximum_context_chars,
+        )
+        _store_context_memory(
+            session,
+            context_memory,
+            request_outcome="deterministic_safety_fallback",
+        )
+        session = _refresh_integrity(session)
+        _record_fallback(
+            session,
+            error_message=f"layered context build failed: {exc}",
+            request_kind="teacher_agent_initial_context_build",
+        )
+        return _refresh_integrity(session)
+    _store_context_memory(
+        session,
+        context_memory,
+        request_outcome="prepared_not_yet_validated",
+    )
     session = _refresh_integrity(session)
     try:
         plan, trace, privacy = _request_plan(
             client,
             session,
             learner_response=None,
+            context_memory=context_memory,
             manual_skill_id=None,
             options=options,
         )
@@ -835,10 +936,56 @@ def advance_live_teacher_agent_session(
     previous_primary_skill_id = current["current_action"]["primary_skill"]["skill_id"]
     prior_switch_count = int(current["control"]["skill_switch_count"])
     try:
+        context_memory = build_layered_context(
+            current,
+            response,
+            max_chars=options.maximum_context_chars,
+            max_recent_turns=options.maximum_context_turns,
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        if not options.fallback_to_rules:
+            raise LiveTeacherAgentError(
+                "layered context could not be created for the learner turn"
+            ) from exc
+        context_memory = build_minimal_layered_context(
+            current,
+            response,
+            max_chars=options.maximum_context_chars,
+        )
+        current = _refresh_integrity(current)
+        updated = advance_teacher_agent_session(
+            current,
+            learner_response=response,
+            signal="no_response" if not response else "confused",
+            signal_confidence=0.0,
+        )
+        _store_context_memory(
+            updated,
+            context_memory,
+            request_outcome="deterministic_safety_fallback",
+        )
+        _record_fallback(
+            updated,
+            error_message=f"layered context build failed: {exc}",
+            request_kind="teacher_agent_turn_context_build",
+        )
+        _mark_rule_fallback_observation(updated)
+        if updated["history"]:
+            updated["history"][-1]["model_error"] = str(exc)[:240]
+        _update_goal_plan_progress(updated)
+        return _refresh_integrity(updated)
+    _store_context_memory(
+        current,
+        context_memory,
+        request_outcome="prepared_not_yet_validated",
+    )
+    current = _refresh_integrity(current)
+    try:
         plan, trace, privacy = _request_plan(
             client,
             current,
             learner_response=response,
+            context_memory=context_memory,
             manual_skill_id=manual_skill_id,
             options=options,
         )
@@ -850,17 +997,20 @@ def advance_live_teacher_agent_session(
             current,
             learner_response=response,
             signal=fallback_signal,
-            signal_confidence=1.0,
+            signal_confidence=0.0,
+        )
+        _store_context_memory(
+            updated,
+            context_memory,
+            request_outcome="deterministic_safety_fallback",
         )
         _record_fallback(
             updated,
             error_message=str(exc),
             request_kind="teacher_agent_turn",
         )
+        _mark_rule_fallback_observation(updated)
         if updated["history"]:
-            updated["history"][-1]["structured_signal"]["source"] = (
-                "deterministic_safety_fallback"
-            )
             updated["history"][-1]["model_error"] = str(exc)[:240]
         _update_goal_plan_progress(updated)
         return _refresh_integrity(updated)
@@ -878,6 +1028,11 @@ def advance_live_teacher_agent_session(
         signal=effective_signal,
         misconception_tag=diagnosis["misconception_tag"],
         signal_confidence=effective_confidence,
+    )
+    _store_context_memory(
+        updated,
+        context_memory,
+        request_outcome="validated_model_plan",
     )
     _update_runtime_after_call(updated, trace)
     _update_interaction_statistics(updated, response=response, diagnosis=diagnosis)
@@ -998,6 +1153,7 @@ def live_session_view(session: Mapping[str, Any]) -> dict[str, Any]:
         {
             "goal_plan": deepcopy(session.get("goal_plan", {})),
             "agent_runtime": deepcopy(session.get("agent_runtime", {})),
+            "context_memory": deepcopy(session.get("context_memory", {})),
             "adaptive_student_profile": {
                 "observations": deepcopy(
                     session.get("student_profile", {}).get(

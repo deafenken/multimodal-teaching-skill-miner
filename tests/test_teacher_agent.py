@@ -125,6 +125,33 @@ class TeacherAgentTests(unittest.TestCase):
         self.assertIn("next_focus", state)
         self.assertTrue(session["current_action"]["selection_reason"])
 
+    def test_each_action_tags_only_the_active_goal_knowledge_component(self) -> None:
+        goal = deepcopy(self.demo["goal"])
+        goal["knowledge_components"] = [
+            "递归",
+            "状态定义",
+            "状态转移",
+            "迁移判定",
+        ]
+        session = start_teacher_agent_session(
+            goal,
+            self.demo["student_profile"],
+            self.library,
+        )
+
+        self.assertEqual(
+            session["current_action"]["knowledge_components"],
+            ["递归"],
+        )
+        self.assertEqual(
+            session["student_state"]["next_focus"]["knowledge_components"],
+            ["递归"],
+        )
+        self.assertNotEqual(
+            session["current_action"]["knowledge_components"],
+            session["goal"]["knowledge_components"],
+        )
+
     def test_misconception_triggers_correction_and_can_be_resolved(self) -> None:
         session = self._start()
         session = advance_teacher_agent_session(

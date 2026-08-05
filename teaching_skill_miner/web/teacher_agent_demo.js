@@ -8,6 +8,10 @@
     controlMode: "auto",
     manualSkillId: "",
     sessionInitialMastery: {},
+    lastSetupPayload: null,
+    pendingStart: null,
+    pendingTurn: null,
+    activeView: "learning",
     toastTimer: null
   };
 
@@ -137,6 +141,98 @@
     const raw = textValue(value, "");
     if (!raw) return "—";
     return raw.length > maximum ? `${raw.slice(0, maximum - 1)}…` : raw;
+  }
+
+  function makeIdempotencyKey() {
+    if (window.crypto && typeof window.crypto.randomUUID === "function") {
+      return window.crypto.randomUUID();
+    }
+    return `turn-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  function turnRequestFingerprint(payload) {
+    return JSON.stringify({
+      learner_response: payload.learner_response,
+      session_id: payload.session_id,
+      expected_round: payload.expected_round,
+      signal: payload.signal ?? null,
+      signal_confidence: payload.signal_confidence ?? null,
+      misconception_tag: payload.misconception_tag ?? null,
+      manual_skill_id: payload.manual_skill_id ?? null
+    });
+  }
+
+  function clearPendingTurn() {
+    app.pendingTurn = null;
+  }
+
+  function setAppView(view) {
+    const evaluation = view === "evaluation";
+    app.activeView = evaluation ? "evaluation" : "learning";
+    select("#learningView").hidden = evaluation;
+    select("#evaluationView").hidden = !evaluation;
+    select("#learningViewButton").classList.toggle("active", !evaluation);
+    select("#evaluationViewButton").classList.toggle("active", evaluation);
+    select("#learningViewButton").setAttribute("aria-pressed", String(!evaluation));
+    select("#evaluationViewButton").setAttribute("aria-pressed", String(evaluation));
+  }
+
+  function setInspector(open) {
+    const shell = select("#appShell");
+    shell.classList.toggle("inspector-open", open);
+    shell.classList.toggle("inspector-collapsed", !open);
+    select("#inspectorToggle").setAttribute("aria-expanded", String(open));
+    select("#inspectorToggle").setAttribute("aria-label", open ? "收起学习状态" : "打开学习状态");
+  }
+
+  function setSidebar(open) {
+    select("#appShell").classList.toggle("sidebar-open", open);
+    select("#sidebarToggle").setAttribute("aria-expanded", String(open));
+  }
+
+  function showSetupForm(visible) {
+    select("#setupForm").hidden = !visible;
+    const hasSession = Boolean(app.session);
+    select("#presetButtonLabel").textContent = hasSession
+      ? (visible ? "收起任务设置" : "新建 / 编辑任务")
+      : "载入演示任务";
+    select("#presetButtonHint").textContent = hasSession
+      ? (visible ? "当前会话仍保留，提交后新建会话" : "查看目标、画像与达标条件")
+      : "填写一组可直接运行的样例";
+  }
+
+  function handleSetupButton() {
+    if (!app.session) {
+      fillSetupForm();
+      showToast("演示任务已填入，可以直接检查后开始学习。 ");
+      return;
+    }
+    const nextVisible = select("#setupForm").hidden;
+    showSetupForm(nextVisible);
+    if (nextVisible) select("#conceptInput").focus();
+  }
+
+  function updateWorkspaceIdentity(goal = null) {
+    const currentGoal = object(goal || app.session?.goal || app.lastSetupPayload?.goal);
+    const concept = textValue(currentGoal.concept || select("#conceptInput").value, "尚未开始学习");
+    const objective = textValue(currentGoal.objective || select("#objectiveInput").value, "先告诉系统“要学什么”和“学到什么程度”。");
+    select("#workspaceGoalTitle").textContent = concept;
+    select("#sidebarConceptTitle").textContent = concept;
+    select("#sidebarObjectiveText").textContent = compactText(objective, 110);
+    select("#conversationTitle").textContent = app.session ? concept : "准备开始";
+  }
+
+  function renderPhase(session) {
+    const active = session?.status === "active";
+    const terminal = session && !active;
+    const setup = select("#phaseSetup");
+    const learn = select("#phaseLearn");
+    const finish = select("#phaseFinish");
+    setup.classList.toggle("current", !session);
+    setup.classList.toggle("completed", Boolean(session));
+    learn.classList.toggle("current", Boolean(active));
+    learn.classList.toggle("completed", Boolean(terminal));
+    finish.classList.toggle("current", Boolean(terminal));
   }
 
   function providerReady() {
@@ -292,6 +388,7 @@
       .filter(Boolean)
       .join("\n");
     select("#remoteConsent").checked = false;
+    updateWorkspaceIdentity(goal);
   }
 
   function setupPayload() {
@@ -357,8 +454,11 @@
   }
 
   function setControlMode(mode, skillId = app.manualSkillId) {
-    app.controlMode = mode === "manual" ? "manual" : "auto";
-    app.manualSkillId = app.controlMode === "manual" ? textValue(skillId, "") : "";
+    const nextMode = mode === "manual" ? "manual" : "auto";
+    const nextSkillId = nextMode === "manual" ? textValue(skillId, "") : "";
+    if (app.controlMode !== nextMode || app.manualSkillId !== nextSkillId) clearPendingTurn();
+    app.controlMode = nextMode;
+    app.manualSkillId = nextSkillId;
     select("#autoModeButton").classList.toggle("active", app.controlMode === "auto");
     select("#manualModeButton").classList.toggle("active", app.controlMode === "manual");
     select("#autoModeButton").setAttribute("aria-pressed", String(app.controlMode === "auto"));
@@ -616,6 +716,188 @@
     }));
   }
 
+  function contextText(value, preferredKeys = []) {
+    if (typeof value === "string" || typeof value === "number") {
+      return compactText(value, 180);
+    }
+    if (Array.isArray(value)) {
+      return value.map((item) => contextText(item, preferredKeys)).filter((item) => item && item !== "—").join("；");
+    }
+    const record = object(value);
+    for (const key of preferredKeys) {
+      if (record[key] !== undefined && record[key] !== null) {
+        const rendered = contextText(record[key]);
+        if (rendered && rendered !== "—") return rendered;
+      }
+    }
+    return "";
+  }
+
+  function contextItems(value) {
+    if (Array.isArray(value)) {
+      return value.map((item) => {
+        if (typeof item === "string") return compactText(item, 100);
+        const record = object(item);
+        return contextText(record, ["description", "question", "learner_response_excerpt", "objective", "name", "tag", "dimension", "focus_dimension", "issue_kind", "skill_id", "text"]);
+      }).filter(Boolean);
+    }
+    const record = object(value);
+    return Object.entries(record).filter(([, item]) => item !== false && item !== null && item !== undefined)
+      .map(([key, item]) => {
+        const label = dimensionLabels[key] || key;
+        if (typeof item === "boolean") return label;
+        if (typeof item === "number") return `${label} ${item <= 1 ? probability(item) : numberScore(item, 0)}`;
+        return contextText(item, ["description", "name", "tag", "text"]) || label;
+      });
+  }
+
+  function renderContextMemory(session) {
+    const memory = object(session.context_memory);
+    const snapshot = object(memory.snapshot);
+    const snapshotRoundPresent = Object.prototype.hasOwnProperty.call(snapshot, "session_round_before_request");
+    const snapshotRound = Number(snapshot.session_round_before_request);
+    const operation = textValue(snapshot.operation, "");
+    const hasSnapshot = snapshot.kind === "bounded_outbound_model_request_context"
+      && ["initial_action", "assess_and_act"].includes(operation)
+      && snapshotRoundPresent
+      && Number.isInteger(snapshotRound)
+      && snapshotRound >= 0;
+    if (!hasSnapshot) {
+      select("#contextWindowText").textContent = "暂无请求快照";
+      select("#contextOperationText").textContent = "—";
+      select("#contextSnapshotRound").textContent = "—";
+      select("#contextBudgetText").textContent = "—";
+      select("#contextHistoryText").textContent = "—";
+      select("#contextSummary").textContent = "暂无请求快照。最新学生状态请看上方“知识掌握度”“这轮理解信号”和“接下来重点”；本区不会混入这些处理后结果。";
+      select("#contextMemoryList").replaceChildren(node("li", "", "暂无请求快照。"));
+      select("#contextBoundaryText").textContent = "只有后端返回带轮次与操作类型的模型请求快照后，本区才会展示内容。";
+      return;
+    }
+    const working = object(memory.working_memory);
+    const semantic = object(memory.semantic_memory || memory.semantic_summary);
+    const knowledge = object(memory.knowledge_state);
+    const fixedContext = object(memory.fixed_context);
+    const teacherProfile = object(fixedContext.teacher_provided_student_profile);
+    const retrieval = object(memory.retrieval);
+    const budget = object(memory.budget);
+    const selection = object(memory.selection);
+    const providedHistory = object(teacherProfile.provided_prior_context);
+    const providedHistoryCount = Math.max(0, finite(providedHistory.total_turn_count, 0));
+    const recent = array(
+      working.recent_turns
+      || retrieval.recent_turns
+      || retrieval.selected_turns
+      || memory.recent_turns
+    );
+    const visibleRecent = recent;
+    const earlier = object(
+      semantic.earlier_summary
+      || retrieval.earlier_summary
+      || memory.earlier_summary
+      || semantic
+    );
+    const maxRecent = Math.max(0, finite(
+      budget.max_recent_turns
+      ?? retrieval.max_recent_turns
+      ?? memory.max_recent_turns,
+      6
+    ));
+    const selectedCount = Math.max(0, finite(
+      retrieval.selected_turn_count
+      ?? selection.selected_turn_count,
+      Math.min(visibleRecent.length, maxRecent)
+    ));
+    const maxChars = Math.max(1, finite(
+      budget.max_chars
+      ?? budget.character_limit
+      ?? memory.max_chars,
+      14000
+    ));
+    const serializedChars = Number.isFinite(Number(budget.serialized_chars))
+      ? Math.max(0, Number(budget.serialized_chars))
+      : null;
+    const earlierCount = Math.max(0, finite(earlier.turn_count, 0));
+    const goalAnchor = contextText(
+      memory.goal_anchor || fixedContext.teaching_goal,
+      ["objective", "concept", "summary", "text"]
+    ) || "请求中未提供目标锚点";
+    const plan = object(memory.current_plan);
+    const currentPlan = contextText(
+      plan.active_step || plan,
+      ["active_step_description", "description", "objective", "next_focus", "step_id"]
+    );
+    const knowledgeMisconceptions = array(knowledge.misconceptions)
+      .filter((item) => object(item).status !== "resolved");
+    let activeMisconceptions = contextItems(
+      working.active_misconceptions
+      || semantic.active_misconceptions
+      || memory.active_misconceptions
+      || knowledgeMisconceptions
+    );
+    let confirmedMastery = contextItems(
+      semantic.confirmed_mastery
+      || working.confirmed_mastery
+      || memory.confirmed_mastery
+    );
+    let masteryMemoryLabel = "已确认掌握";
+    if (!confirmedMastery.length) {
+      masteryMemoryLabel = "达到阈值的掌握估计";
+      confirmedMastery = array(knowledge.concept_mastery)
+        .filter((item) => {
+          const row = object(item);
+          return Number.isFinite(Number(row.value))
+            && Number.isFinite(Number(row.success_threshold))
+            && Number(row.value) >= Number(row.success_threshold);
+        })
+        .map((item) => {
+          const row = object(item);
+          return `${dimensionLabels[row.dimension] || textValue(row.dimension, "掌握项")}达到当前阈值（${probability(row.value)}）`;
+        });
+    }
+    const knowledgeUnresolved = array(knowledge.unresolved_issues);
+    let unresolved = contextItems(
+      working.unresolved_questions
+      || semantic.unresolved_questions
+      || memory.unresolved_questions
+      || knowledgeUnresolved
+    );
+    const operationLabel = operation === "initial_action"
+      ? "initial_action · 生成首个动作"
+      : "assess_and_act · 评估并生成下一步";
+    select("#contextWindowText").textContent = `请求保留 ${selectedCount} / ${maxRecent} 轮`;
+    select("#contextOperationText").textContent = operationLabel;
+    select("#contextSnapshotRound").textContent = `R${snapshotRound}`;
+    select("#contextBudgetText").textContent = `${serializedChars === null ? "—" : serializedChars.toLocaleString("zh-CN")} / ${maxChars.toLocaleString("zh-CN")}`;
+    select("#contextHistoryText").textContent = String(providedHistoryCount + earlierCount);
+    select("#contextSummary").textContent = `这是提交前 R${snapshotRound}、执行 ${operation} 时模型实际读取的请求快照：围绕“${compactText(goalAnchor, 86)}”组织内容，保留近期原始教学语义，并把更早历史压缩为确定性统计与原文抽取检查点。`;
+
+    const items = [];
+    if (currentPlan) items.push(`当前计划：${compactText(currentPlan, 120)}`);
+    if (visibleRecent.length) {
+      const rounds = visibleRecent
+        .map((item) => Number(object(item).round))
+        .filter((round) => Number.isInteger(round) && round >= 0);
+      if (rounds.length) items.push(`最近相关回合：${rounds.map((round) => `R${round}`).join("、")}`);
+    }
+    if (earlierCount) {
+      const signalCounts = Object.entries(object(earlier.signal_counts))
+        .map(([signal, count]) => `${signalLabels[signal] || signal} ${finite(count, 0)}`)
+        .join("、");
+      items.push(`较早摘要：${earlierCount} 轮已压缩为计数${signalCounts ? `（${signalCounts}）` : ""}`);
+    }
+    if (activeMisconceptions.length) items.push(`活跃误解：${activeMisconceptions.slice(0, 3).join("；")}`);
+    if (confirmedMastery.length) items.push(`${masteryMemoryLabel}：${confirmedMastery.slice(0, 3).join("；")}`);
+    if (unresolved.length) items.push(`未解决问题：${unresolved.slice(0, 2).join("；")}`);
+    if (!items.length) items.push("该请求快照未携带可展示的教学记忆。 ");
+    const root = select("#contextMemoryList");
+    root.replaceChildren(...items.slice(0, 7).map((item) => node("li", "", item)));
+
+    const truncated = budget.truncated === true || retrieval.truncated === true || selection.truncated === true || memory.truncated === true;
+    select("#contextBoundaryText").textContent = truncated
+      ? `该请求快照已按预算裁剪，只反映提交前 R${snapshotRound} 的状态；最新结果以上方学生状态区为准。这里只展示可审计范围，不展示模型私有推理。`
+      : `该请求快照只反映提交前 R${snapshotRound} 的状态；最新结果以上方学生状态区为准。这里只展示可审计范围，不展示模型私有推理。`;
+  }
+
   function masteryDeltaNodes(beforeState, afterState) {
     const before = object(object(beforeState).knowledge_mastery);
     const after = object(object(afterState).knowledge_mastery);
@@ -636,10 +918,10 @@
   }
 
   function renderHistory(history) {
-    select("#historyCount").textContent = `${history.length} rounds`;
+    select("#historyCount").textContent = `${history.length} 轮`;
     const root = select("#historyList");
     if (!history.length) {
-      root.replaceChildren(node("p", "", "尚无已完成回合；当前教师动作正在等待学生回答。"));
+      root.replaceChildren(node("p", "", "老师已经准备好第一步，正在等待你的回答。"));
       return;
     }
     let previousMastery = object(app.sessionInitialMastery);
@@ -650,24 +932,45 @@
       previousMastery = object(after.knowledge_mastery);
       return {event, before, after};
     });
-    const cards = normalized.reverse().map(({event, before, after}, reverseIndex) => {
+    const turns = normalized.map(({event, before, after}, index) => {
       const action = historyAction(event);
       const skill = object(action.primary_skill);
       const diagnosis = object(event.deepseek_assessment);
       const signal = normalizeSignal(event.structured_signal || event.signal || diagnosis.signal);
-      const details = node("details", "history-item");
-      details.open = reverseIndex === 0;
-      const summary = node("summary", "");
-      const copy = node("div", "history-summary");
-      copy.append(
-        node("strong", "", `${textValue(skill.name || event.skill_name)}${action.skill_switched || event.skill_switched ? " · 已切换" : ""}`),
-        node("span", "", compactText(event.learner_response || object(event.learner_feedback).response, 88))
+      const turn = node("section", "chat-turn");
+      const teacherRow = node("article", "chat-message teacher");
+      const teacherAvatar = node("div", "message-avatar", "T");
+      teacherAvatar.setAttribute("aria-hidden", "true");
+      const teacherBubble = node("div", "chat-bubble");
+      const teacherMeta = node("div", "chat-meta");
+      teacherMeta.append(
+        node("span", "", `老师 · R${finite(action.round, Math.max(0, finite(event.round, index + 1) - 1))}`),
+        node("strong", "", textValue(skill.name || event.skill_name, "教学动作")),
+        ...(action.skill_switched || event.skill_switched ? [node("span", "", "已切换方法")] : [])
       );
-      summary.append(
-        node("span", "history-round", `R${finite(event.round, history.length - reverseIndex)}`),
-        copy,
-        node("span", "history-signal", signalLabels[signal] || signal)
+      teacherBubble.append(
+        teacherMeta,
+        node("p", "", object(action.teacher_action).message || event.teacher_message || "（该轮教师动作未公开）")
       );
+      teacherRow.append(teacherAvatar, teacherBubble);
+
+      const studentRow = node("article", "chat-message student");
+      const studentAvatar = node("div", "message-avatar", "我");
+      studentAvatar.setAttribute("aria-hidden", "true");
+      const studentBubble = node("div", "chat-bubble");
+      const studentMeta = node("div", "chat-meta");
+      studentMeta.append(
+        node("span", "", `学生 · R${finite(event.round, index + 1)}`),
+        node("strong", "", signalLabels[signal] || signal)
+      );
+      studentBubble.append(
+        studentMeta,
+        node("p", "", event.learner_response || object(event.learner_feedback).response || "（没有文字回应）")
+      );
+      studentRow.append(studentAvatar, studentBubble);
+
+      const details = node("details", "turn-audit");
+      const summary = node("summary", "", "查看本轮诊断、状态变化与运行记录");
       const detail = node("div", "history-detail");
       const evidence = textValue(diagnosis.evidence_excerpt, object(after.understanding_signal).response_excerpt || "降级路径未返回语义证据");
       const diagnosisReason = textValue(diagnosis.diagnosis_reason, `结构化状态记录为 ${signalLabels[signal] || signal}`);
@@ -690,9 +993,10 @@
       deltaCell.append(deltaList);
       detail.append(deltaCell);
       details.append(summary, detail);
-      return details;
+      turn.append(teacherRow, studentRow, details);
+      return turn;
     });
-    root.replaceChildren(...cards);
+    root.replaceChildren(...turns);
   }
 
   function renderRuntime(session, action) {
@@ -767,6 +1071,8 @@
     status.parentElement.classList.toggle("active", active);
     status.parentElement.classList.toggle("terminal", !active);
     select("#roundCounter").textContent = `R${finite(session.rounds_completed, 0)}`;
+    updateWorkspaceIdentity(session.goal);
+    renderPhase(session);
     if (active) renderActive(session, action); else renderTerminal(session, action);
 
     renderAssessment(session);
@@ -783,9 +1089,14 @@
     renderAdaptiveStudentProfile(session);
     renderRanking(active ? action : {});
     renderGoalPlan(session);
+    renderContextMemory(session);
     renderHistory(array(session.history));
     renderRuntime(session, action);
     syncControls();
+    window.requestAnimationFrame(() => {
+      const scroller = select("#conversationScroll");
+      scroller.scrollTop = scroller.scrollHeight;
+    });
   }
 
   function evaluationTimeline(result) {
@@ -981,10 +1292,22 @@
     setBusy(true);
     try {
       const startPayload = setupPayload();
+      if (app.session?.session_id) {
+        startPayload.replace_session_id = app.session.session_id;
+      }
+      const startSignature = JSON.stringify(startPayload);
+      const reusable = app.pendingStart?.signature === startSignature;
+      const startKey = reusable ? app.pendingStart.key : makeIdempotencyKey();
+      app.pendingStart = {signature: startSignature, key: startKey};
+      startPayload.start_idempotency_key = startKey;
       app.sessionInitialMastery = {...startPayload.student_profile.initial_mastery};
       app.session = await postJson("api/start", startPayload);
+      app.pendingStart = null;
+      app.lastSetupPayload = startPayload;
+      app.pendingTurn = null;
       select("#learnerResponse").value = "";
       renderSession();
+      showSetupForm(false);
       if (commandControlsSupported() && app.controlMode === "manual" && app.manualSkillId && app.session.status === "active") {
         app.session = await postJson("api/command", {
           command: "select_skill",
@@ -993,7 +1316,8 @@
         });
         renderSession();
       }
-      showToast("新会话已开始：系统只生成了第一个教师动作，并正在等待学生回答。 ");
+      setSidebar(false);
+      showToast("学习已开始：老师只给出了第一步，现在正在等待你的回答。 ");
     } catch (error) {
       showToast(`无法开始：${String(error.message || error)}`);
     } finally {
@@ -1008,7 +1332,8 @@
     app.session = await postJson("api/command", {
       command,
       skill_id: skillId || undefined,
-      session_id: app.session.session_id
+      session_id: app.session.session_id,
+      expected_round: finite(app.session.rounds_completed, 0)
     });
     renderSession();
   }
@@ -1022,13 +1347,13 @@
     }
     setControlMode("manual", skillId);
     if (!app.session) {
-      showToast(`已选择“${skillName(skillId)}”；开始会话后用于下一次决策。`);
+      showToast(`已选择“${skillName(skillId)}”；开始后会持续使用，直到恢复自动。`);
       return;
     }
     setBusy(true);
     try {
       await sendCommand("select_skill", skillId);
-      showToast(`手动覆盖已排队：下一轮主 Skill 为“${skillName(skillId)}”。`);
+      showToast(`已锁定“${skillName(skillId)}”；后续每轮持续使用，输入 /auto 才恢复自动。`);
     } catch (error) {
       showToast(`无法应用 Skill：${String(error.message || error)}`);
     } finally {
@@ -1078,7 +1403,7 @@
       try {
         await sendCommand("select_skill", match.skill_id);
         select("#learnerResponse").value = "";
-        showToast(`已排队“${match.name}”，下一次学生回答后执行。`);
+        showToast(`已锁定“${match.name}”；后续每轮持续使用，输入 /auto 才恢复自动。`);
       } finally {
         setBusy(false);
       }
@@ -1103,9 +1428,12 @@
     }
     setBusy(true);
     try {
+      const round = finite(app.session.rounds_completed, 0);
+      const sessionId = textValue(app.session.session_id, "local-session");
       const payload = {
         learner_response: learnerResponse,
-        session_id: app.session.session_id
+        session_id: app.session.session_id,
+        expected_round: round
       };
       if (!select("#fallbackSignalField").hidden) {
         payload.signal = select("#fallbackSignalInput").value;
@@ -1115,7 +1443,13 @@
       if (commandControlsSupported() && app.controlMode === "manual" && app.manualSkillId) {
         payload.manual_skill_id = app.manualSkillId;
       }
+      const requestFingerprint = turnRequestFingerprint(payload);
+      const reusable = app.pendingTurn?.fingerprint === requestFingerprint;
+      const idempotencyKey = reusable ? app.pendingTurn.key : makeIdempotencyKey();
+      payload.idempotency_key = idempotencyKey;
+      app.pendingTurn = {fingerprint: requestFingerprint, key: idempotencyKey};
       app.session = await postJson("api/step", payload);
+      app.pendingTurn = null;
       select("#learnerResponse").value = "";
       renderSession();
       showToast(app.session.status === "active"
@@ -1203,7 +1537,9 @@
     }
     select("#setupForm").addEventListener("submit", startSession);
     select("#turnForm").addEventListener("submit", submitTurn);
-    select("#presetButton").addEventListener("click", fillSetupForm);
+    select("#presetButton").addEventListener("click", handleSetupButton);
+    select("#conceptInput").addEventListener("input", () => updateWorkspaceIdentity());
+    select("#objectiveInput").addEventListener("input", () => updateWorkspaceIdentity());
     select("#autoModeButton").addEventListener("click", chooseAutoMode);
     select("#manualModeButton").addEventListener("click", () => {
       if (!commandControlsSupported()) {
@@ -1212,25 +1548,73 @@
       }
       const selected = select("#skillOverrideSelect").value || app.manualSkillId;
       setControlMode("manual", selected);
-      showToast("手动覆盖模式已开启；选择一个主 Skill 后点击“应用”。");
+      showToast("手动锁定已开启；应用后持续使用该 Skill，输入 /auto 才恢复自动。");
     });
     select("#skillOverrideSelect").addEventListener("change", () => {
-      app.manualSkillId = select("#skillOverrideSelect").value;
+      const nextSkillId = select("#skillOverrideSelect").value;
+      if (app.manualSkillId !== nextSkillId) clearPendingTurn();
+      app.manualSkillId = nextSkillId;
       syncControls();
     });
+    select("#fallbackSignalInput").addEventListener("change", clearPendingTurn);
     select("#applySkillButton").addEventListener("click", applySkillOverride);
     select("#evaluationCaseSelect").addEventListener("change", renderEvaluationCase);
+    select("#learningViewButton").addEventListener("click", () => setAppView("learning"));
+    select("#evaluationViewButton").addEventListener("click", () => setAppView("evaluation"));
+    select("#backToLearningButton").addEventListener("click", () => setAppView("learning"));
+    select("#inspectorToggle").addEventListener("click", () => {
+      const open = select("#inspectorToggle").getAttribute("aria-expanded") !== "true";
+      if (open && window.matchMedia("(max-width: 860px)").matches) setSidebar(false);
+      setInspector(open);
+    });
+    select("#inspectorClose").addEventListener("click", () => setInspector(false));
+    select("#sidebarToggle").addEventListener("click", () => {
+      const open = select("#sidebarToggle").getAttribute("aria-expanded") !== "true";
+      if (open) setInspector(false);
+      setSidebar(open);
+    });
+    select("#sidebarClose").addEventListener("click", () => setSidebar(false));
+    select("#commandHintButton").addEventListener("click", () => {
+      const hints = select("#commandHints");
+      hints.hidden = !hints.hidden;
+      select("#commandHintButton").setAttribute("aria-expanded", String(!hints.hidden));
+    });
+    for (const button of document.querySelectorAll("[data-command]")) {
+      button.addEventListener("click", () => {
+        select("#learnerResponse").value = button.dataset.command || "";
+        select("#commandHints").hidden = true;
+        select("#commandHintButton").setAttribute("aria-expanded", "false");
+        select("#learnerResponse").focus();
+      });
+    }
     select("#learnerResponse").addEventListener("keydown", (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
         event.preventDefault();
         select("#turnForm").requestSubmit();
       }
     });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      setSidebar(false);
+      if (window.matchMedia("(max-width: 1260px)").matches) setInspector(false);
+      select("#commandHints").hidden = true;
+      select("#commandHintButton").setAttribute("aria-expanded", "false");
+    });
+    const desktopLayout = window.matchMedia("(min-width: 1261px)");
+    desktopLayout.addEventListener("change", (event) => {
+      setSidebar(false);
+      setInspector(event.matches);
+    });
   }
 
   async function init() {
     initTweaks();
     bindEvents();
+    setAppView("learning");
+    setInspector(window.matchMedia("(min-width: 1261px)").matches);
+    setSidebar(false);
+    renderPhase(null);
+    showSetupForm(true);
     setControlMode("auto");
     try {
       app.bootstrap = await requestJson("api/bootstrap");

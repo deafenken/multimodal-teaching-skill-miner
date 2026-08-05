@@ -23,7 +23,7 @@
 | A06 | 是否显式维护误解或错误模式 | 已实现并测试 | `misconceptions` 支持发现、重复观察和 active / resolved 生命周期 | 模型诊断需看置信度和证据，不能写成确定心理事实 |
 | A07 | 是否显式维护当前轮理解信号 | 已实现并测试 | 在线 DeepSeek 诊断与规则降级均留下来源；状态含 confidence 和 evidence | 降级信号不是 DeepSeek 诊断；页面必须区分来源 |
 | A08 | 是否显式维护下一步教学关注点 | 已实现并测试 | `student_state.next_focus` 和 Goal `active_step` | 这是策略输出，不是专家最优性证明 |
-| A09 | 是否管理历史对话 | 已实现并测试 | 同知识点 → 同关注维度 → 最近轮次；最多 6 轮和 8000 字符；较早历史聚合 | 不是无限记忆，也没有跨 session 长期记忆 |
+| A09 | 是否管理历史对话 | 已实现并测试 | 单一六层 `teaching_context`；每轮活动知识点 → 同关注维度 → 最近轮次；最多 6 个相关回合、默认 14000 字符；较早历史保留确定性聚合与原文抽取检查点；超长合法会话 fail-safe 裁剪 | 不是无限记忆，也没有跨 session 长期记忆；候选画像只是低权重假设 |
 | A10 | 是否每轮只生成一个下一教学动作 | 已实现并测试 | `one_action_per_turn`、`wait_for_student_before_next_action`；模型输出契约和控制器共同约束 | “实时”是请求—响应闭环，不是音视频流式感知 |
 | A11 | 是否从 Skill Library 自动选主 Skill | 已实现并测试 | DeepSeek 提议 + 主 Skill 白名单校验；记录候选、选择理由和来源 | 开放场景路由最优性待专家锁箱验证 |
 | A12 | 是否能在一轮组合多个 Skill | 已实现并测试 | 1 个主 Skill + 最多 2 个 support Skill；`composition_plan.one_action_contract=true` | 组合 Skill 不允许生成多个预写回合 |
@@ -31,20 +31,21 @@
 | A14 | 是否显示当前 Skill、切换和理由 | 已实现并测试 | Dashboard 展示主/支持 Skill、previous Skill、switch、reason、decision origin | 理由是短审计摘要，不展示 chain-of-thought |
 | A15 | 是否支持自动与手动切换 | 已实现并测试 | DeepSeek 在线模式支持 `/+skill 名称`、`/auto`、`/stop`；未知或非主 Skill 拒绝 | 人工覆盖单独标记，不计作 Agent 自动命中；确定性展示模式不支持手动 stop |
 | A16 | 是否能成功停止或安全转人工 | 已实现并测试 | 成功阈值、无活跃误解、最少轮数、连续无进展、最大轮数、受约束停止建议和人工停止 | 内部 `succeeded` 不等于真实学习效果已建立 |
+| A17 | 重复提交是否会错误推进多轮 | 已实现并测试 | step 使用 `session_id + expected_round + idempotency_key`；start 使用独立幂等键且替换须匹配当前 session；同请求重放返回缓存，不重复执行；旧轮次、冲突 key 和第二标签页覆盖均 fail-closed | 当前仍是单进程、单会话本机服务，不是分布式事务系统 |
 
 ## 3. DeepSeek V4 Flash 与控制层
 
 | 编号 | 验收问题 | 状态 | 当前交付与证据 | 边界或剩余工作 |
 |---|---|---|---|---|
 | B01 | 语义与生成骨干是否使用指定模型 | 已实现并测试 | `deepseek_client.py` 默认 `deepseek-v4-flash`；在线会话记录 provider/model/trace | 确定性控制器仍负责安全边界；这不是缺少 Agent，而是受约束 Agent 设计 |
-| B02 | 是否一次完成诊断、路由和当前行动 | 已实现并测试 | `teaching_agent_assess_route_act_v1` JSON 契约；`teacher_agent_live.py` | 只允许简短可审计理由，不请求或公开思维链 |
+| B02 | 是否一次完成诊断、路由和当前行动 | 已实现并测试 | `teaching_agent_assess_route_act_v2_layered_context` JSON 契约；`teacher_agent_live.py` | 只允许简短可审计理由，不请求或公开思维链 |
 | B03 | 模型能否新增或越权选择 Skill | 已实现并测试 | 未知 Skill、support 充当主 Skill、超过 `max_repeat` 均拒绝 | Skill Library 变更必须单独审查来源和契约 |
 | B04 | 能否避免直接泄露最终答案 | 部分实现 / 受限 | 提示契约和明显最终答案模式拦截 | 正则不能证明所有学科、所有表达都不会泄露，仍需行为评测与人工抽查 |
 | B05 | 模型停止建议是否受控制 | 已实现并测试 | 只有 human-review 建议且至少两轮无进展时才采纳；硬终止由控制器决定 | 模型不能自行改写终止状态 |
 | B06 | API 异常是否可恢复 | 已实现并测试 | 超时/重试、响应大小限制、JSON 校验；默认可见规则降级，也可 `--no-rule-fallback` | 降级轮必须显示 `deterministic_safety_fallback`，不得冒充在线模型结果 |
 | B07 | 是否显式授权远程处理学生文本 | 已实现并测试 | 必须传 `--allow-remote-student-data`；否则 fail-closed 或进入明确降级 | 真实学生数据还需伦理、告知和数据处理授权 |
 | B08 | API Key 是否安全读取 | 已实现并测试 | `.private/deepseek_api.txt`（gitignored）或 `DEEPSEEK_API_KEY_FILE`；Key 不进入网页、trace 或公开 receipt | 只应链接/指向本机私有文件，禁止提交到 Git |
-| B09 | 上下文是否最小化和受限 | 已实现并测试 | 非身份画像字段、相关历史最多 6 轮/8000 字符；媒体不发送 | 发送的是教学文本与必要状态，不应笼统称“完全离线” |
+| B09 | 上下文是否最小化和受限 | 已实现并测试 | 单一 `teaching_context`；默认最多 6 个相关回合、14000 字符硬上限；当前回答单份；预算、截断和证据指针可审计；媒体不发送 | 发送的是教学文本与必要状态，不应笼统称“完全离线” |
 | B10 | 是否完成隐私脱敏 | 部分实现 / 受限 | 常见邮箱、手机号、身份证号、URL 和本机路径模式替换；测试覆盖 | 这是模式级保护，不保证任意自由文本完全去标识化 |
 
 ## 4. Teaching Skill Library 与 neural-v1 来源
@@ -53,7 +54,7 @@
 |---|---|---|---|---|
 | C01 | 默认是否使用 v2 Skill Library | 已实现并测试 | `data/teacher_agent_skill_library_v2.json`；CLI 和 Dashboard 默认路径均为 v2 | 题目一的 v0 展示产物仍保留其原边界，不与 v2 混称 |
 | C02 | Skill 数量和角色是否明确 | 已实现并测试 | 16 个 Skill：13 个主 Skill + 3 个 support Skill；Schema 和单测验证 | 不得继续使用旧文档的“8 主 + 2 支持”描述 |
-| C03 | Skill 是否可执行 | 已实现并测试 | 每个 v2 Skill 含 applicable/contraindications、pre/postconditions、failure_transition、max_repeat、addition_reason | 字段完备只证明执行契约，不证明教学法有效 |
+| C03 | Skill 是否可执行 | 已实现并测试 | 每个 v2 Skill 含 applicable/contraindications、pre/postconditions、failure_transition、max_repeat、addition_reason；控制器硬校验 ID/角色、`applicable_signals`、纠错证据、`max_repeat`、单动作和停止条件 | 其余自然语言 pre/contra/post/failure 条件进入提示与审计，但尚非形式化规则；字段完备也不证明教学法有效 |
 | C04 | 是否使用 neural-v1 | 已实现并测试 | v2 `derivation.general_skill_id=evidence_grounded_multimodal_teaching_neural_v1`；12 个操作包装 | 使用的是九环节/十三策略本体，不是已确认视频共识 |
 | C05 | 新增 Skill 是否说明原因和场景 | 已实现并测试 | 检索式复习、自我解释、参与恢复、信心支持均有单独研究补充来源和 `addition_reason` | 研究补充不得标成课堂视频蒸馏结论 |
 | C06 | neural-v1 证据门禁是否通过 | 外部验证待完成 | manifest 固定记录 `passed=false`、eligible 0、excluded 54、observed phase 0、observed consensus strategy 0 | 页面和报告必须显示 `provisional · evidence gate not passed` |
@@ -83,10 +84,10 @@
 
 | 编号 | 验收问题 | 状态 | 当前交付与证据 | 边界或剩余工作 |
 |---|---|---|---|---|
-| E01 | 是否有可现场操作的网页 | 已实现并测试 | `teacher_agent_dashboard.py` 与 `web/teacher_agent_demo.*`；真实 start/step API 测试 | 不是静态截图，也不是公网多用户服务 |
-| E02 | 是否展示题目要求的五步演示 | 已实现并测试 | 新目标/状态、连续多轮、Skill 选择、切换/调整、评估卡片和案例过程 | 在线调用与冻结评估应在页面上明确分区 |
+| E01 | 是否有可现场操作的网页 | 已实现并测试 | 学生对话优先的三栏工作台：目标/阶段、连续对话与固定输入框、可折叠状态/Skill/记忆检查器；真实 start/step API 测试 | 不是静态截图，也不是公网多用户服务 |
+| E02 | 是否展示题目要求的五步演示 | 已实现并测试 | 学习视图展示新目标、连续多轮、Skill 选择和动态切换；独立“实验 / 评估”视图展示样例、基线和结果 | 在线调用与冻结评估明确分区，不能把开发指标当当前学生成绩 |
 | E03 | 是否有一键启动 | 已实现并测试 | `打开题目二教学Agent.command`；读取 `.private` 链接或 `DEEPSEEK_API_KEY_FILE` | 缺 Key 时应明确报错，不能伪造在线调用 |
-| E04 | 本机服务是否受限 | 已实现并测试 | `127.0.0.1`、随机 capability URL、CSP、`no-store`、请求体上限 | 本地端口不要转发到公网 |
+| E04 | 本机服务是否受限 | 已实现并测试 | `127.0.0.1`、随机 capability URL、CSP、`no-store`、请求体上限、在线远程处理确认、轮次与幂等校验 | 本地端口不要转发到公网 |
 | E05 | 会话如何保存 | 部分实现 / 受限 | 当前单个会话仅在服务内存保存，页面不持久化 | 不具备多用户隔离、数据库恢复或跨设备同步能力 |
 | E06 | 是否可无 Key 自检 | 已实现并测试 | `teacher-agent-dashboard --check`；deterministic backend 可展示规则基线 | 离线模式必须显示不是 DeepSeek 在线 Agent |
 | E07 | 是否有完整依赖和调用说明 | 已实现并测试 | README、本文、任务说明、CLI `--help`、Schema 与测试 | 在线运行会产生第三方 API 请求和费用 |

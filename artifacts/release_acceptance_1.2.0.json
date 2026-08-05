@@ -10,11 +10,11 @@
   "validation": {
     "pytest": {
       "passed": true,
-      "testcase_count": 483,
-      "subtest_count": 852,
-      "total_count": 1335,
+      "testcase_count": 508,
+      "subtest_count": 877,
+      "total_count": 1385,
       "skipped_count": 3,
-      "passed_count": 1332
+      "passed_count": 1382
     },
     "ruff_passed": true,
     "compileall_passed": true,
@@ -180,17 +180,17 @@
         {
           "role": "teacher_agent_dashboard_css",
           "path": "teaching_skill_miner/web/teacher_agent_demo.css",
-          "sha256": "010ef527c2f4f78f3737543609fea9dcac793960806dd5c31c640a68999e71e3"
+          "sha256": "5e23b965dd9b1698df2a36403cf779093915688e4a468f4695c97367f27d4390"
         },
         {
           "role": "teacher_agent_dashboard_html",
           "path": "teaching_skill_miner/web/teacher_agent_demo.html",
-          "sha256": "83d183f5f91cfcd7ae77780129ac038c3c1d25f72df55171faa22e94812f2468"
+          "sha256": "65d90eee66d901ca1117b4994cef67c7c9f13059400cd2d815da0e2308de2522"
         },
         {
           "role": "teacher_agent_dashboard_js",
           "path": "teaching_skill_miner/web/teacher_agent_demo.js",
-          "sha256": "b271baaf60775de637f9ef811b0a0c226636f2db953f9988aec40191235d889a"
+          "sha256": "322972c6f6fa2e552a19837229c6182972d29902c5bf86782c5bc907d86a4240"
         },
         {
           "role": "teacher_agent_demo_input",
@@ -255,7 +255,7 @@
         {
           "role": "teacher_agent_live_session_schema",
           "path": "schema/teacher_agent_live_session.schema.json",
-          "sha256": "dd6b72856eca38e0f80c670da735e8e036a3b5c74529b9cf02d4f145f68b908a"
+          "sha256": "86f8afe5de81c85dce43c79f6ae0999ad19ee47b44cf8c4411fe144c70b8e20c"
         },
         {
           "role": "teacher_agent_session_schema",
@@ -283,7 +283,7 @@
           "sha256": "79ba85a9675c46b6802964c206ce2122d426f140abb7dff66586e2299c92c33e"
         }
       ],
-      "binding_sha256": "d2c3c569aa812921b3514bb4f95c1c62e08ed5a6ce4bc05b9162eb6c287ef058",
+      "binding_sha256": "8b5df85b8942f571b094e90b2af1eb9200f606812e4b04ec46c8983684233725",
       "evidence_summary": {
         "neural_v1_materialization_gate_passed": false,
         "runtime_skill_count": 16,
@@ -306,16 +306,16 @@
   },
   "release_artifact": {
     "artifact": "dist/teaching_skill_miner-1.2.0-py3-none-any.whl",
-    "size_bytes": 774723,
-    "uncompressed_bytes": 3161320,
+    "size_bytes": 795062,
+    "uncompressed_bytes": 3266816,
     "member_count": 134,
-    "sha256": "ef2a9bd8d93f20b3b8d2db60e0e90a916dd100c9569aeb2323f7d800a7f7dddf",
+    "sha256": "b018d1b72ec2a6bd0c37038e02d7317c39ab551e2a5b38ce7db2824efe496ddd",
     "distribution": "teaching-skill-miner",
     "version": "1.2.0",
     "license_expression": "LicenseRef-Academic-Evaluation-1.0",
     "requires_python": ">=3.10",
     "release_audit_finding_count": 0,
-    "members_sha256": "cfd6b0244671b1b2b441e5d29155e6831b5b83386ca705b79f61034063c1a408"
+    "members_sha256": "82fd061709f39265c04e44afcbeff2e770c190711ee00fa270bb8bfc2e13d8cd"
   },
   "public_artifacts": {
     "directory": "artifacts/public",
@@ -336,10 +336,10 @@
   "verification_binding": {
     "verification_scope": {
       "file_count": 247,
-      "sha256": "cdd06b943eb21e652fbaa286d62d5b51d5677b3558f836c8f9af1dd08f8a10c5"
+      "sha256": "ea7d358a03f9ecd96ac69a50b7c014706a67bb5c744dc56d591e4a949da3f6fb"
     },
-    "project_verification_receipt_sha256": "2c8aaa1197e7b6bf8672b6b04f16d27d1172611472ae5aaecc7ac7b484cdf021",
-    "exact_wheel_verification_receipt_sha256": "99580bad389d72b47f1e8bb59f8cccac01338e7442cae269aa4c4355efec82c5"
+    "project_verification_receipt_sha256": "8dcabbd1956f8059feaf76b84a34886903716a2d0f35498e2ae1f3f113048f19",
+    "exact_wheel_verification_receipt_sha256": "710036aba90f6efe705458b75a62ce91e45254d39108d5ee8c30d03ab193ab03"
   },
   "task_two_evidence": {
     "file_count": 24,
@@ -362,17 +362,17 @@
       {
         "role": "teacher_agent_dashboard_css",
         "path": "teaching_skill_miner/web/teacher_agent_demo.css",
-        "sha256": "010ef527c2f4f78f3737543609fea9dcac793960806dd5c31c640a68999e71e3"
+        "sha256": "5e23b965dd9b1698df2a36403cf779093915688e4a468f4695c97367f27d4390"
       },
       {
         "role": "teacher_agent_dashboard_html",
         "path": "teaching_skill_miner/web/teacher_agent_demo.html",
-        "sha256": "83d183f5f91cfcd7ae77780129ac038c3c1d25f72df55171faa22e94812f2468"
+        "sha256": "65d90eee66d901ca1117b4994cef67c7c9f13059400cd2d815da0e2308de2522"
       },
       {
         "role": "teacher_agent_dashboard_js",
         "path": "teaching_skill_miner/web/teacher_agent_demo.js",
-        "sha256": "b271baaf60775de637f9ef811b0a0c226636f2db953f9988aec40191235d889a"
+        "sha256": "322972c6f6fa2e552a19837229c6182972d29902c5bf86782c5bc907d86a4240"
       },
       {
         "role": "teacher_agent_demo_input",
@@ -437,7 +437,7 @@
       {
         "role": "teacher_agent_live_session_schema",
         "path": "schema/teacher_agent_live_session.schema.json",
-        "sha256": "dd6b72856eca38e0f80c670da735e8e036a3b5c74529b9cf02d4f145f68b908a"
+        "sha256": "86f8afe5de81c85dce43c79f6ae0999ad19ee47b44cf8c4411fe144c70b8e20c"
       },
       {
         "role": "teacher_agent_session_schema",
@@ -465,7 +465,7 @@
         "sha256": "79ba85a9675c46b6802964c206ce2122d426f140abb7dff66586e2299c92c33e"
       }
     ],
-    "binding_sha256": "d2c3c569aa812921b3514bb4f95c1c62e08ed5a6ce4bc05b9162eb6c287ef058",
+    "binding_sha256": "8b5df85b8942f571b094e90b2af1eb9200f606812e4b04ec46c8983684233725",
     "evidence_summary": {
       "neural_v1_materialization_gate_passed": false,
       "runtime_skill_count": 16,

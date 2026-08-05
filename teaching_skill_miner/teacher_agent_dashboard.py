@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from hashlib import sha256
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -43,6 +44,7 @@ STYLE_RESOURCE = "teacher_agent_demo.css"
 SCRIPT_RESOURCE = "teacher_agent_demo.js"
 _SAFE_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _MAX_REQUEST_BYTES = 64 * 1024
+_MAX_START_IDEMPOTENCY_ENTRIES = 16
 _CSP = (
     "default-src 'none'; style-src 'self' 'unsafe-inline'; "
     "script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self'; "
@@ -53,6 +55,53 @@ _CSP = (
 
 class TeacherAgentDashboardError(RuntimeError):
     """Raised when a task-two dashboard cannot be served safely."""
+
+
+def _request_fingerprint(body: Mapping[str, Any]) -> str:
+    """Return a stable, content-only fingerprint for one JSON request body."""
+
+    try:
+        encoded = json.dumps(
+            dict(body),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise TeacherAgentDashboardError(
+            "request body must be canonical JSON"
+        ) from exc
+    return sha256(encoded).hexdigest()
+
+
+def _required_request_string(
+    body: Mapping[str, Any], field_name: str, *, maximum: int = 200
+) -> str:
+    value = body.get(field_name)
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > maximum
+    ):
+        raise TeacherAgentDashboardError(
+            f"{field_name} must be a non-empty trimmed string"
+        )
+    return value
+
+
+def _request_round(body: Mapping[str, Any], *, required: bool) -> int | None:
+    if "expected_round" not in body:
+        if required:
+            raise TeacherAgentDashboardError("expected_round is required")
+        return None
+    value = body.get("expected_round")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise TeacherAgentDashboardError(
+            "expected_round must be a non-negative integer"
+        )
+    return value
 
 
 def _resource_bytes(name: str) -> bytes:
@@ -182,6 +231,12 @@ class TeacherAgentDashboardSnapshot:
     session: dict[str, Any] | None = None
     session_id: str | None = None
     pending_skill_id: str | None = None
+    start_idempotency_cache: dict[str, dict[str, Any]] = field(
+        default_factory=dict, repr=False
+    )
+    step_idempotency_cache: dict[str, dict[str, Any]] = field(
+        default_factory=dict, repr=False
+    )
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def bootstrap(self) -> dict[str, Any]:
@@ -225,14 +280,58 @@ class TeacherAgentDashboardSnapshot:
                 "success_and_unable_termination": True,
                 "adaptive_profile_candidates_enabled": self.client is not None,
                 "adaptive_profile_candidates_are_teacher_confirmed": False,
+                "start_requires_idempotency_key": True,
+                "active_session_replacement_requires_session_id": True,
+                "step_requires_session_id": True,
+                "step_requires_expected_round": True,
+                "step_requires_idempotency_key": True,
+                "command_requires_session_id": True,
+                "command_accepts_expected_round": True,
+                "remote_processing_acknowledgement_required": self.client
+                is not None,
                 "session_persisted_to_browser": False,
             },
         }
 
     def start(self, body: Mapping[str, Any]) -> dict[str, Any]:
         with self.lock:
+            idempotency_key = _required_request_string(
+                body, "start_idempotency_key"
+            )
+            request_fingerprint = _request_fingerprint(body)
+            cached = self.start_idempotency_cache.get(idempotency_key)
+            if cached is not None:
+                if cached["request_fingerprint"] != request_fingerprint:
+                    raise TeacherAgentDashboardError(
+                        "start_idempotency_key was already used for a different request"
+                    )
+                if cached["session_id"] != self.session_id:
+                    raise TeacherAgentDashboardError(
+                        "start_idempotency_key belongs to an inactive session"
+                    )
+                return deepcopy(cached["response"])
+
+            replacement_id = body.get("replace_session_id")
+            if self.session is None:
+                if replacement_id is not None:
+                    _required_request_string(body, "replace_session_id")
+                    raise TeacherAgentDashboardError(
+                        "replace_session_id was provided but no session is active"
+                    )
+            else:
+                replacement_id = _required_request_string(
+                    body, "replace_session_id"
+                )
+                if replacement_id != self.session_id:
+                    raise TeacherAgentDashboardError(
+                        "replace_session_id does not match the active session"
+                    )
             if self.client is not None:
-                self.session = start_live_teacher_agent_session(
+                if body.get("remote_processing_acknowledged") is not True:
+                    raise TeacherAgentDashboardError(
+                        "online start requires remote_processing_acknowledged=true"
+                    )
+                new_session = start_live_teacher_agent_session(
                     body.get("goal", {}),
                     body.get("student_profile", {}),
                     self.library,
@@ -245,26 +344,55 @@ class TeacherAgentDashboardSnapshot:
                     ),
                 )
             else:
-                self.session = start_teacher_agent_session(
+                new_session = start_teacher_agent_session(
                     body.get("goal", {}),
                     body.get("student_profile", {}),
                     self.library,
                 )
+            self.session = new_session
             self.session_id = secrets.token_urlsafe(16)
             self.pending_skill_id = None
+            self.step_idempotency_cache.clear()
             view = (
                 live_session_view(self.session)
                 if self.client is not None
                 else _session_view(self.session)
             )
-            return {**view, "session_id": self.session_id}
+            response = {**view, "session_id": self.session_id}
+            self.start_idempotency_cache[idempotency_key] = {
+                "request_fingerprint": request_fingerprint,
+                "session_id": self.session_id,
+                "response": deepcopy(response),
+            }
+            while (
+                len(self.start_idempotency_cache)
+                > _MAX_START_IDEMPOTENCY_ENTRIES
+            ):
+                oldest_key = next(iter(self.start_idempotency_cache))
+                del self.start_idempotency_cache[oldest_key]
+            return response
 
     def step(self, body: Mapping[str, Any]) -> dict[str, Any]:
         with self.lock:
             if self.session is None:
                 raise TeacherAgentDashboardError("start a session before submitting a turn")
-            if body.get("session_id") not in {None, self.session_id}:
+            request_session_id = _required_request_string(body, "session_id")
+            if request_session_id != self.session_id:
                 raise TeacherAgentDashboardError("session_id does not match the active session")
+            expected_round = _request_round(body, required=True)
+            idempotency_key = _required_request_string(body, "idempotency_key")
+            request_fingerprint = _request_fingerprint(body)
+            cached = self.step_idempotency_cache.get(idempotency_key)
+            if cached is not None:
+                if cached["request_fingerprint"] != request_fingerprint:
+                    raise TeacherAgentDashboardError(
+                        "idempotency_key was already used for a different request"
+                    )
+                return deepcopy(cached["response"])
+            if expected_round != self.session["round"]:
+                raise TeacherAgentDashboardError(
+                    "expected_round does not match the active session"
+                )
             if self.client is not None:
                 requested_skill = (
                     str(body["manual_skill_id"])
@@ -293,14 +421,25 @@ class TeacherAgentDashboardSnapshot:
                     signal_confidence=float(body.get("signal_confidence", 1.0)),
                 )
                 view = _session_view(self.session)
-            return {**view, "session_id": self.session_id}
+            response = {**view, "session_id": self.session_id}
+            self.step_idempotency_cache[idempotency_key] = {
+                "request_fingerprint": request_fingerprint,
+                "response": deepcopy(response),
+            }
+            return response
 
     def command(self, body: Mapping[str, Any]) -> dict[str, Any]:
         with self.lock:
             if self.session is None:
                 raise TeacherAgentDashboardError("start a session before sending a command")
-            if body.get("session_id") not in {None, self.session_id}:
+            request_session_id = _required_request_string(body, "session_id")
+            if request_session_id != self.session_id:
                 raise TeacherAgentDashboardError("session_id does not match the active session")
+            expected_round = _request_round(body, required=False)
+            if expected_round is not None and expected_round != self.session["round"]:
+                raise TeacherAgentDashboardError(
+                    "expected_round does not match the active session"
+                )
             command = str(body.get("command", "")).strip()
             if command == "auto":
                 self.pending_skill_id = None

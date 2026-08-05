@@ -7,7 +7,7 @@
     "schema", "artifact_kind", "status", "policy", "goal", "student_profile",
     "skill_library", "skill_library_fingerprint", "round", "student_state",
     "current_action", "history", "control", "claim_boundary", "goal_plan",
-    "agent_runtime", "integrity"
+    "agent_runtime", "context_memory", "integrity"
   ],
   "properties": {
     "schema": {"const": "teaching_skill_miner.teacher_agent_session.v1"},
@@ -113,7 +113,7 @@
     },
     "agent_runtime": {
       "type": "object",
-      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "fallback_count", "model_call_count", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed"],
+      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "fallback_count", "model_call_count", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "last_context_trace"],
       "properties": {
         "schema": {"const": "teaching_skill_miner.deepseek_teacher_runtime.v1"},
         "mode": {"const": "deepseek_live"},
@@ -126,10 +126,26 @@
         "last_model_trace": {"type": ["object", "null"]},
         "last_error": {"type": ["string", "null"]},
         "remote_student_data_opt_in": {"const": true},
-        "api_key_exposed": {"const": false}
+        "api_key_exposed": {"const": false},
+        "context_policy": {"const": "layered_bounded_evidence_linked_v1"},
+        "last_context_trace": {
+          "type": "object",
+          "required": ["schema", "content_sha256", "serialized_chars", "max_chars", "retained_recent_turns", "request_outcome", "model_generated_memory_written"],
+          "properties": {
+            "schema": {"const": "teaching_skill_miner.layered_teacher_context.v1"},
+            "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "serialized_chars": {"type": "integer", "minimum": 1},
+            "max_chars": {"type": "integer", "minimum": 6000},
+            "retained_recent_turns": {"type": "integer", "minimum": 0, "maximum": 12},
+            "request_outcome": {"enum": ["prepared_not_yet_validated", "validated_model_plan", "deterministic_safety_fallback"]},
+            "model_generated_memory_written": {"const": false}
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },
+    "context_memory": {"$ref": "#/$defs/layeredContext"},
     "initial_model_plan": {"type": "object"},
     "integrity": {
       "type": "object",
@@ -142,6 +158,115 @@
     }
   },
   "$defs": {
+    "layeredContext": {
+      "type": "object",
+      "required": ["schema", "snapshot", "fixed_context", "current_plan", "working_memory", "semantic_summary", "knowledge_state", "candidate_long_term_memory", "evidence_ledger", "retrieval", "privacy", "budget", "claim_boundary"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.layered_teacher_context.v1"},
+        "snapshot": {
+          "type": "object",
+          "required": ["kind", "session_round_before_request", "operation", "current_response_present"],
+          "properties": {
+            "kind": {"const": "bounded_outbound_model_request_context"},
+            "session_round_before_request": {"type": "integer", "minimum": 0},
+            "operation": {"enum": ["initial_action", "assess_and_act"]},
+            "current_response_present": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        },
+        "fixed_context": {"type": "object"},
+        "current_plan": {"type": "object"},
+        "working_memory": {
+          "type": "object",
+          "required": ["current_focus", "current_knowledge_components", "current_learner_response", "current_response_evidence_id", "recent_turns"],
+          "properties": {
+            "current_focus": {"type": ["string", "null"]},
+            "current_knowledge_components": {"type": "array", "maxItems": 12, "items": {"type": "string"}},
+            "current_learner_response": {"type": "string"},
+            "current_response_evidence_id": {"type": ["string", "null"]},
+            "recent_turns": {"type": "array", "maxItems": 12, "items": {"type": "object"}}
+          },
+          "additionalProperties": false
+        },
+        "semantic_summary": {
+          "type": "object",
+          "required": ["turn_count", "focus_checkpoints", "compression_method", "source", "narrative_inference_added"],
+          "properties": {
+            "turn_count": {"type": "integer", "minimum": 0},
+            "round_range": {"type": ["array", "null"], "items": {"type": "integer"}},
+            "signal_counts": {"type": "object"},
+            "focus_counts": {"type": "object"},
+            "skill_counts": {"type": "object"},
+            "signal_source_counts": {"type": "object"},
+            "focus_checkpoints": {"type": "array", "maxItems": 4, "items": {"type": "object"}},
+            "compression_method": {"const": "deterministic_aggregate_and_extractive_checkpoints_no_model_generation"},
+            "source": {"const": "omitted_local_session_history"},
+            "narrative_inference_added": {"const": false}
+          },
+          "additionalProperties": false
+        },
+        "knowledge_state": {"type": "object"},
+        "candidate_long_term_memory": {
+          "type": "object",
+          "required": ["status", "summary", "retained_for_context", "observations", "may_override_teacher_profile", "eligible_sources"],
+          "properties": {
+            "status": {"const": "candidate_unconfirmed"},
+            "summary": {"type": "object"},
+            "retained_for_context": {"type": "integer", "minimum": 0, "maximum": 4},
+            "observations": {"type": "array", "maxItems": 4, "items": {"type": "object"}},
+            "may_override_teacher_profile": {"const": false},
+            "eligible_sources": {"const": ["deepseek_v4_flash_validated_diagnosis"]}
+          },
+          "additionalProperties": false
+        },
+        "evidence_ledger": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["evidence_id", "source", "field", "round", "excerpt"],
+            "properties": {
+              "evidence_id": {"type": "string", "minLength": 1},
+              "source": {"type": "string", "minLength": 1},
+              "field": {"type": "string", "minLength": 1},
+              "round": {"type": ["integer", "null"], "minimum": 0},
+              "excerpt": {"type": "string"},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+            },
+            "additionalProperties": false
+          }
+        },
+        "retrieval": {"type": "object"},
+        "privacy": {"type": "object"},
+        "budget": {
+          "type": "object",
+          "required": ["policy", "max_chars", "serialized_chars", "max_recent_turns", "retained_recent_turns", "retained_teacher_prior_turns", "retained_candidate_observations", "truncated"],
+          "properties": {
+            "policy": {"const": "hard_serialized_character_cap"},
+            "max_chars": {"type": "integer", "minimum": 6000},
+            "serialized_chars": {"type": "integer", "minimum": 1},
+            "max_recent_turns": {"type": "integer", "minimum": 0, "maximum": 12},
+            "retained_recent_turns": {"type": "integer", "minimum": 0, "maximum": 12},
+            "retained_teacher_prior_turns": {"type": "integer", "minimum": 0, "maximum": 3},
+            "retained_candidate_observations": {"type": "integer", "minimum": 0, "maximum": 4},
+            "truncated": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        },
+        "claim_boundary": {
+          "type": "object",
+          "required": ["model_generated_history_summary", "candidate_long_term_memory_is_confirmed", "fallback_observations_are_labeled_by_actual_source", "context_is_evidence_not_learner_ground_truth", "model_may_not_mutate_fixed_context"],
+          "properties": {
+            "model_generated_history_summary": {"const": false},
+            "candidate_long_term_memory_is_confirmed": {"const": false},
+            "fallback_observations_are_labeled_by_actual_source": {"const": true},
+            "context_is_evidence_not_learner_ground_truth": {"const": true},
+            "model_may_not_mutate_fixed_context": {"const": true}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "adaptiveObservations": {
       "type": "array",
       "maxItems": 12,
