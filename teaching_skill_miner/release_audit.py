@@ -63,6 +63,11 @@ FORBIDDEN_SUFFIXES = {
     ".so",
     ".dll",
     ".exe",
+    ".vtt",
+    ".srt",
+    ".ass",
+    ".ssa",
+    ".ttml",
 }
 FORBIDDEN_PARTS = {
     "data/real",
@@ -97,9 +102,7 @@ SECRET_PATTERNS = (
 ABSOLUTE_LOCAL_PATH = re.compile(rb"/(?:Users|Volumes|home)/[^\s\"']+")
 SECRET_TEXT_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
-    re.compile(
-        r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*['\"]?[A-Za-z0-9_./+-]{20,}"
-    ),
+    re.compile(r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*['\"]?[A-Za-z0-9_./+-]{20,}"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
 ABSOLUTE_LOCAL_PATH_TEXT = re.compile(r"/(?:Users|Volumes|home)/[^\s\"']+")
@@ -188,7 +191,9 @@ def _iter_archive(path: Path) -> Iterable[tuple[str, bytes]]:
             yield info.filename, archive.read(info)
 
 
-def _archive_preflight(path: Path) -> tuple[list[zipfile.ZipInfo], list[dict[str, Any]]]:
+def _archive_preflight(
+    path: Path,
+) -> tuple[list[zipfile.ZipInfo], list[dict[str, Any]]]:
     """Inspect ZIP metadata before decompression so the auditor cannot be zip-bombed."""
 
     findings: list[dict[str, Any]] = []
@@ -310,9 +315,7 @@ def forbidden_binary_payload_kind(payload: bytes) -> str | None:
 def _text_is_printable(text: str) -> bool:
     if not text:
         return True
-    control_count = sum(
-        ord(char) < 32 and char not in "\n\r\t\f\b" for char in text
-    )
+    control_count = sum(ord(char) < 32 and char not in "\n\r\t\f\b" for char in text)
     return control_count <= max(1, len(text) // 100)
 
 
@@ -376,9 +379,7 @@ def secret_pattern_details(payload: bytes) -> list[str]:
     text = decode_text_payload(payload)
     if text is not None:
         details.update(
-            pattern.pattern
-            for pattern in SECRET_TEXT_PATTERNS
-            if pattern.search(text)
+            pattern.pattern for pattern in SECRET_TEXT_PATTERNS if pattern.search(text)
         )
     return sorted(details)
 
@@ -465,6 +466,57 @@ def _json_identity_keys(
     return fields
 
 
+def _verified_synthetic_teacher_agent_benchmark(value: Any) -> bool:
+    """Recognize the reviewed, author-constructed benchmark without weakening PII checks.
+
+    The public development fixture intentionally carries split-group keys such
+    as ``session_id``.  Those keys would normally be forbidden in a public
+    release.  They are exempted only when every case is explicitly synthetic,
+    every group value uses the closed synthetic prefixes, and no other
+    sensitive identity key occurs anywhere in the document.
+    """
+
+    if not isinstance(value, dict) or value.get("schema") != (
+        "teaching_skill_miner.teacher_agent_free_text_benchmark.v1"
+    ):
+        return False
+    boundary = value.get("claim_boundary")
+    cases = value.get("cases")
+    if (
+        not isinstance(boundary, dict)
+        or boundary.get("source_type") != "author_constructed_not_expert_validated"
+        or boundary.get("expert_validated") is not False
+        or boundary.get("real_students_involved") is not False
+        or not isinstance(cases, list)
+        or len(cases) < 24
+    ):
+        return False
+    if _json_identity_keys(value, schema_document=False) - {"session_id"}:
+        return False
+    patterns = {
+        "learner_id": re.compile(r"learner_[a-z0-9_]{2,80}"),
+        "session_id": re.compile(r"session_[a-z0-9_]{2,80}"),
+        "problem_id": re.compile(r"problem_[a-z0-9_]{2,80}"),
+        "kc_id": re.compile(r"kc_[a-z0-9_]{2,80}"),
+    }
+    for case in cases:
+        if (
+            not isinstance(case, dict)
+            or case.get("provenance") != "author_constructed_not_expert_validated"
+            or not isinstance(case.get("group_id"), dict)
+            or set(case["group_id"]) != set(patterns)
+        ):
+            return False
+        for field, pattern in patterns.items():
+            group_value = case["group_id"].get(field)
+            if (
+                not isinstance(group_value, str)
+                or pattern.fullmatch(group_value) is None
+            ):
+                return False
+    return True
+
+
 def sensitive_identity_fields(name: str, payload: bytes) -> list[str]:
     """Return row-level identity fields using format-aware parsing."""
 
@@ -478,14 +530,14 @@ def sensitive_identity_fields(name: str, payload: bytes) -> list[str]:
         stripped = text.lstrip("\ufeff \t\r\n")
         if suffix == ".json" or stripped.startswith(("{", "[")):
             value = json.loads(text)
+            if _verified_synthetic_teacher_agent_benchmark(value):
+                return []
             schema_document = bool(
                 isinstance(value, dict)
                 and isinstance(value.get("$schema"), str)
                 and value["$schema"].startswith("https://json-schema.org/")
             )
-            return sorted(
-                _json_identity_keys(value, schema_document=schema_document)
-            )
+            return sorted(_json_identity_keys(value, schema_document=schema_document))
         if suffix == ".jsonl":
             fields: set[str] = set()
             for line in text.splitlines():
@@ -526,7 +578,13 @@ def _inspect_member(name: str, payload: bytes) -> list[dict[str, Any]]:
             }
         )
     if suffix in FORBIDDEN_SUFFIXES:
-        findings.append({"path": normalized, "rule": "forbidden_binary_or_archive", "detail": suffix})
+        findings.append(
+            {
+                "path": normalized,
+                "rule": "forbidden_binary_or_archive",
+                "detail": suffix,
+            }
+        )
     binary_kind = forbidden_binary_payload_kind(payload)
     if binary_kind:
         findings.append(
@@ -545,8 +603,14 @@ def _inspect_member(name: str, payload: bytes) -> list[dict[str, Any]]:
             }
         )
     for part in FORBIDDEN_PARTS:
-        if lowered == part or lowered.startswith(part + "/") or f"/{part}/" in f"/{lowered}/":
-            findings.append({"path": normalized, "rule": "forbidden_private_path", "detail": part})
+        if (
+            lowered == part
+            or lowered.startswith(part + "/")
+            or f"/{part}/" in f"/{lowered}/"
+        ):
+            findings.append(
+                {"path": normalized, "rule": "forbidden_private_path", "detail": part}
+            )
     if any(
         part == ".env" or part.startswith(".env.")
         for part in PurePosixPath(lowered).parts
@@ -706,7 +770,9 @@ def _metric_subset(value: Any) -> dict[str, Any] | None:
     return output or None
 
 
-def public_dipser_summary(report: dict[str, Any], *, source_sha256: str) -> dict[str, Any]:
+def public_dipser_summary(
+    report: dict[str, Any], *, source_sha256: str
+) -> dict[str, Any]:
     """Export aggregate-only DIPSER facts without row-level identities or features."""
 
     nested = report.get("nested_offline_full_session", {})
@@ -741,14 +807,24 @@ def public_dipser_summary(report: dict[str, Any], *, source_sha256: str) -> dict
         "claim_status": report.get("claim_status", {}),
         "claim_limitation": report.get("claim_limitation"),
         "strict_causal_reference": {
-            "session_sgkf5": _metric_subset(causal.get("session_sgkf5")) if isinstance(causal, dict) else None,
-            "leave_one_session_out": _metric_subset(causal.get("leave_one_session_out")) if isinstance(causal, dict) else None,
-            "real_time_compatible": causal.get("real_time_compatible") if isinstance(causal, dict) else None,
-            "post_selection_exploratory": causal.get("post_selection_exploratory") if isinstance(causal, dict) else None,
+            "session_sgkf5": _metric_subset(causal.get("session_sgkf5"))
+            if isinstance(causal, dict)
+            else None,
+            "leave_one_session_out": _metric_subset(causal.get("leave_one_session_out"))
+            if isinstance(causal, dict)
+            else None,
+            "real_time_compatible": causal.get("real_time_compatible")
+            if isinstance(causal, dict)
+            else None,
+            "post_selection_exploratory": causal.get("post_selection_exploratory")
+            if isinstance(causal, dict)
+            else None,
         },
         "offline_full_session": nested_metrics,
         "modality_ablation": modalities,
-        "outer_seed_sensitivity": report.get("outer_seed_sensitivity", {}).get("metrics")
+        "outer_seed_sensitivity": report.get("outer_seed_sensitivity", {}).get(
+            "metrics"
+        )
         if isinstance(report.get("outer_seed_sensitivity"), dict)
         else None,
         "privacy": {
@@ -761,7 +837,9 @@ def public_dipser_summary(report: dict[str, Any], *, source_sha256: str) -> dict
     }
 
 
-def export_public_dipser_report(input_path: str | Path, output_path: str | Path) -> dict[str, Any]:
+def export_public_dipser_report(
+    input_path: str | Path, output_path: str | Path
+) -> dict[str, Any]:
     source = Path(input_path)
     payload = source.read_bytes()
     value = json.loads(payload.decode("utf-8"))

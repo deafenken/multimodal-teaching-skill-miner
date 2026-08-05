@@ -1,0 +1,949 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="paper" data-density="comfortable" data-mode="local_private_real_data">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'; worker-src 'none'; manifest-src 'none'">
+  <title>Teaching Skill Miner · Dual Evidence Demo</title>
+  <link rel="stylesheet" href="assets/private_skill_demo.css">
+  <style>
+    :root {
+      --bg: #ece9e0;
+      --paper: #fffdf7;
+      --paper-2: #f4f0e6;
+      --ink: #171918;
+      --muted: #686e69;
+      --line: #b8b7ae;
+      --line-strong: #696e69;
+      --blue: #1f50bd;
+      --blue-soft: #dfe7fb;
+      --green: #136b4c;
+      --green-soft: #dcece4;
+      --red: #b33e2b;
+      --red-soft: #f3ded7;
+      --amber: #8c5c15;
+      --amber-soft: #eee3cd;
+      --purple: #6d4d8d;
+      --radius: 3px;
+      --space: 22px;
+      --display: "Times New Roman", "Noto Serif SC", "Songti SC", serif;
+      --body: "Avenir Next", "Noto Sans SC", "PingFang SC", sans-serif;
+      --mono: "SFMono-Regular", "Cascadia Mono", monospace;
+    }
+    html[data-theme="night"] {
+      color-scheme: dark;
+      --bg: #0c1117;
+      --paper: #131b24;
+      --paper-2: #1b2631;
+      --ink: #eef2f3;
+      --muted: #a1afb7;
+      --line: #34434d;
+      --line-strong: #74838b;
+      --blue: #89adff;
+      --blue-soft: #20345d;
+      --green: #75d4ae;
+      --green-soft: #183c31;
+      --red: #ff9179;
+      --red-soft: #482920;
+      --amber: #e8bd6d;
+      --amber-soft: #44371e;
+      --purple: #c5a5e8;
+    }
+    html[data-density="compact"] { --space: 14px; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 var(--body);
+      text-wrap: pretty;
+    }
+    button, select, input { font: inherit; color: inherit; }
+    button, select {
+      min-height: 42px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: var(--paper);
+    }
+    button { cursor: pointer; padding: 8px 13px; }
+    button:hover, select:hover { background: var(--paper-2); }
+    button:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--blue) 48%, transparent);
+      outline-offset: 2px;
+    }
+    .shell { width: min(1680px, 100%); margin: 0 auto; min-height: 100vh; }
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      height: 68px;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      align-items: center;
+      border-bottom: 1px solid var(--line-strong);
+      background: color-mix(in srgb, var(--bg) 94%, transparent);
+      backdrop-filter: blur(14px);
+    }
+    .brand {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 0 22px;
+      border-right: 1px solid var(--line-strong);
+      font: 700 16px/1 var(--display);
+      letter-spacing: .02em;
+    }
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 2px solid currentColor;
+      font: 800 11px/1 var(--mono);
+    }
+    .mode-line {
+      min-width: 0;
+      padding: 0 22px;
+      color: var(--muted);
+      font: 11px/1.4 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .top-actions { display: flex; align-items: center; gap: 8px; padding-right: 16px; }
+    .privacy-toggle { min-height: 34px; padding: 5px 10px; color: var(--red); font: 700 10px/1 var(--mono); }
+    .privacy-badge, .connection-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+      font: 700 11px/1 var(--mono);
+      white-space: nowrap;
+    }
+    .privacy-badge { color: var(--red); }
+    .connection-badge { color: var(--green); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    main { padding: clamp(24px, 3vw, 48px); }
+    .intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, .56fr);
+      gap: 44px;
+      align-items: end;
+      margin-bottom: 30px;
+    }
+    .eyebrow {
+      margin: 0 0 13px;
+      color: var(--blue);
+      font: 700 11px/1 var(--mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1, h2, h3 { font-family: var(--display); }
+    h1 { margin-bottom: 10px; font-size: clamp(38px, 5.2vw, 76px); line-height: .96; letter-spacing: -.035em; }
+    .intro-copy { max-width: 820px; margin-bottom: 0; color: var(--muted); font-size: 16px; }
+    .claim-note {
+      margin: 0;
+      padding: 15px 17px;
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+      color: var(--muted);
+    }
+    .claim-note strong { color: var(--ink); }
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) auto;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+    .lesson-control label, .mini-label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font: 700 10px/1 var(--mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .lesson-control select { width: 100%; padding: 8px 12px; }
+    .lesson-meta { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .meta-chip {
+      min-height: 42px;
+      display: grid;
+      align-content: center;
+      padding: 7px 11px;
+      border: 1px solid var(--line);
+      background: var(--paper);
+      font-size: 12px;
+    }
+    .replay-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.38fr) minmax(340px, .62fr);
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+    }
+    .video-column { min-width: 0; border-right: 1px solid var(--line-strong); }
+    .video-head, .panel-head {
+      min-height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      font: 11px/1.25 var(--mono);
+      letter-spacing: .04em;
+    }
+    .video-head span:last-child, .panel-head span:last-child { color: var(--muted); }
+    .video-wrap { position: relative; aspect-ratio: 16 / 9; background: #070a0c; overflow: hidden; }
+    video { display: block; width: 100%; height: 100%; object-fit: contain; background: #070a0c; }
+    video.privacy-masked { filter: blur(18px) brightness(.5); transform: scale(1.04); }
+    .scene-frame.privacy-masked { filter: blur(14px) brightness(.62); }
+    .privacy-overlay {
+      position: absolute;
+      inset: 0;
+      z-index: 4;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: #fff;
+      background: rgba(7, 10, 12, .42);
+      text-align: center;
+    }
+    .privacy-overlay[hidden] { display: none; }
+    .privacy-overlay div { max-width: 460px; padding: 18px; border: 1px solid rgba(255,255,255,.55); background: rgba(7,10,12,.82); }
+    .privacy-overlay strong { display: block; margin-bottom: 7px; font: 700 24px/1.1 var(--display); }
+    .privacy-overlay span { color: rgba(255,255,255,.76); font-size: 12px; }
+    .scene-stamp {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      display: grid;
+      gap: 2px;
+      padding: 8px 10px;
+      color: #fff;
+      background: rgba(9, 13, 16, .82);
+      border: 1px solid rgba(255,255,255,.38);
+      pointer-events: none;
+    }
+    .scene-stamp strong { font: 750 13px/1.2 var(--mono); }
+    .scene-stamp span { color: rgba(255,255,255,.75); font: 10px/1.2 var(--mono); }
+    .sync-strip {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      padding: 13px 14px;
+      border-top: 1px solid var(--line);
+      background: var(--paper-2);
+    }
+    .scene-nav { display: flex; gap: 7px; }
+    .scene-nav button { min-width: 44px; padding-inline: 10px; }
+    #sceneSlider { width: 100%; accent-color: var(--blue); }
+    .scene-readout { min-width: 112px; text-align: right; font: 700 11px/1 var(--mono); }
+    .evidence-column { min-width: 0; display: grid; grid-template-rows: auto auto minmax(350px, 1fr); }
+    .tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); }
+    .tab {
+      min-height: 46px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-radius: 0;
+      color: var(--muted);
+      font: 700 11px/1 var(--mono);
+      text-transform: uppercase;
+    }
+    .tab:last-child { border-right: 0; }
+    .tab.active { color: var(--ink); background: var(--blue-soft); box-shadow: inset 0 -3px 0 var(--blue); }
+    .evidence-body { padding: var(--space); overflow: auto; max-height: 590px; }
+    .evidence-pane[hidden] { display: none; }
+    .source-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 18px; color: var(--muted); font: 10px/1.3 var(--mono); }
+    .evidence-text { margin: 0; font-size: 18px; line-height: 1.62; white-space: pre-wrap; }
+    .empty-copy { color: var(--muted); font-style: italic; }
+    .scene-frame { width: 100%; display: block; margin: 0 0 14px; border: 1px solid var(--line-strong); background: var(--paper-2); }
+    .behavior-boundary {
+      display: grid;
+      gap: 5px;
+      margin-bottom: 16px;
+      padding: 11px 12px;
+      border-left: 3px solid var(--blue);
+      background: var(--blue-soft);
+    }
+    .behavior-boundary strong { font-size: 13px; }
+    .behavior-boundary span { color: var(--muted); font-size: 11px; line-height: 1.5; }
+    .behavior-role { border: 1px solid var(--line); background: var(--paper); }
+    .behavior-role + .behavior-role { margin-top: 12px; }
+    .behavior-role-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--paper-2);
+    }
+    .behavior-role-title { display: grid; gap: 2px; }
+    .behavior-role-title span { color: var(--blue); font: 700 9px/1.2 var(--mono); letter-spacing: .08em; }
+    .behavior-role-title strong { font-size: 15px; }
+    .behavior-status { padding: 4px 6px; border: 1px solid var(--line-strong); color: var(--muted); font: 700 9px/1 var(--mono); }
+    .behavior-status.unavailable { color: var(--red); border-color: var(--red); }
+    .behavior-list { display: grid; }
+    .behavior-card {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 52px auto;
+      gap: 8px;
+      align-items: center;
+      min-height: 48px;
+      padding: 8px 11px;
+      border-bottom: 1px solid var(--line);
+    }
+    .behavior-card:last-child { border-bottom: 0; }
+    .behavior-name { min-width: 0; font-weight: 700; }
+    .behavior-name small { display: block; margin-top: 2px; overflow: hidden; color: var(--muted); font: 9px/1.2 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+    .behavior-score { text-align: right; font: 700 11px/1 var(--mono); }
+    .behavior-empty { padding: 14px 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .student-boundary { margin: 0; padding: 13px 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+    .interaction-caption { padding: 9px 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); color: var(--muted); font: 9px/1.4 var(--mono); }
+    .reference-list { display: flex; flex-wrap: wrap; gap: 7px; }
+    .reference-pill { padding: 7px 9px; border: 1px solid var(--green); background: var(--green-soft); color: var(--green); font-size: 12px; }
+    .prediction-section { margin-top: 22px; border: 1px solid var(--line-strong); background: var(--paper); }
+    .prediction-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: end;
+      padding: 20px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+    .prediction-head h2 { margin: 0 0 5px; font-size: clamp(27px, 3vw, 42px); line-height: 1; }
+    .prediction-head p { margin: 0; color: var(--muted); }
+    .arm-tabs { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+    .arm-button { min-height: 38px; font: 700 11px/1 var(--mono); }
+    .arm-button.active { color: var(--paper); background: var(--ink); }
+    .prediction-grid { display: grid; grid-template-columns: 260px minmax(0, 1fr); }
+    .score-summary { padding: 18px; border-right: 1px solid var(--line-strong); }
+    .score-summary h3 { margin-bottom: 18px; font-size: 24px; }
+    .summary-grid { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); }
+    .summary-cell { min-height: 92px; padding: 12px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .summary-cell:nth-child(2n) { border-right: 0; }
+    .summary-cell:nth-last-child(-n+2) { border-bottom: 0; }
+    .summary-cell strong { display: block; margin-bottom: 6px; font: 750 30px/1 var(--display); }
+    .summary-cell span { color: var(--muted); font-size: 11px; }
+    .legend { display: grid; gap: 8px; margin-top: 18px; color: var(--muted); font-size: 11px; }
+    .legend-row { display: flex; align-items: center; gap: 8px; }
+    .legend-mark { width: 16px; height: 10px; border: 1px solid var(--line-strong); }
+    .legend-mark.predicted { background: var(--blue); border-color: var(--blue); }
+    .legend-mark.reference { background: var(--green-soft); border-color: var(--green); }
+    .label-panel { min-width: 0; }
+    .label-toolbar { min-height: 52px; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 14px; border-bottom: 1px solid var(--line); }
+    .label-toolbar span { color: var(--muted); font: 10px/1.2 var(--mono); }
+    .toggle-label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+    .label-list { max-height: 510px; overflow: auto; }
+    .label-row {
+      display: grid;
+      grid-template-columns: minmax(150px, 1fr) minmax(120px, 1.4fr) 72px 92px;
+      gap: 12px;
+      align-items: center;
+      min-height: 50px;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .label-row:last-child { border-bottom: 0; }
+    .label-name { min-width: 0; font-weight: 650; }
+    .label-name small { display: block; color: var(--muted); font: 9px/1.2 var(--mono); text-transform: uppercase; }
+    .score-track { height: 7px; background: var(--paper-2); border: 1px solid var(--line); overflow: hidden; }
+    .score-fill { height: 100%; background: var(--blue); }
+    .score-value { text-align: right; font: 700 11px/1 var(--mono); }
+    .label-flags { display: flex; justify-content: flex-end; gap: 5px; }
+    .flag { min-width: 34px; padding: 4px 5px; border: 1px solid var(--line); text-align: center; color: var(--muted); font: 700 9px/1 var(--mono); }
+    .flag.pred { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
+    .flag.ref { color: var(--green); border-color: var(--green); background: var(--green-soft); }
+    .provenance {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      margin-top: 22px;
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+    }
+    .prov-cell { min-width: 0; padding: 13px; border-right: 1px solid var(--line); }
+    .prov-cell:last-child { border-right: 0; }
+    .prov-cell span { display: block; margin-bottom: 5px; color: var(--muted); font: 9px/1.2 var(--mono); letter-spacing: .06em; }
+    .prov-cell code { display: block; overflow: hidden; text-overflow: ellipsis; font: 10px/1.3 var(--mono); white-space: nowrap; }
+    footer { display: flex; justify-content: space-between; gap: 18px; padding: 18px 0 4px; color: var(--muted); font: 10px/1.4 var(--mono); }
+    .loading-cover {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: grid;
+      place-items: center;
+      padding: 30px;
+      background: var(--bg);
+    }
+    .loading-card { width: min(560px, 100%); padding: 28px; border: 1px solid var(--line-strong); background: var(--paper); }
+    .loading-card strong { display: block; margin-bottom: 8px; font: 700 30px/1 var(--display); }
+    .loading-card p { margin-bottom: 0; color: var(--muted); }
+    .loading-cover[hidden] { display: none; }
+    .view-settings { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: flex; gap: 7px; padding: 7px; border: 1px solid var(--line-strong); background: var(--paper); }
+    .view-settings button { min-height: 34px; padding: 5px 9px; font: 700 9px/1 var(--mono); }
+    @media (max-width: 1120px) {
+      .intro { grid-template-columns: 1fr; gap: 18px; }
+      .replay-grid { grid-template-columns: 1fr; }
+      .video-column { border-right: 0; border-bottom: 1px solid var(--line-strong); }
+      .evidence-column { grid-template-rows: auto auto auto; }
+      .evidence-body { max-height: none; }
+      .provenance { grid-template-columns: repeat(2, 1fr); }
+      .prov-cell { border-bottom: 1px solid var(--line); }
+    }
+    @media (max-width: 760px) {
+      .topbar { grid-template-columns: auto 1fr; }
+      .brand { padding-inline: 13px; }
+      .brand span:last-child, .mode-line, .connection-badge { display: none; }
+      .top-actions { justify-content: end; }
+      main { padding: 18px 12px 70px; }
+      .toolbar, .prediction-head { grid-template-columns: 1fr; align-items: start; }
+      .lesson-meta, .arm-tabs { justify-content: flex-start; }
+      .prediction-grid { grid-template-columns: 1fr; }
+      .score-summary { border-right: 0; border-bottom: 1px solid var(--line-strong); }
+      .label-row { grid-template-columns: minmax(130px, 1fr) 58px 82px; }
+      .score-track { display: none; }
+      .provenance { grid-template-columns: 1fr; }
+      .prov-cell { border-right: 0; }
+      footer { display: grid; }
+      .view-settings { right: 10px; bottom: 10px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="loading-cover" id="loadingCover" role="status" aria-live="polite">
+    <div class="loading-card"><strong>正在绑定真实证据</strong><p id="loadingText">读取本机会话中的课程目录与冻结模型信息……</p></div>
+  </div>
+
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">TSM</span><span>Dual Evidence Demo</span></div>
+      <div class="mode-line">local_private_real_data / two independently validated outcomes</div>
+      <div class="top-actions">
+        <span class="connection-badge"><span class="dot"></span><span id="connectionState">本机连接</span></span>
+        <button class="privacy-toggle" id="privacyToggle" type="button">显示真实画面</button>
+        <span class="privacy-badge">私有 · 不上传</span>
+      </div>
+    </header>
+
+    <main>
+      <nav class="result-switch" aria-label="选择项目成果">
+        <button class="result-switch-button active" id="resultRecognitionButton" type="button" aria-pressed="true" aria-controls="recognitionOutcome" data-result="recognition">
+          <span class="result-index">01 · BEHAVIOR RECOGNITION</span><strong>TeachObs 行为识别</strong><small><span id="recognitionSceneCount">1,099</span> 个真实测试场景 → 39 类教师行为</small><span class="result-action" id="recognitionResultAction">正在查看此成果</span>
+        </button>
+        <button class="result-switch-button" id="resultSkillButton" type="button" aria-pressed="false" aria-controls="skillOutcome" aria-busy="true" data-result="skill" data-load-state="loading" disabled>
+          <span class="result-index">02 · SKILL DISTILLATION</span><strong>MIT Skill 蒸馏</strong><small><span id="skillResultCount">10</span> 个完整讲次 → 九环节可执行 Skill</small><span class="result-action" id="skillResultAction">正在加载真实 Skill…</span>
+        </button>
+        <p class="track-relationship"><strong>两条独立验证轨：</strong>TeachObs 验证“场景贴什么标签”，MIT 轨道验证“整讲如何变成 Skill”。当前 TeachObs 的 39 类预测尚未直接输入 MIT procedure。</p>
+      </nav>
+
+      <div id="recognitionOutcome" data-screen-label="01 Behavior recognition">
+      <section class="intro">
+        <div>
+          <p class="eyebrow">Real multimodal evidence · local only</p>
+          <h1>真实课堂证据，同步到每个预测</h1>
+          <p class="intro-copy">真实 TeachObs 完整视频、同时间窗字幕、教师侧可观察行为、学生行为证据状态、发布共识标签与项目冻结四臂预测，在一条 15 秒时间轴上同步回放。</p>
+        </div>
+        <p class="claim-note"><strong>解释边界：</strong>特征已经离线预计算，本页复现冻结模型输出，不是实时部署推理。分数未经部署校准；结果仍属于 post-test exploratory 分析。</p>
+      </section>
+
+      <section aria-label="真实课堂回放">
+        <div class="toolbar">
+          <div class="lesson-control">
+            <label for="lessonSelect">选择真实测试讲次</label>
+            <select id="lessonSelect" aria-label="选择真实测试讲次"></select>
+          </div>
+          <div class="lesson-meta" id="lessonMeta" aria-label="课程元数据"></div>
+        </div>
+
+        <div class="replay-grid">
+          <article class="video-column">
+            <div class="video-head"><span>REAL CLASSROOM VIDEO</span><span id="videoIntegrity">媒体首次播放前校验哈希</span></div>
+            <div class="video-wrap">
+              <video class="privacy-masked" id="classroomVideo" controls playsinline preload="metadata" aria-label="真实课堂完整视频"></video>
+              <div class="privacy-overlay" id="privacyOverlay"><div><strong>真实课堂画面已遮罩</strong><span>画面可能包含可识别的教师与学生。确认当前屏幕共享范围后，再点击顶部“显示真实画面”。</span></div></div>
+              <div class="scene-stamp"><strong id="sceneStamp">SCENE —</strong><span id="sceneTime">00:00–00:15</span></div>
+            </div>
+            <div class="sync-strip">
+              <div class="scene-nav"><button type="button" id="previousScene" aria-label="上一个场景">←</button><button type="button" id="nextScene" aria-label="下一个场景">→</button></div>
+              <input id="sceneSlider" type="range" min="1" max="1" value="1" step="1" aria-label="场景编号">
+              <span class="scene-readout" id="sceneReadout">— / —</span>
+            </div>
+          </article>
+
+          <aside class="evidence-column" aria-label="当前场景证据">
+            <div class="panel-head"><span>SYNCHRONIZED EVIDENCE</span><span id="evidenceStatus">等待场景</span></div>
+            <div class="tabs" role="tablist" aria-label="证据类型">
+              <button class="tab active" type="button" role="tab" aria-selected="true" data-pane="behaviorPane">教师动作 / 学生状态</button>
+              <button class="tab" type="button" role="tab" aria-selected="false" data-pane="transcriptPane">字幕</button>
+              <button class="tab" type="button" role="tab" aria-selected="false" data-pane="referencePane">对照标签</button>
+            </div>
+            <div class="evidence-body">
+              <section class="evidence-pane" id="behaviorPane" role="tabpanel">
+                <img class="scene-frame privacy-masked" id="sceneFrame" alt="当前15秒场景的真实时间定位帧">
+                <div class="behavior-boundary">
+                  <strong>冻结标签投影，不是新的人体动作模型</strong>
+                  <span>这不是把 OCR 改名为动作：低质量 OCR 文字只保留为冻结视觉臂的底层输入，不传给浏览器。教师动作来自当前四臂已有的 TeachObs 行为代码；学生动作没有逐场景真值，因此不生成“举手、记笔记、讨论”等假结果。模型分数不是校准概率。</span>
+                </div>
+                <section class="behavior-role" aria-label="教师侧可观察教学行为">
+                  <div class="behavior-role-head">
+                    <div class="behavior-role-title"><span>TEACHER · DIRECT CODE</span><strong>教师侧可观察教学动作</strong></div>
+                    <span class="behavior-status" id="teacherActionCount">—</span>
+                  </div>
+                  <div class="behavior-list" id="teacherActionList"></div>
+                </section>
+                <section class="behavior-role" aria-label="学生行为证据状态">
+                  <div class="behavior-role-head">
+                    <div class="behavior-role-title"><span>STUDENT · EVIDENCE STATUS</span><strong>学生动作</strong></div>
+                    <span class="behavior-status unavailable">当前未建模</span>
+                  </div>
+                  <p class="student-boundary">现有 39 类标签的观察对象是教师教学行为；没有学生角色跟踪、姿态模型或逐场景学生动作标注，所以这里明确留空。</p>
+                  <div class="interaction-caption">可核对的互动上下文（仍是教师教学代码，不等于学生动作）</div>
+                  <div class="behavior-list" id="learnerSignalList"></div>
+                </section>
+              </section>
+              <section class="evidence-pane" id="transcriptPane" role="tabpanel" hidden>
+                <div class="source-row"><span>同时间窗字幕</span><span id="transcriptSource">—</span></div>
+                <p class="evidence-text" id="transcriptText">正在读取……</p>
+              </section>
+              <section class="evidence-pane" id="referencePane" role="tabpanel" hidden>
+                <div class="source-row"><span>TeachObs 发布共识标签</span><span>仅用于评测对照</span></div>
+                <div class="reference-list" id="referenceList"></div>
+              </section>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="prediction-section" aria-label="逐场景预测">
+        <div class="prediction-head">
+          <div><p class="eyebrow">Frozen model replay</p><h2>当前 15 秒场景的四臂预测</h2><p>每一行都是模型对一个教学行为标签的真实输出；“预测”与“发布共识”分开标记。</p></div>
+          <div class="arm-tabs" id="armTabs" aria-label="选择模型模态"></div>
+        </div>
+        <div class="prediction-grid">
+          <aside class="score-summary">
+            <h3 id="armTitle">Full multimodal</h3>
+            <div class="summary-grid">
+              <div class="summary-cell"><strong id="predictedCount">—</strong><span>预测为正</span></div>
+              <div class="summary-cell"><strong id="referenceCount">—</strong><span>共识为正</span></div>
+              <div class="summary-cell"><strong id="truePositive">—</strong><span>命中 TP</span></div>
+              <div class="summary-cell"><strong id="errorCount">—</strong><span>FP + FN</span></div>
+            </div>
+            <div class="legend">
+              <div class="legend-row"><span class="legend-mark predicted"></span><span>PRED：冻结模型预测为正</span></div>
+              <div class="legend-row"><span class="legend-mark reference"></span><span>REF：发布共识标签为正</span></div>
+            </div>
+          </aside>
+          <div class="label-panel">
+            <div class="label-toolbar"><span>NON-CALIBRATED MODEL SCORE · HIGH → LOW</span><label class="toggle-label"><input id="showAllLabels" type="checkbox">显示全部 39 类</label></div>
+            <div class="label-list" id="labelList" aria-live="polite"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="provenance" aria-label="当前场景溯源指纹">
+        <div class="prov-cell"><span>MEDIA</span><code id="provMedia">—</code></div>
+        <div class="prov-cell"><span>SCENE MANIFEST</span><code id="provScene">—</code></div>
+        <div class="prov-cell"><span>FRAME</span><code id="provFrame">—</code></div>
+        <div class="prov-cell"><span>FROZEN BUNDLE</span><code id="provBundle">—</code></div>
+        <div class="prov-cell"><span>PREDICTION INPUT</span><code id="provPrediction">—</code></div>
+      </section>
+      </div>
+
+      <section class="skill-outcome" id="skillOutcome" data-screen-label="02 Skill distillation" hidden>
+        <header class="skill-hero">
+          <div><p class="eyebrow skill-accent">Complete lecture → executable method</p><h1>把一整讲课，蒸馏成一份可执行 Skill</h1><p>保留视频里真实出现的教学环节及其时间顺序；没有观察到的环节明确标为“建议补全”，不伪装成原教师行为。</p></div>
+          <aside class="skill-truth-note"><strong>当前实现边界</strong><span>procedure 由字幕证据主导；音频、视觉和 OCR 候选事件辅助策略计分与证据一致性。当前 procedure 的直接 mme_* 引用数为 <b id="directMmeCount">0</b>。</span></aside>
+        </header>
+
+        <div class="skill-aggregate" aria-label="Skill 蒸馏真实聚合结果">
+          <div><strong id="aggregateLectureCount">—</strong><span>完整讲次</span></div><div><strong id="aggregateCandidateEvents">—</strong><span>候选多模态事件</span></div><div><strong id="aggregateProcedureSteps">—</strong><span>九环节步骤</span></div><div><strong id="aggregateObservedSteps">—</strong><span>视频中观察到</span></div><div><strong id="aggregateRecommendedSteps">—</strong><span>建议补全</span></div><div><strong id="aggregateSelectedEvents">—</strong><span>入选多模态证据</span></div>
+        </div>
+
+        <div class="skill-pipeline" aria-label="Skill 蒸馏流程">
+          <div class="pipeline-node"><span>01 · VIDEO INPUT</span><strong>完整视频 + 官方字幕</strong><small>全程抽帧、音频停顿与视觉语义</small></div><i>→</i><div class="pipeline-node"><span>02 · SKILL EXTRACTION</span><strong>evi_* / mme_* → Skill</strong><small>识别策略并恢复真实教学时序</small></div><i>→</i><div class="pipeline-node"><span>03 · PROCESS GENERATION</span><strong>Skill + 新主题 → 教学过程</strong><small>注入参数，生成步骤、信号与 fallback</small></div><i>→</i><div class="pipeline-node output"><span>04 · AUTO EVALUATION</span><strong>七维量表 + 六项门槛</strong><small>结构与内部证据一致性审计</small></div>
+        </div>
+
+        <div class="skill-toolbar">
+          <label for="skillSelect"><span>选择真实完整讲次</span><select id="skillSelect" aria-label="选择蒸馏 Skill"></select></label>
+          <div class="skill-meta" id="skillMeta"></div>
+        </div>
+
+        <section class="skill-lower-grid" aria-label="Skill 抽取依据">
+          <article class="multimodal-ledger"><div class="section-kicker"><span>02A · SELECTED mme_* CANDIDATE EVENTS</span><small>不展示低质量 OCR 原文</small></div><p class="ledger-explainer">这些事件辅助策略计分，不是 procedure 步骤的直接金标准。置信分数为启发式分数，不是校准概率。</p><div class="event-timeline" id="skillEventTimeline"></div></article>
+          <article class="strategy-ledger"><div class="section-kicker"><span>02B · EXTRACTED STRATEGIES</span><small>字幕 / 多模态证据分列</small></div><div class="strategy-list" id="skillStrategyList"></div></article>
+        </section>
+
+        <article class="skill-document">
+          <header class="skill-document-head"><div><span id="skillCourse">—</span><h2 id="skillTitle">正在读取 Skill…</h2><p id="skillName">—</p></div><div class="skill-score"><strong id="methodFidelity">—</strong><span>METHOD FIDELITY</span><small>内部证据量表，不是 Accuracy</small></div></header>
+          <div class="objective-band"><span>LEARNING OBJECTIVE</span><p id="skillObjective">—</p></div>
+          <div class="skill-workbench">
+            <section class="procedure-column" aria-label="真实九环节程序"><div class="section-kicker"><span>PROCEDURE · ACTUAL ORDER</span><small>点击步骤查看证据与回退</small></div><div class="procedure-list" id="skillProcedureList"></div></section>
+            <section class="step-detail" aria-live="polite"><div class="step-detail-head"><span id="stepOrigin">—</span><strong id="stepPhase">—</strong><code id="stepAction">—</code></div><dl><div><dt>教师做什么</dt><dd id="stepInstruction">—</dd></div><div><dt>期待学生信号</dt><dd id="stepExpected">—</dd></div><div><dt>未达标怎么办</dt><dd id="stepFallback">—</dd></div></dl><div class="step-evidence-head"><span>该步骤直接引用的 evi_* 字幕证据</span><small id="stepEvidenceBoundary">—</small></div><div class="step-evidence-list" id="stepEvidenceList"></div></section>
+          </div>
+        </article>
+
+        <section class="process-generator" data-screen-label="03 Teaching process generation" aria-labelledby="processGeneratorTitle">
+          <header class="feature-head"><div><p class="eyebrow skill-accent">03 · Teaching process generation</p><h2 id="processGeneratorTitle">用当前 Skill 生成一段可执行教学过程</h2><p>输入一个教学主题，系统把它注入已蒸馏 Skill 的目标、九步 procedure、观察信号、fallback 和验证题。生成在本机浏览器完成，不调用外部服务。</p></div><div class="generation-formula"><span>CURRENT SKILL</span><i>+</i><span>CONCEPT</span><i>→</i><strong>9-STEP PROCESS</strong></div></header>
+          <div class="generator-controls"><label for="processConcept"><span>教学主题 CONCEPT</span><input id="processConcept" type="text" maxlength="160" autocomplete="off" placeholder="例如：特征值与特征向量"></label><label for="learnerLevel"><span>学习者水平</span><select id="learnerLevel"><option value="beginner">初学者</option><option value="intermediate">中等基础</option><option value="advanced">进阶学习者</option></select></label><button type="button" id="generateProcess">生成教学过程</button></div>
+          <article class="generated-process" aria-live="polite"><header class="generated-process-head"><div><code id="generatedSkillId">—</code><h3 id="generatedProcessTitle">等待生成</h3><p id="generatedGoal">—</p></div><strong id="generatedProcessStatus">READY</strong></header><div class="generated-procedure" id="generatedProcedure"></div><footer class="generated-verification"><span>当堂验证</span><div id="generatedVerification"></div></footer></article>
+        </section>
+
+        <section class="automatic-evaluation" data-screen-label="04 Automatic evaluation" aria-labelledby="automaticEvaluationTitle">
+          <header class="feature-head"><div><p class="eyebrow skill-accent">04 · Frozen automatic evaluation</p><h2 id="automaticEvaluationTitle">自动检查 Skill 是否完整、可追溯、可执行</h2><p>下列数值来自与 Skill 文件哈希绑定的真实 evaluation.json；切换讲次时同步更新，不是网页临时编造。</p></div><div class="evaluation-overall"><strong id="evaluationOverall">—</strong><span>内部综合量表 / 100</span><small id="evaluationDecision">—</small></div></header>
+          <div class="evaluation-body"><article><div class="section-kicker"><span>SEVEN WEIGHTED DIMENSIONS</span><small id="evaluationGrade">—</small></div><div class="evaluation-dimensions" id="evaluationDimensions"></div></article><article><div class="section-kicker"><span>SIX HARD GATES</span><small>全部通过才算内部评估通过</small></div><div class="evaluation-gates" id="evaluationGates"></div><div class="evidence-consistency"><span>内部多模态证据一致性</span><strong id="evidenceConsistency">—</strong></div></article></div>
+          <p class="evaluation-boundary"><strong>口径：</strong><span id="evaluationScope">—</span>。这是结构质量与内部证据一致性量表，不是 Accuracy，不代表专家认可或学生学习效果。</p>
+        </section>
+
+        <section class="runtime-lab" aria-label="Skill Runtime 状态机演示；不是自动评估">
+          <div class="runtime-copy"><p class="eyebrow skill-accent">05 · Execution demo · not evaluation</p><h2>达标就前进，未达标就执行 fallback</h2><p>这里演示刚生成教学过程的状态机执行逻辑；学生是否达标由演示者输入，不是自动学习效果判断。</p><div class="runtime-flow" id="runtimeFlow"></div></div>
+          <div class="runtime-console"><div class="runtime-status"><span id="runtimePhase">READY</span><strong id="runtimePosition">尚未开始</strong></div><p id="runtimeMessage">点击“开始执行”，载入当前 Skill 的第一步。</p><div class="runtime-feedback" id="runtimeFeedback" hidden></div><div class="runtime-actions"><button type="button" id="runtimeStart">开始 / 重置</button><button type="button" id="runtimePass" disabled>学生信号达标</button><button type="button" id="runtimeFail" disabled>学生信号未达标</button></div></div>
+        </section>
+
+        <section class="skill-boundaries"><strong>如何解释这份成果</strong><div><span><b>Evidence</b> Observed 有 evi_* 支持；mme_* 是候选证据</span><span><b>Generated process</b> 是 Skill 参数化执行，不是重新识别视频</span><span><b>Auto evaluation</b> 审核结构与内部证据，不是 Accuracy</span><span><b>Runtime</b> 是执行逻辑，不是学习效果</span></div><p>尚无独立事件真值、专家 Skill 金标准或学习效果实验；内部结构分数不能称为识别准确率，也不能据此宣称 MIT 轨道建立了多模态增益。</p></section>
+        <section class="skill-provenance" id="skillProvenance" aria-label="Skill 产物溯源指纹"></section>
+      </section>
+
+      <footer><span>本页只通过随机会话地址访问本机私有文件；不提供上传、导出或外网请求。</span><span>deployment_accuracy_established = false · teaching_effectiveness_established = false</span></footer>
+    </main>
+  </div>
+
+  <div class="view-settings" aria-label="视图设置"><button type="button" id="themeButton">NIGHT</button><button type="button" id="densityButton">COMPACT</button></div>
+
+  <script>
+    const state = {
+      catalog: null,
+      lesson: null,
+      scene: null,
+      sceneNumber: 1,
+      arm: "full",
+      showAll: false,
+      pendingSeek: null,
+      privacyMasked: true,
+      requestGeneration: 0,
+      cache: new Map()
+    };
+
+    const armLabels = {
+      transcript_only: "Transcript only",
+      transcript_audio: "+ Audio",
+      transcript_visual: "+ Visual",
+      full: "Full multimodal"
+    };
+
+    const qs = (selector) => document.querySelector(selector);
+    const qsa = (selector) => Array.from(document.querySelectorAll(selector));
+    const video = qs("#classroomVideo");
+
+    function element(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+
+    function formatTime(seconds) {
+      const value = Math.max(0, Math.round(Number(seconds) || 0));
+      const hours = Math.floor(value / 3600);
+      const minutes = Math.floor((value % 3600) / 60);
+      const secs = value % 60;
+      const base = `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+      return hours ? `${String(hours).padStart(2, "0")}:${base}` : base;
+    }
+
+    function route(relative) {
+      return new URL(relative, window.location.href).href;
+    }
+
+    async function requestJson(relative) {
+      const response = await fetch(route(relative), { cache: "no-store", credentials: "same-origin" });
+      if (!response.ok) throw new Error(`request failed (${response.status})`);
+      return response.json();
+    }
+
+    function replaceChildrenWithText(root, values, className) {
+      const nodes = values.map((value) => element("span", className, value));
+      root.replaceChildren(...nodes);
+    }
+
+    function renderLessonOptions() {
+      const select = qs("#lessonSelect");
+      const options = state.catalog.lessons.map((lesson) => {
+        const option = document.createElement("option");
+        option.value = lesson.id;
+        option.textContent = `${lesson.id} · ${lesson.subject} · ${lesson.school_level}`;
+        return option;
+      });
+      select.replaceChildren(...options);
+      select.value = state.catalog.default_lesson;
+    }
+
+    function renderArmTabs() {
+      const buttons = state.catalog.inference.arms.map((arm) => {
+        const button = element("button", "arm-button", armLabels[arm] || arm);
+        button.type = "button";
+        button.dataset.arm = arm;
+        button.classList.toggle("active", arm === state.arm);
+        button.setAttribute("aria-pressed", String(arm === state.arm));
+        button.addEventListener("click", () => {
+          state.arm = arm;
+          renderArmTabs();
+          renderPredictions();
+        });
+        return button;
+      });
+      qs("#armTabs").replaceChildren(...buttons);
+    }
+
+    function renderLessonMeta() {
+      const lesson = state.lesson;
+      replaceChildrenWithText(qs("#lessonMeta"), [
+        lesson.country,
+        lesson.source,
+        `${formatTime(lesson.duration_seconds)} full video`,
+        `${lesson.scene_count} scenes`
+      ], "meta-chip");
+      qs("#sceneSlider").max = String(lesson.scene_count);
+    }
+
+    function setLesson(lessonId) {
+      const lesson = state.catalog.lessons.find((item) => item.id === lessonId);
+      if (!lesson) return;
+      state.lesson = lesson;
+      state.scene = null;
+      state.sceneNumber = lesson.suggested_scene || 1;
+      state.requestGeneration += 1;
+      video.pause();
+      video.removeAttribute("src");
+      video.querySelectorAll("track").forEach((track) => track.remove());
+      video.load();
+      video.src = route(lesson.video);
+      const track = document.createElement("track");
+      track.kind = "subtitles";
+      track.label = "Materialized transcript";
+      track.srclang = "en";
+      track.src = route(lesson.captions);
+      track.default = true;
+      video.append(track);
+      video.load();
+      renderLessonMeta();
+      qs("#lessonSelect").value = lessonId;
+      qs("#sceneSlider").value = String(state.sceneNumber);
+      void loadScene(state.sceneNumber, true);
+    }
+
+    async function loadScene(sceneNumber, seek) {
+      if (!state.lesson) return;
+      const bounded = Math.min(state.lesson.scene_count, Math.max(1, Number(sceneNumber) || 1));
+      const key = `${state.lesson.id}:${bounded}`;
+      if (seek) state.pendingSeek = bounded;
+      const generation = ++state.requestGeneration;
+      qs("#evidenceStatus").textContent = "读取真实场景";
+      try {
+        let scene = state.cache.get(key);
+        if (!scene) {
+          scene = await requestJson(`api/lessons/${state.lesson.id}/scenes/${bounded}`);
+          state.cache.set(key, scene);
+        }
+        if (generation !== state.requestGeneration || scene.lesson !== state.lesson.id) return;
+        state.scene = scene;
+        state.sceneNumber = bounded;
+        qs("#sceneSlider").value = String(bounded);
+        if (seek && Math.abs(video.currentTime - scene.start_seconds) > .3) {
+          if (video.readyState >= 1) {
+            video.currentTime = scene.start_seconds;
+            state.pendingSeek = null;
+          } else {
+            const seekWhenReady = () => {
+              if (generation !== state.requestGeneration) return;
+              video.currentTime = scene.start_seconds;
+              state.pendingSeek = null;
+            };
+            video.addEventListener("loadedmetadata", seekWhenReady, { once: true });
+          }
+        }
+        renderScene();
+      } catch (error) {
+        state.pendingSeek = null;
+        qs("#evidenceStatus").textContent = "场景读取失败";
+        qs("#connectionState").textContent = "连接异常";
+        qs("#transcriptText").textContent = String(error.message || error);
+      }
+    }
+
+    function renderScene() {
+      const scene = state.scene;
+      if (!scene) return;
+      qs("#evidenceStatus").textContent = "时间对齐完成";
+      qs("#sceneStamp").textContent = `SCENE ${String(scene.scene_number).padStart(3, "0")}`;
+      qs("#sceneTime").textContent = `${formatTime(scene.start_seconds)}–${formatTime(scene.end_seconds)}`;
+      qs("#sceneReadout").textContent = `${scene.scene_number} / ${scene.scene_count}`;
+      qs("#transcriptSource").textContent = scene.transcript.source_tier.replaceAll("_", " ");
+      qs("#transcriptText").textContent = scene.transcript.text || "该时间窗没有可用字幕。";
+      qs("#transcriptText").classList.toggle("empty-copy", scene.transcript.empty);
+      qs("#sceneFrame").src = route(scene.visual.frame_url);
+      const references = scene.reference.positive_labels.length ? scene.reference.positive_labels : ["本场景无发布正标签"];
+      replaceChildrenWithText(qs("#referenceList"), references, "reference-pill");
+      qs("#provMedia").textContent = scene.provenance.media_sha256;
+      qs("#provScene").textContent = scene.provenance.scene_manifest_sha256;
+      qs("#provFrame").textContent = scene.provenance.frame_sha256;
+      qs("#provBundle").textContent = scene.provenance.bundle_fingerprint;
+      qs("#provPrediction").textContent = scene.provenance.prediction_input_fingerprint;
+      renderPredictions();
+    }
+
+    function activeBehaviorRows(rows) {
+      return rows
+        .filter((row) => row.predicted || row.reference)
+        .sort((left, right) => (
+          Number(right.predicted) - Number(left.predicted)
+          || Number(right.reference) - Number(left.reference)
+          || right.score - left.score
+          || left.label.localeCompare(right.label)
+        ));
+    }
+
+    function renderBehaviorRows(root, rows, emptyMessage) {
+      const nodes = rows.map((row) => {
+        const item = element("div", "behavior-card");
+        const name = element("div", "behavior-name", row.display_label);
+        name.append(element("small", "", row.label));
+        const score = element("div", "behavior-score", row.score.toFixed(3));
+        const flags = element("div", "label-flags");
+        flags.append(element("span", row.predicted ? "flag pred" : "flag", "PRED"));
+        flags.append(element("span", row.reference ? "flag ref" : "flag", "REF"));
+        item.append(name, score, flags);
+        return item;
+      });
+      if (!nodes.length) nodes.push(element("p", "behavior-empty", emptyMessage));
+      root.replaceChildren(...nodes);
+    }
+
+    function renderBehaviorView() {
+      if (!state.scene) return;
+      const view = state.scene.predictions[state.arm].behavior_view;
+      const teacherRows = activeBehaviorRows(view.teacher_visible_actions);
+      const learnerSignals = activeBehaviorRows(view.learner_related_teaching_signals);
+      qs("#teacherActionCount").textContent = `${teacherRows.length} 项标正`;
+      renderBehaviorRows(
+        qs("#teacherActionList"),
+        teacherRows,
+        "当前模型与发布参考在这 10 类教师可见动作中均未标正。"
+      );
+      renderBehaviorRows(
+        qs("#learnerSignalList"),
+        learnerSignals,
+        "当前场景没有被标正的互动上下文代码。"
+      );
+    }
+
+    function renderPredictions() {
+      if (!state.scene) return;
+      const arm = state.scene.predictions[state.arm];
+      const summary = arm.summary;
+      qs("#armTitle").textContent = armLabels[state.arm] || state.arm;
+      qs("#predictedCount").textContent = String(summary.predicted_positive);
+      qs("#referenceCount").textContent = String(summary.reference_positive);
+      qs("#truePositive").textContent = String(summary.true_positive);
+      qs("#errorCount").textContent = String(summary.false_positive + summary.false_negative);
+      let rows = arm.labels;
+      if (!state.showAll) rows = rows.filter((row) => row.predicted || row.reference).slice(0, 14);
+      const nodes = rows.map((row) => {
+        const item = element("div", "label-row");
+        const name = element("div", "label-name", row.label);
+        name.append(element("small", "", row.group));
+        const track = element("div", "score-track");
+        const fill = element("div", "score-fill");
+        fill.style.width = `${Math.max(0, Math.min(100, row.score * 100)).toFixed(1)}%`;
+        track.append(fill);
+        const score = element("div", "score-value", row.score.toFixed(3));
+        const flags = element("div", "label-flags");
+        flags.append(element("span", row.predicted ? "flag pred" : "flag", "PRED"));
+        flags.append(element("span", row.reference ? "flag ref" : "flag", "REF"));
+        item.append(name, track, score, flags);
+        return item;
+      });
+      if (!nodes.length) nodes.push(element("div", "label-row", "当前筛选下没有正标签。"));
+      qs("#labelList").replaceChildren(...nodes);
+      renderBehaviorView();
+    }
+
+    function sceneForTime(seconds) {
+      if (!state.lesson) return 1;
+      return Math.min(state.lesson.scene_count, Math.max(1, Math.floor(seconds / 15) + 1));
+    }
+
+    function activatePane(button) {
+      qsa(".tab").forEach((tab) => {
+        const active = tab === button;
+        tab.classList.toggle("active", active);
+        tab.setAttribute("aria-selected", String(active));
+        qs(`#${tab.dataset.pane}`).hidden = !active;
+      });
+    }
+
+    function setPrivacyMask(masked) {
+      state.privacyMasked = masked;
+      video.classList.toggle("privacy-masked", masked);
+      qs("#sceneFrame").classList.toggle("privacy-masked", masked);
+      qs("#privacyOverlay").hidden = !masked;
+      qs("#privacyToggle").textContent = masked ? "显示真实画面" : "隐藏真实画面";
+    }
+
+    async function initialize() {
+      try {
+        state.catalog = await requestJson("api/catalog");
+        if (state.catalog.mode !== "local_private_real_data") throw new Error("unexpected dashboard mode");
+        renderLessonOptions();
+        renderArmTabs();
+        setLesson(state.catalog.default_lesson);
+        qs("#loadingCover").hidden = true;
+      } catch (error) {
+        qs("#loadingText").textContent = `真实证据载入失败：${String(error.message || error)}`;
+        qs("#connectionState").textContent = "连接失败";
+      }
+    }
+
+    qs("#lessonSelect").addEventListener("change", (event) => setLesson(event.target.value));
+    qs("#sceneSlider").addEventListener("input", (event) => void loadScene(Number(event.target.value), true));
+    qs("#previousScene").addEventListener("click", () => void loadScene(state.sceneNumber - 1, true));
+    qs("#nextScene").addEventListener("click", () => void loadScene(state.sceneNumber + 1, true));
+    qs("#showAllLabels").addEventListener("change", (event) => {
+      state.showAll = event.target.checked;
+      renderPredictions();
+    });
+    qsa(".tab").forEach((button) => button.addEventListener("click", () => activatePane(button)));
+    video.addEventListener("timeupdate", () => {
+      if (state.pendingSeek !== null) return;
+      const candidate = sceneForTime(video.currentTime);
+      if (candidate !== state.sceneNumber) void loadScene(candidate, false);
+    });
+    video.addEventListener("loadedmetadata", () => { qs("#videoIntegrity").textContent = "媒体哈希校验通过 · Range ready"; });
+    video.addEventListener("error", () => { qs("#videoIntegrity").textContent = "媒体读取失败"; });
+    qs("#themeButton").addEventListener("click", () => {
+      const night = document.documentElement.dataset.theme === "night";
+      document.documentElement.dataset.theme = night ? "paper" : "night";
+      qs("#themeButton").textContent = night ? "NIGHT" : "PAPER";
+    });
+    qs("#densityButton").addEventListener("click", () => {
+      const compact = document.documentElement.dataset.density === "compact";
+      document.documentElement.dataset.density = compact ? "comfortable" : "compact";
+      qs("#densityButton").textContent = compact ? "COMPACT" : "COMFORT";
+    });
+    qs("#privacyToggle").addEventListener("click", () => setPrivacyMask(!state.privacyMasked));
+
+    setPrivacyMask(true);
+    void initialize();
+  </script>
+  <script src="assets/private_skill_demo.js"></script>
+</body>
+</html>

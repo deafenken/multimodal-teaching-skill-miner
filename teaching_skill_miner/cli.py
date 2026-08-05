@@ -19,8 +19,28 @@ from .audit import audit_dataset
 from .benchmark import benchmark_transfer
 from .delivery import delivery_markdown, verify_delivery
 from .dashboard import dashboard_self_check, open_dashboard
+from .deepseek_client import ALLOWED_MODELS, DeepSeekClient, DeepSeekConfig
+from .private_dashboard import (
+    DEFAULT_PRIVATE_LESSON,
+    DEFAULT_PRIVATE_SKILL,
+    DEFAULT_PRIVATE_SKILL_ROOT,
+    DEFAULT_PRIVATE_TEACHOBS_ROOT,
+    PrivateDashboardConfig,
+    build_private_snapshot,
+    private_dashboard_template_self_check,
+    private_snapshot_summary,
+    serve_private_dashboard,
+)
 from .evaluator import evaluate_collection, evaluate_skill
 from .executor import execute_skill
+from .general_skill import (
+    build_general_skill_receipt,
+    distill_general_skill,
+    evaluate_general_skill,
+    execute_general_skill,
+    render_general_skill_summary,
+    validate_general_skill,
+)
 from .external_evidence import (
     EVIDENCE_KINDS,
     finalize_external_research_evidence,
@@ -128,6 +148,22 @@ from .recognition.strict_evaluation import (
     validate_strict_manifest,
 )
 from .runtime import SkillRuntime, run_scripted_session
+from .teacher_agent import (
+    advance_teacher_agent_session,
+    evaluate_teacher_agent,
+    session_turn_summary,
+    start_teacher_agent_session,
+)
+from .teacher_agent_dashboard import (
+    serve_teacher_agent_dashboard,
+    teacher_agent_dashboard_self_check,
+)
+from .teacher_agent_live import LiveAgentOptions
+from .teacher_agent_benchmark import (
+    benchmark_exit_code,
+    run_teacher_agent_benchmark,
+)
+from .teacher_agent_outcomes import evaluate_learning_observation
 
 
 def _mine(transcript: dict[str, Any], backend: str) -> dict[str, Any]:
@@ -161,6 +197,112 @@ def command_mine(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_distill_general_skill(args: argparse.Namespace) -> int:
+    skill_root = Path(args.skill_root).expanduser().resolve()
+    if not skill_root.is_dir():
+        raise FileNotFoundError(f"Skill directory does not exist: {skill_root}")
+    pattern = str(args.pattern)
+    pattern_path = Path(pattern)
+    if pattern_path.is_absolute() or ".." in pattern_path.parts:
+        raise ValueError("--pattern must stay inside --skill-root")
+    skill_paths = sorted(
+        path for path in skill_root.glob(pattern) if path.is_file()
+    )
+    if not skill_paths:
+        raise FileNotFoundError(
+            f"no Skill files matched {pattern!r} beneath {skill_root}"
+        )
+
+    source_skills = [read_json(path) for path in skill_paths]
+    general_skill = distill_general_skill(
+        source_skills,
+        overall_support_threshold=args.overall_support_threshold,
+        per_course_support_threshold=args.per_course_support_threshold,
+        minimum_course_count=args.minimum_course_count,
+        minimum_skills_per_course=args.minimum_skills_per_course,
+    )
+    validation = validate_general_skill(general_skill)
+    if not validation.valid:
+        raise ValueError(
+            "invalid distilled general Skill: " + "; ".join(validation.errors)
+        )
+    evaluation = evaluate_general_skill(general_skill)
+    teaching_process = execute_general_skill(
+        general_skill,
+        concept=args.example_concept,
+        learner_level=args.learner_level,
+    )
+
+    output_dir = ensure_private_directory(args.output_dir)
+    skill_path = write_json(output_dir / "general_skill.json", general_skill)
+    evaluation_path = write_json(
+        output_dir / "general_skill_evaluation.json", evaluation
+    )
+    process_path = write_text(
+        output_dir / "example_teaching_process.md", teaching_process
+    )
+    summary_path = write_text(
+        output_dir / "general_skill_summary.md",
+        render_general_skill_summary(general_skill),
+    )
+    distillation = general_skill.get("distillation", {})
+    receipt = build_general_skill_receipt(general_skill, evaluation)
+    receipt_path = write_json(
+        output_dir / "general_skill_receipt.json", receipt
+    )
+    summary = {
+        "general_skill": str(skill_path.resolve()),
+        "evaluation": str(evaluation_path.resolve()),
+        "receipt": str(receipt_path.resolve()),
+        "example_teaching_process": str(process_path.resolve()),
+        "summary": str(summary_path.resolve()),
+        "input_skill_count": distillation.get("input_skill_count"),
+        "input_course_count": distillation.get("input_course_count"),
+        "consensus_strategy_count": len(
+            general_skill.get("skill", {}).get("strategies", [])
+        ),
+        "observed_consensus_phase_count": sum(
+            step.get("origin") == "cross_lecture_observed_consensus"
+            for step in general_skill.get("skill", {}).get("procedure", [])
+        ),
+        "recommended_phase_count": sum(
+            step.get("origin") == "recommended_enrichment"
+            for step in general_skill.get("skill", {}).get("procedure", [])
+        ),
+        "internal_evaluation_passed": bool(evaluation.get("passed")),
+        "internal_score_is_accuracy": False,
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0 if evaluation.get("passed") else 2
+
+
+def command_apply_general_skill(args: argparse.Namespace) -> int:
+    general_skill = read_json(args.skill)
+    validation = validate_general_skill(general_skill)
+    if not validation.valid:
+        raise ValueError("invalid general Skill: " + "; ".join(validation.errors))
+    teaching_process = execute_general_skill(
+        general_skill,
+        concept=args.concept,
+        learner_level=args.learner_level,
+    )
+    if args.output:
+        target = write_text(args.output, teaching_process)
+        print(f"teaching process: {target}")
+    else:
+        print(teaching_process, end="")
+    return 0
+
+
+def command_evaluate_general_skill(args: argparse.Namespace) -> int:
+    general_skill = read_json(args.skill)
+    report = evaluate_general_skill(general_skill)
+    if args.output:
+        write_json(args.output, report)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("passed") else 2
+
+
 def command_teach(args: argparse.Namespace) -> int:
     skill = read_json(args.skill)
     validation = validate_skill(skill)
@@ -187,7 +329,12 @@ def command_evaluate(args: argparse.Namespace) -> int:
 
 def command_validate(args: argparse.Namespace) -> int:
     value = read_json(args.path)
-    result = validate_transcript(value) if args.kind == "transcript" else validate_skill(value)
+    if args.kind == "transcript":
+        result = validate_transcript(value)
+    elif args.kind == "skill":
+        result = validate_skill(value)
+    else:
+        result = validate_general_skill(value)
     print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
     return 0 if result.valid else 2
 
@@ -236,6 +383,195 @@ def command_interact(args: argparse.Namespace) -> int:
         write_json(args.output, result)
     print("\n教学与验证完成。")
     return 0
+
+
+def command_teacher_agent_start(args: argparse.Namespace) -> int:
+    payload = read_json(resolve_resource_path(args.input))
+    library = read_json(resolve_resource_path(args.library))
+    if not isinstance(payload, dict):
+        raise ValueError("teacher Agent input must be one JSON object")
+    session = start_teacher_agent_session(
+        payload.get("goal", {}),
+        payload.get("student_profile", {}),
+        library,
+        policy=args.policy,
+        fixed_skill_id=args.fixed_skill_id,
+    )
+    ensure_private_directory(Path(args.session).parent)
+    target = write_json(args.session, session)
+    print(json.dumps(session_turn_summary(session), ensure_ascii=False, indent=2))
+    print(f"private session: {target.resolve()}")
+    return 0
+
+
+def command_teacher_agent_step(args: argparse.Namespace) -> int:
+    session = read_json(args.session)
+    if args.response_file:
+        response = Path(args.response_file).read_text(encoding="utf-8").strip()
+    else:
+        response = args.response or ""
+    updated = advance_teacher_agent_session(
+        session,
+        learner_response=response,
+        signal=args.signal,
+        misconception_tag=args.misconception_tag,
+        signal_confidence=args.signal_confidence,
+    )
+    target = write_json(args.session, updated)
+    print(json.dumps(session_turn_summary(updated), ensure_ascii=False, indent=2))
+    print(f"private session: {target.resolve()}")
+    return 0
+
+
+def command_teacher_agent_evaluate(args: argparse.Namespace) -> int:
+    library = read_json(resolve_resource_path(args.library))
+    cases = read_json(resolve_resource_path(args.cases))
+    report = evaluate_teacher_agent(library, cases)
+    if args.output:
+        write_json(args.output, report)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["passed"] else 2
+
+
+def command_teacher_agent_benchmark(args: argparse.Namespace) -> int:
+    if args.online and not args.allow_remote_benchmark_data:
+        raise ValueError("--online requires --allow-remote-benchmark-data")
+    dataset = read_json(resolve_resource_path(args.benchmark))
+    library = read_json(resolve_resource_path(args.skill_library))
+    client = None
+    if args.online:
+        client = DeepSeekClient(
+            DeepSeekConfig.from_environment(
+                api_key_file=args.api_key_file,
+                allow_remote_student_data=True,
+                model=args.model,
+            )
+        )
+    report = run_teacher_agent_benchmark(
+        dataset,
+        library,
+        client=client,
+        fixed_skill_id=args.fixed_skill_id,
+        repeats=args.repeats,
+        minimum_review_confidence=args.minimum_review_confidence,
+    )
+    if args.output:
+        target = write_json(args.output, report)
+        print(
+            json.dumps(
+                {
+                    "output": str(target),
+                    "run_status": report["run_status"],
+                    "run_fingerprint": report["run_fingerprint"],
+                    "content_sha256": report["content_sha256"],
+                    "input_content_printed": False,
+                    "api_key_printed": False,
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    return benchmark_exit_code(report)
+
+
+def command_teacher_agent_outcome_evaluate(args: argparse.Namespace) -> int:
+    observation = read_json(resolve_resource_path(args.input))
+    report = evaluate_learning_observation(observation)
+    if args.output:
+        write_json(args.output, report)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_teacher_agent_demo(args: argparse.Namespace) -> int:
+    payload = read_json(resolve_resource_path(args.input))
+    library = read_json(resolve_resource_path(args.library))
+    cases = read_json(resolve_resource_path(args.cases))
+    if not isinstance(payload, dict):
+        raise ValueError("teacher Agent demo input must be one JSON object")
+    sequence = payload.get("demo_feedback_sequence")
+    if not isinstance(sequence, list) or not sequence:
+        raise ValueError("teacher Agent demo input requires demo_feedback_sequence")
+    session = start_teacher_agent_session(
+        payload.get("goal", {}), payload.get("student_profile", {}), library
+    )
+    timeline = [session_turn_summary(session)]
+    for item in sequence:
+        if session["status"] != "active":
+            break
+        if not isinstance(item, dict):
+            raise ValueError("each demo feedback item must be an object")
+        session = advance_teacher_agent_session(
+            session,
+            learner_response=str(item.get("response", "")),
+            signal=str(item.get("signal", "")),
+            misconception_tag=item.get("misconception_tag"),
+            signal_confidence=float(item.get("confidence", 1.0)),
+        )
+        timeline.append(session_turn_summary(session))
+    evaluation = evaluate_teacher_agent(library, cases)
+    output = ensure_private_directory(args.output_dir)
+    final_path = write_json(output / "teacher_agent_session.json", session)
+    timeline_path = write_json(output / "teacher_agent_timeline.json", timeline)
+    evaluation_path = write_json(output / "teacher_agent_evaluation.json", evaluation)
+    summary = {
+        "status": session["status"],
+        "rounds_completed": session["round"],
+        "skill_switch_count": session["control"]["skill_switch_count"],
+        "selected_skill_ids": [
+            item["action"]["primary_skill"]["skill_id"]
+            for item in session["history"]
+        ],
+        "explicit_student_state": session["student_state"],
+        "evaluation_passed": evaluation["passed"],
+        "simulated_mean_gain_delta": evaluation["aggregate"][
+            "simulated_mean_gain_delta"
+        ],
+        "real_learning_effectiveness_established": False,
+        "artifacts": {
+            "session": str(final_path.resolve()),
+            "timeline": str(timeline_path.resolve()),
+            "evaluation": str(evaluation_path.resolve()),
+        },
+    }
+    write_json(output / "summary.json", summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0 if session["status"] == "succeeded" and evaluation["passed"] else 2
+
+
+def command_teacher_agent_dashboard(args: argparse.Namespace) -> int:
+    library = resolve_resource_path(args.library)
+    demo_input = resolve_resource_path(args.input)
+    cases = resolve_resource_path(args.cases)
+    if args.check:
+        report = teacher_agent_dashboard_self_check(library, demo_input, cases)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["passed"] else 2
+    client = None
+    if args.agent_backend == "deepseek":
+        config = DeepSeekConfig.from_environment(
+            api_key_file=args.api_key_file,
+            allow_remote_student_data=args.allow_remote_student_data,
+            model=args.model,
+        )
+        client = DeepSeekClient(config)
+    return serve_teacher_agent_dashboard(
+        library,
+        demo_input,
+        cases,
+        port=args.port,
+        open_browser=not args.no_browser,
+        client=client,
+        live_options=LiveAgentOptions(
+            fallback_to_rules=not args.no_rule_fallback,
+        ),
+        neural_v1_manifest_path=resolve_resource_path(args.neural_v1_manifest),
+        learning_outcome_path=resolve_resource_path(args.learning_outcome),
+        free_text_benchmark_receipt_path=resolve_resource_path(
+            args.free_text_benchmark_receipt
+        ),
+    )
 
 
 def command_audit(args: argparse.Namespace) -> int:
@@ -1497,6 +1833,41 @@ def command_dashboard(args: argparse.Namespace) -> int:
     )
 
 
+def command_private_dashboard(args: argparse.Namespace) -> int:
+    if args.check_template:
+        report = private_dashboard_template_self_check()
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["passed"] else 2
+    if args.check_data:
+        snapshot = build_private_snapshot(
+            PrivateDashboardConfig(
+                root=args.teachobs_root,
+                initial_lesson=args.initial_lesson,
+                skill_root=args.skill_root,
+                initial_skill=args.initial_skill,
+            )
+        )
+        print(
+            json.dumps(
+                {
+                    **private_snapshot_summary(snapshot),
+                    "file_integrity": snapshot.verify_all_private_files(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    return serve_private_dashboard(
+        args.teachobs_root,
+        skill_root=args.skill_root,
+        initial_lesson=args.initial_lesson,
+        initial_skill=args.initial_skill,
+        port=args.port,
+        open_browser=not args.no_browser,
+    )
+
+
 def command_verify_delivery(args: argparse.Namespace) -> int:
     manifest_path = resolve_resource_path(args.manifest)
     cases_path = resolve_resource_path(args.cases)
@@ -2190,6 +2561,51 @@ def build_parser() -> argparse.ArgumentParser:
     mine_parser.add_argument("--output", required=True)
     mine_parser.set_defaults(func=command_mine)
 
+    distill_general_parser = subparsers.add_parser(
+        "distill-general-skill",
+        help="aggregate validated per-lecture Skills into one course-balanced general Skill",
+    )
+    distill_general_parser.add_argument("--skill-root", required=True)
+    distill_general_parser.add_argument(
+        "--pattern",
+        default="*.full.skill.json",
+        help="relative glob beneath --skill-root",
+    )
+    distill_general_parser.add_argument("--output-dir", required=True)
+    distill_general_parser.add_argument("--example-concept", default="动态规划")
+    distill_general_parser.add_argument("--learner-level", default="beginner")
+    distill_general_parser.add_argument(
+        "--overall-support-threshold", type=float, default=0.8
+    )
+    distill_general_parser.add_argument(
+        "--per-course-support-threshold", type=float, default=0.6
+    )
+    distill_general_parser.add_argument(
+        "--minimum-course-count", type=int, default=2
+    )
+    distill_general_parser.add_argument(
+        "--minimum-skills-per-course", type=int, default=5
+    )
+    distill_general_parser.set_defaults(func=command_distill_general_skill)
+
+    apply_general_parser = subparsers.add_parser(
+        "apply-general-skill",
+        help="generate an executable teaching process for a new concept",
+    )
+    apply_general_parser.add_argument("--skill", required=True)
+    apply_general_parser.add_argument("--concept", required=True)
+    apply_general_parser.add_argument("--learner-level", default="beginner")
+    apply_general_parser.add_argument("--output")
+    apply_general_parser.set_defaults(func=command_apply_general_skill)
+
+    evaluate_general_parser = subparsers.add_parser(
+        "evaluate-general-skill",
+        help="audit a general Skill's support, provenance, and executability",
+    )
+    evaluate_general_parser.add_argument("--skill", required=True)
+    evaluate_general_parser.add_argument("--output")
+    evaluate_general_parser.set_defaults(func=command_evaluate_general_skill)
+
     teach_parser = subparsers.add_parser("teach", help="execute a Teaching Skill for a new concept")
     teach_parser.add_argument("--skill", required=True)
     teach_parser.add_argument("--concept", required=True)
@@ -2204,7 +2620,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.set_defaults(func=command_evaluate)
 
     validate_parser = subparsers.add_parser("validate", help="validate a transcript or skill")
-    validate_parser.add_argument("kind", choices=("transcript", "skill"))
+    validate_parser.add_argument(
+        "kind", choices=("transcript", "skill", "general-skill")
+    )
     validate_parser.add_argument("path")
     validate_parser.set_defaults(func=command_validate)
 
@@ -2215,6 +2633,165 @@ def build_parser() -> argparse.ArgumentParser:
     interact_parser.add_argument("--script", help="JSON response script; omit for terminal interaction")
     interact_parser.add_argument("--output")
     interact_parser.set_defaults(func=command_interact)
+
+    teacher_start_parser = subparsers.add_parser(
+        "teacher-agent-start",
+        help="start one stateful task-two Agent session and emit only its first action",
+    )
+    teacher_start_parser.add_argument(
+        "--input", default="data/teacher_agent_demo_input.json"
+    )
+    teacher_start_parser.add_argument(
+        "--library", default="data/teacher_agent_skill_library_v2.json"
+    )
+    teacher_start_parser.add_argument("--session", required=True)
+    teacher_start_parser.add_argument(
+        "--policy",
+        choices=("adaptive_skill_library", "fixed_single_skill_baseline"),
+        default="adaptive_skill_library",
+    )
+    teacher_start_parser.add_argument("--fixed-skill-id")
+    teacher_start_parser.set_defaults(func=command_teacher_agent_start)
+
+    teacher_step_parser = subparsers.add_parser(
+        "teacher-agent-step",
+        help="consume one learner response and emit exactly one next action",
+    )
+    teacher_step_parser.add_argument("--session", required=True)
+    response_group = teacher_step_parser.add_mutually_exclusive_group(required=True)
+    response_group.add_argument("--response")
+    response_group.add_argument("--response-file")
+    teacher_step_parser.add_argument(
+        "--signal",
+        choices=("correct", "partial", "misconception", "confused", "no_response"),
+        required=True,
+    )
+    teacher_step_parser.add_argument("--misconception-tag")
+    teacher_step_parser.add_argument("--signal-confidence", type=float, default=1.0)
+    teacher_step_parser.set_defaults(func=command_teacher_agent_step)
+
+    teacher_evaluate_parser = subparsers.add_parser(
+        "teacher-agent-evaluate",
+        help="compare the adaptive Agent with a fixed single-Skill baseline",
+    )
+    teacher_evaluate_parser.add_argument(
+        "--library", default="data/teacher_agent_skill_library_v2.json"
+    )
+    teacher_evaluate_parser.add_argument(
+        "--cases", default="data/teacher_agent_evaluation_cases.json"
+    )
+    teacher_evaluate_parser.add_argument("--output")
+    teacher_evaluate_parser.set_defaults(func=command_teacher_agent_evaluate)
+
+    teacher_benchmark_parser = subparsers.add_parser(
+        "teacher-agent-benchmark",
+        help="run the privacy-safe free-text benchmark, offline by default",
+    )
+    teacher_benchmark_parser.add_argument(
+        "--benchmark", default="data/teacher_agent_free_text_benchmark.json"
+    )
+    teacher_benchmark_parser.add_argument(
+        "--skill-library", default="data/teacher_agent_skill_library_v2.json"
+    )
+    teacher_benchmark_parser.add_argument("--output")
+    teacher_benchmark_parser.add_argument(
+        "--online",
+        action="store_true",
+        help="send benchmark learner text to DeepSeek; requires explicit consent",
+    )
+    teacher_benchmark_parser.add_argument(
+        "--allow-remote-benchmark-data",
+        action="store_true",
+        help="explicitly authorize sending the author-constructed benchmark text",
+    )
+    teacher_benchmark_parser.add_argument("--api-key-file")
+    teacher_benchmark_parser.add_argument(
+        "--model", choices=sorted(ALLOWED_MODELS), default="deepseek-v4-flash"
+    )
+    teacher_benchmark_parser.add_argument("--repeats", type=int, default=1)
+    teacher_benchmark_parser.add_argument(
+        "--minimum-review-confidence", type=float, default=0.50
+    )
+    teacher_benchmark_parser.add_argument(
+        "--fixed-skill-id", default="skill_diagnostic_questioning"
+    )
+    teacher_benchmark_parser.set_defaults(func=command_teacher_agent_benchmark)
+
+    teacher_outcome_parser = subparsers.add_parser(
+        "teacher-agent-outcome-evaluate",
+        help="score paired pre/post, transfer, and optional delayed assessments",
+    )
+    teacher_outcome_parser.add_argument(
+        "--input", default="data/teacher_agent_learning_outcome_demo.json"
+    )
+    teacher_outcome_parser.add_argument("--output")
+    teacher_outcome_parser.set_defaults(func=command_teacher_agent_outcome_evaluate)
+
+    teacher_demo_parser = subparsers.add_parser(
+        "teacher-agent-demo",
+        help="run the deterministic task-two teaching and baseline-evaluation demo",
+    )
+    teacher_demo_parser.add_argument(
+        "--input", default="data/teacher_agent_demo_input.json"
+    )
+    teacher_demo_parser.add_argument(
+        "--library", default="data/teacher_agent_skill_library_v2.json"
+    )
+    teacher_demo_parser.add_argument(
+        "--cases", default="data/teacher_agent_evaluation_cases.json"
+    )
+    teacher_demo_parser.add_argument(
+        "--output-dir", default="artifacts/private/teacher_agent_demo"
+    )
+    teacher_demo_parser.set_defaults(func=command_teacher_agent_demo)
+
+    teacher_dashboard_parser = subparsers.add_parser(
+        "teacher-agent-dashboard",
+        help="serve the loopback-only live task-two Agent demonstration",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--input", default="data/teacher_agent_demo_input.json"
+    )
+    teacher_dashboard_parser.add_argument(
+        "--library", default="data/teacher_agent_skill_library_v2.json"
+    )
+    teacher_dashboard_parser.add_argument(
+        "--cases", default="data/teacher_agent_evaluation_cases.json"
+    )
+    teacher_dashboard_parser.add_argument("--port", type=int, default=0)
+    teacher_dashboard_parser.add_argument(
+        "--neural-v1-manifest", default="data/neural_v1_runtime_manifest.json"
+    )
+    teacher_dashboard_parser.add_argument(
+        "--learning-outcome",
+        default="data/teacher_agent_learning_outcome_demo.json",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--free-text-benchmark-receipt",
+        default="data/teacher_agent_free_text_benchmark_receipt.json",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--agent-backend",
+        choices=("deepseek", "deterministic"),
+        default="deepseek",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--model", choices=sorted(ALLOWED_MODELS), default="deepseek-v4-flash"
+    )
+    teacher_dashboard_parser.add_argument("--api-key-file")
+    teacher_dashboard_parser.add_argument(
+        "--allow-remote-student-data",
+        action="store_true",
+        help="explicitly allow redacted learner text and necessary context to be sent to DeepSeek",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--no-rule-fallback",
+        action="store_true",
+        help="fail the turn instead of using the deterministic safety fallback",
+    )
+    teacher_dashboard_parser.add_argument("--no-browser", action="store_true")
+    teacher_dashboard_parser.add_argument("--check", action="store_true")
+    teacher_dashboard_parser.set_defaults(func=command_teacher_agent_dashboard)
 
     audit_parser = subparsers.add_parser("audit", help="audit dataset completeness and research readiness")
     audit_parser.add_argument("--manifest", default="data/dataset_manifest.json")
@@ -2910,7 +3487,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dashboard_parser.add_argument(
         "--output",
-        help="optional HTML output path; defaults to a stable temporary file",
+        help="optional HTML output path; defaults to a private random temporary file",
     )
     dashboard_parser.add_argument(
         "--check",
@@ -2918,6 +3495,68 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate the packaged dashboard and exit",
     )
     dashboard_parser.set_defaults(func=command_dashboard)
+
+    private_dashboard_parser = subparsers.add_parser(
+        "dashboard-real",
+        help=(
+            "show real private TeachObs behavior recognition and MIT Skill "
+            "distillation outcomes locally"
+        ),
+    )
+    private_dashboard_parser.add_argument(
+        "--teachobs-root",
+        type=Path,
+        default=DEFAULT_PRIVATE_TEACHOBS_ROOT,
+        help=(
+            "private TeachObs artifact root; defaults to "
+            "artifacts/private/external_datasets/teachobs"
+        ),
+    )
+    private_dashboard_parser.add_argument(
+        "--initial-lesson",
+        default=DEFAULT_PRIVATE_LESSON,
+        help="initial held-out lesson shown in the browser (default: S24)",
+    )
+    private_dashboard_parser.add_argument(
+        "--skill-root",
+        type=Path,
+        default=DEFAULT_PRIVATE_SKILL_ROOT,
+        help=(
+            "private long-form Skill artifact root; defaults to "
+            "artifacts/private/full_multimodal"
+        ),
+    )
+    private_dashboard_parser.add_argument(
+        "--initial-skill",
+        default=DEFAULT_PRIVATE_SKILL,
+        help=(
+            "initial distilled Skill shown in the browser "
+            "(default: linear_algebra_l03)"
+        ),
+    )
+    private_dashboard_parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="loopback port; 0 selects an unused random port",
+    )
+    private_dashboard_parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="serve locally and print the capability URL without opening a browser",
+    )
+    private_dashboard_checks = private_dashboard_parser.add_mutually_exclusive_group()
+    private_dashboard_checks.add_argument(
+        "--check-template",
+        action="store_true",
+        help="validate the generic private dashboard template without reading private data",
+    )
+    private_dashboard_checks.add_argument(
+        "--check-data",
+        action="store_true",
+        help="validate private artifacts and frozen predictions, then exit without serving",
+    )
+    private_dashboard_parser.set_defaults(func=command_private_dashboard)
 
     delivery_parser = subparsers.add_parser(
         "verify-delivery",

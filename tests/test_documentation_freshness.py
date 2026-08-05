@@ -1,0 +1,173 @@
+"""Regression checks for public documentation that mirrors generated evidence."""
+
+from __future__ import annotations
+
+import json
+import unittest
+
+from teaching_skill_miner.evaluator import DIMENSION_WEIGHTS
+from teaching_skill_miner.io_utils import project_root
+from teaching_skill_miner.teacher_agent import (
+    ADAPTIVE_OBSERVATION_LIMIT,
+    ADAPTIVE_OBSERVATION_STATUS,
+)
+
+
+class DocumentationFreshnessTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = project_root()
+
+    def _read(self, relative: str) -> str:
+        return (self.root / relative).read_text(encoding="utf-8")
+
+    def test_ablation_scores_match_current_public_receipt(self) -> None:
+        receipt = json.loads(
+            self._read("artifacts/public/multimodal_ablation_receipt.json")
+        )
+        metrics = receipt["aggregate_internal_metrics"]
+        ordered_arms = (
+            "transcript_only",
+            "transcript_audio",
+            "transcript_visual",
+            "full",
+        )
+        score_sequence = "/".join(
+            f"{metrics[arm]['mean_internal_overall_score']:.2f}"
+            for arm in ordered_arms
+        )
+        for relative in (
+            "artifacts/public/README.md",
+            "docs/project_status.md",
+            "docs/requirements_traceability.md",
+        ):
+            text = self._read(relative)
+            self.assertIn(score_sequence, text, relative)
+            self.assertNotIn("100.00/100.00/99.92/99.94", text, relative)
+
+        table_labels = {
+            "transcript_only": "transcript-only",
+            "transcript_audio": "transcript + audio",
+            "transcript_visual": "transcript + visual/OCR",
+            "full": "full",
+        }
+        for relative in ("README.md", "docs/multimodal_design.md"):
+            text = self._read(relative)
+            for arm in ordered_arms:
+                expected = (
+                    f"| {table_labels[arm]} | "
+                    f"{metrics[arm]['mean_internal_overall_score']:.2f} |"
+                )
+                self.assertIn(expected, text, f"{relative}: {arm}")
+
+    def test_evaluation_dimension_summaries_match_current_weights(self) -> None:
+        expected = {
+            "structural_completeness": ("结构完整性", 0.12),
+            "evidence_grounding": ("证据落地性", 0.18),
+            "executability": ("可执行性", 0.18),
+            "method_fidelity": ("方法忠实度", 0.22),
+            "pedagogical_quality": ("教学质量", 0.12),
+            "generalizability": ("可迁移性", 0.09),
+            "traceability": ("可追溯性", 0.09),
+        }
+        self.assertEqual(DIMENSION_WEIGHTS, {key: value[1] for key, value in expected.items()})
+
+        readme = self._read("README.md")
+        overview = readme.split("### 1. 视频采集与预处理", 1)[0]
+        self.assertIn("方法忠实度", overview)
+        for key, (label, weight) in expected.items():
+            row = f"| {label} | {weight:.0%} |"
+            self.assertIn(row, readme, key)
+
+        design = self._read("docs/multimodal_design.md")
+        self.assertIn("七维内部量表", design)
+        self.assertIn("`method_fidelity`", design)
+        public_readme = self._read("artifacts/public/README.md")
+        self.assertIn("seven-dimension internal rubric", public_readme)
+        self.assertIn("`method_fidelity`", public_readme)
+
+    def test_validation_report_matches_current_teachobs_receipt(self) -> None:
+        receipt = json.loads(
+            self._read(
+                "artifacts/public/teachobs_multimodal_benchmark_receipt.json"
+            )
+        )
+        report = self._read("docs/validation_report.md")
+        for arm in receipt["aggregate_arms"].values():
+            for metric in (
+                "micro_f1",
+                "macro_f1",
+                "hamming_accuracy",
+                "visual_macro_f1",
+            ):
+                self.assertIn(f"{arm['metrics'][metric]:.6f}", report)
+
+        comparison = receipt["paired_cluster_bootstrap"]["comparisons"][
+            "full_minus_transcript_only"
+        ]
+        for metric in ("macro_f1", "visual_macro_f1"):
+            result = comparison[metric]
+            self.assertIn(f"{result['point_delta']:+.6f}", report)
+            for bound in result["percentile_95_ci"]:
+                self.assertIn(f"{bound:+.6f}", report)
+
+        for claim, value in receipt["claim_boundaries"].items():
+            if claim.endswith("_established"):
+                self.assertFalse(value, claim)
+                self.assertIn(f"`{claim}=false`", report)
+
+    def test_task_two_docs_match_adaptive_profile_candidate_contract(self) -> None:
+        schema = json.loads(
+            self._read("schema/teacher_agent_live_session.schema.json")
+        )
+        observation_definition = schema["$defs"]["adaptiveObservations"]
+        summary_definition = schema["$defs"]["adaptiveSummary"]
+        self.assertEqual(
+            observation_definition["maxItems"], ADAPTIVE_OBSERVATION_LIMIT
+        )
+        self.assertEqual(
+            observation_definition["items"]["properties"]["status"]["const"],
+            ADAPTIVE_OBSERVATION_STATUS,
+        )
+        self.assertFalse(
+            summary_definition["properties"][
+                "teacher_provided_fields_overwritten"
+            ]["const"]
+        )
+
+        readme = self._read("README.md")
+        task_two_readme = readme.split(
+            "### 题目二：实时自适应教学 Agent", 1
+        )[1].split("### 本机双成果真实演示", 1)[0]
+        documents = {
+            "README.md task two": task_two_readme,
+            "docs/teacher_agent_task2.md": self._read(
+                "docs/teacher_agent_task2.md"
+            ),
+            "docs/teacher_agent_acceptance_matrix.md": self._read(
+                "docs/teacher_agent_acceptance_matrix.md"
+            ),
+            "docs/teacher_agent_defense_guide.md": self._read(
+                "docs/teacher_agent_defense_guide.md"
+            ),
+        }
+        for relative, text in documents.items():
+            with self.subTest(relative=relative):
+                self.assertIn(ADAPTIVE_OBSERVATION_STATUS, text)
+                self.assertIn(str(ADAPTIVE_OBSERVATION_LIMIT), text)
+                self.assertIn("fallback", text)
+                self.assertIn("跨 session", text)
+                self.assertTrue(
+                    any(
+                        marker in text
+                        for marker in ("不会覆盖", "不会被覆盖", "不覆盖")
+                    ),
+                    relative,
+                )
+
+        acceptance = documents["docs/teacher_agent_acceptance_matrix.md"]
+        self.assertIn("`teacher_provided_fields_overwritten=false`", acceptance)
+        self.assertIn("fallback 后候选数不增加", acceptance)
+
+
+if __name__ == "__main__":
+    unittest.main()

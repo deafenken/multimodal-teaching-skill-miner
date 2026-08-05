@@ -1,0 +1,231 @@
+{
+  "schema": "teaching_skill_miner.teacher_agent_skill_library.v1",
+  "library_id": "task2_adaptive_concept_teaching_library_v1",
+  "name": "题目二自适应概念教学 Skill Library",
+  "version": "1.0.0",
+  "derivation": {
+    "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+    "source_artifact": "output/general_skill_v0/general_skill.json",
+    "method": "将通用 Skill 的九个教学环节及六项跨讲次共识策略拆分为可被实时策略选择、组合和切换的原子操作 Skill。",
+    "claim_boundary": "下列原子 Skill 是题目二的工程化操作包装；source 字段指向已有通用 Skill 的环节或策略，不构成新的课堂视频观察结论。"
+  },
+  "skills": [
+    {
+      "skill_id": "skill_diagnostic_questioning",
+      "name": "前置知识诊断",
+      "role": "diagnostic",
+      "focus_dimension": "prerequisite",
+      "base_priority": 15,
+      "applicable_signals": ["not_observed", "confused", "no_response"],
+      "supporting_skill_ids": ["skill_wait_and_elicit", "skill_minimal_hint"],
+      "selection_rationale": "在进入新内容前先暴露已有知识和缺口，避免按固定脚本盲讲。",
+      "message_template": "学习 {concept} 前，先请你用自己的话回答：它依赖的一个前置概念是什么？这个前置概念解决什么问题？请举一个最小例子。",
+      "expected_signal": "学习者能说出一个相关前置概念、作用和例子；若不能，外部判断器标记为 confused、partial 或 misconception。",
+      "action_type": "ask_diagnostic_question",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["prior_knowledge_review"],
+        "source_strategy_ids": ["question_and_wait"],
+        "observed_status": "cross_lecture_observed_consensus"
+      }
+    },
+    {
+      "skill_id": "skill_concrete_example_bridge",
+      "name": "直观例子桥接",
+      "role": "example",
+      "focus_dimension": "conceptual",
+      "base_priority": 10,
+      "applicable_signals": ["confused", "no_response", "partial", "correct"],
+      "supporting_skill_ids": ["skill_wait_and_elicit"],
+      "selection_rationale": "先用可手算的小例子建立直觉，再引向术语和规则。",
+      "message_template": "我们先不背 {concept} 的定义。请看一个最小情境：{example}. 你能指出其中的已知量、目标，以及哪一部分在重复出现吗？",
+      "expected_signal": "学习者能用非术语语言指出已知量、目标或重复结构中的至少两项。",
+      "action_type": "present_minimal_example",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["intuitive_example"],
+        "source_strategy_ids": ["concrete_example", "difficulty_progression"],
+        "observed_status": "cross_lecture_observed_consensus"
+      }
+    },
+    {
+      "skill_id": "skill_concept_mapping",
+      "name": "例子—概念映射",
+      "role": "concept_mapping",
+      "focus_dimension": "conceptual",
+      "base_priority": 13,
+      "applicable_signals": ["correct", "partial"],
+      "supporting_skill_ids": ["skill_wait_and_elicit"],
+      "selection_rationale": "把已形成的直觉逐项映射到正式定义，防止只会模仿例子。",
+      "message_template": "现在把刚才的例子映射到 {concept}：请分别说出“状态/对象是什么、允许的关系或操作是什么、目标是什么”，并说明每一项在例子里对应哪里。",
+      "expected_signal": "学习者能将例子中的至少两个要素正确对应到正式概念，并说明理由。",
+      "action_type": "map_example_to_definition",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["abstract_concept_building"],
+        "source_strategy_ids": ["concrete_example", "line_by_line_explanation"],
+        "observed_status": "cross_lecture_observed_consensus"
+      }
+    },
+    {
+      "skill_id": "skill_stepwise_scaffolding",
+      "name": "逐步支架推导",
+      "role": "scaffolding",
+      "focus_dimension": "procedural",
+      "base_priority": 12,
+      "applicable_signals": ["partial", "correct"],
+      "supporting_skill_ids": ["skill_minimal_hint", "skill_wait_and_elicit"],
+      "selection_rationale": "将复杂操作拆成可检查的微步骤，每一步都等待学生预测。",
+      "message_template": "请用 {concept} 处理这个最小任务：{practice}. 我们一次只做一步。先告诉我第一步需要什么输入、执行什么操作、会得到什么输出。",
+      "expected_signal": "学习者能正确说出当前微步骤的输入、操作和输出，而不是只报最终答案。",
+      "action_type": "guide_one_micro_step",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["derivation_or_operation_walkthrough"],
+        "source_strategy_ids": ["step_by_step", "line_by_line_explanation"],
+        "observed_status": "cross_lecture_observed_consensus"
+      }
+    },
+    {
+      "skill_id": "skill_misconception_contrast",
+      "name": "误解对比纠错",
+      "role": "correction",
+      "focus_dimension": "conceptual",
+      "base_priority": 5,
+      "applicable_signals": ["misconception"],
+      "supporting_skill_ids": ["skill_wait_and_elicit"],
+      "selection_rationale": "出现明确误解时，对比错误与正确条件，定位第一处失效点。",
+      "message_template": "你刚才关于 {concept} 的回答暴露了这个可能误解：“{misconception}”。先不要重做全部过程；请比较错误说法和正确条件，指出第一处不成立的位置及原因。",
+      "expected_signal": "学习者能定位错误的第一处，并说出被忽略或混淆的条件。",
+      "action_type": "contrast_misconception",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["error_diagnosis_and_correction"],
+        "source_strategy_ids": ["question_and_wait"],
+        "observed_status": "recommended_enrichment"
+      }
+    },
+    {
+      "skill_id": "skill_practice_feedback",
+      "name": "练习—反馈—再练习",
+      "role": "practice",
+      "focus_dimension": "procedural",
+      "base_priority": 14,
+      "applicable_signals": ["correct", "partial"],
+      "supporting_skill_ids": ["skill_minimal_hint"],
+      "selection_rationale": "用单一关键点练习检验操作过程，并要求根据反馈修改。",
+      "message_template": "请独立完成一道只考查 {concept} 关键步骤的练习：{practice}. 不只写答案，还要写出判断依据；我会只反馈第一处需要修改的位置。",
+      "expected_signal": "学习者能完成关键步骤、解释依据，并根据局部反馈修改。",
+      "action_type": "assign_targeted_practice",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["understanding_check", "practice_and_feedback"],
+        "source_strategy_ids": ["practice_feedback_loop", "difficulty_progression"],
+        "observed_status": "mixed_observed_and_recommended"
+      }
+    },
+    {
+      "skill_id": "skill_transfer_check",
+      "name": "变式迁移检查",
+      "role": "transfer",
+      "focus_dimension": "transfer",
+      "base_priority": 11,
+      "applicable_signals": ["correct"],
+      "supporting_skill_ids": ["skill_wait_and_elicit"],
+      "selection_rationale": "在概念和过程达到准备线后，用表面不同的新情境检查是否真正迁移。",
+      "message_template": "把 {concept} 用到一个表面不同的新情境：{transfer_task}. 请先说明为什么这里仍适用，再给出第一步；若不适用，也要指出缺失条件。",
+      "expected_signal": "学习者能识别适用条件，在新情境中给出合理第一步或说明为何不适用。",
+      "action_type": "probe_transfer",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["summary_and_transfer"],
+        "source_strategy_ids": ["difficulty_progression", "question_and_wait"],
+        "observed_status": "recommended_enrichment"
+      }
+    },
+    {
+      "skill_id": "skill_learner_summary",
+      "name": "学习者总结",
+      "role": "summary",
+      "focus_dimension": "transfer",
+      "base_priority": 2,
+      "applicable_signals": ["correct"],
+      "supporting_skill_ids": ["skill_wait_and_elicit"],
+      "selection_rationale": "接近达标时让学生以自己的语言收束定义、条件、反例和迁移用途。",
+      "message_template": "请用自己的话总结 {concept}：它是什么、何时使用、怎样检查结果、何时会失效，并给出一个新的使用情境。",
+      "expected_signal": "总结同时覆盖含义、适用条件、检查方法、一个边界或反例以及迁移用途。",
+      "action_type": "elicit_learner_summary",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["summary_and_transfer"],
+        "source_strategy_ids": ["question_and_wait"],
+        "observed_status": "recommended_enrichment"
+      }
+    },
+    {
+      "skill_id": "skill_wait_and_elicit",
+      "name": "提问后等待",
+      "role": "support",
+      "focus_dimension": "conceptual",
+      "base_priority": 0,
+      "applicable_signals": [],
+      "supporting_skill_ids": [],
+      "selection_rationale": "控制每轮只输出一个动作，显式等待学生反馈。",
+      "message_template": "提出问题后停止生成，等待学习者当前轮作答。",
+      "expected_signal": "收到一条新的学习者作答及其结构化判断。",
+      "action_type": "wait_for_response",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["prior_knowledge_review", "understanding_check"],
+        "source_strategy_ids": ["question_and_wait"],
+        "observed_status": "cross_lecture_observed_consensus"
+      }
+    },
+    {
+      "skill_id": "skill_minimal_hint",
+      "name": "最小提示",
+      "role": "support",
+      "focus_dimension": "procedural",
+      "base_priority": 0,
+      "applicable_signals": [],
+      "supporting_skill_ids": [],
+      "selection_rationale": "作答不完整时只提供足以继续的一条提示，不替学生完成任务。",
+      "message_template": "只提示当前步骤所需的一个条件，然后再次等待学习者尝试。",
+      "expected_signal": "学习者在提示后能独立完成当前微步骤。",
+      "action_type": "give_minimal_hint",
+      "direct_answer_prohibited": true,
+      "source": {
+        "origin": "operational_wrapper_from_general_skill_v0",
+        "general_skill_id": "evidence_grounded_adaptive_concept_teaching_v0",
+        "source_phase_ids": ["prior_knowledge_review", "derivation_or_operation_walkthrough", "understanding_check"],
+        "source_strategy_ids": ["step_by_step", "difficulty_progression"],
+        "observed_status": "cross_lecture_observed_consensus"
+      }
+    }
+  ],
+  "claim_boundary": {
+    "classroom_video_observed_skills": false,
+    "operationalized_from_existing_general_skill": true,
+    "real_time_policy_implemented": true,
+    "free_text_grader_included": false,
+    "real_learner_effectiveness_established": false
+  }
+}

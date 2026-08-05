@@ -1,0 +1,588 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/general_teaching_skill.schema.json",
+  "title": "Cross-lecture general Teaching Skill",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "artifact_kind",
+    "status",
+    "skill",
+    "distillation",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema": {
+      "const": "teaching_skill_miner.general_teaching_skill.v1"
+    },
+    "artifact_kind": {
+      "const": "cross_lesson_evidence_weighted_general_teaching_skill"
+    },
+    "status": {
+      "const": "heuristic_provisional"
+    },
+    "skill": {
+      "$ref": "#/$defs/skill"
+    },
+    "distillation": {
+      "$ref": "#/$defs/distillation"
+    },
+    "claim_boundary": {
+      "$ref": "#/$defs/claimBoundary"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "courseRef": {
+      "type": "string",
+      "pattern": "^crs_[0-9a-f]{16}$"
+    },
+    "lessonRef": {
+      "type": "string",
+      "pattern": "^lsn_[0-9a-f]{16}$"
+    },
+    "stringList": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "perCourseSupport": {
+      "type": "object",
+      "minProperties": 2,
+      "propertyNames": {
+        "pattern": "^crs_[0-9a-f]{16}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "observed_skill_count",
+          "total_skill_count",
+          "observed_fraction"
+        ],
+        "properties": {
+          "observed_skill_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "total_skill_count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_fraction": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "origin",
+        "observed_skill_count",
+        "observed_fraction",
+        "observed_course_count",
+        "per_course_support",
+        "source_skill_fingerprints"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "origin": {
+          "const": "cross_lecture_observed_consensus"
+        },
+        "observed_skill_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "observed_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "observed_course_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "per_course_support": {
+          "$ref": "#/$defs/perCourseSupport"
+        },
+        "source_skill_fingerprints": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "procedureStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "teaching_phase",
+        "teaching_phase_name",
+        "canonical_phase_rank",
+        "teacher_action",
+        "instruction",
+        "expected_signal",
+        "fallback",
+        "normative_content_origin",
+        "origin",
+        "observed_skill_count",
+        "observed_fraction",
+        "observed_course_count",
+        "per_course_support",
+        "source_skill_fingerprints"
+      ],
+      "properties": {
+        "step": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9
+        },
+        "teaching_phase": {
+          "enum": [
+            "prior_knowledge_review",
+            "problem_or_context_setup",
+            "intuitive_example",
+            "abstract_concept_building",
+            "derivation_or_operation_walkthrough",
+            "understanding_check",
+            "error_diagnosis_and_correction",
+            "practice_and_feedback",
+            "summary_and_transfer"
+          ]
+        },
+        "teaching_phase_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canonical_phase_rank": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9
+        },
+        "teacher_action": {
+          "enum": [
+            "ask",
+            "explain",
+            "demonstrate",
+            "contrast",
+            "prompt",
+            "check_understanding",
+            "give_feedback",
+            "summarize",
+            "adapt"
+          ]
+        },
+        "instruction": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_signal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback": {
+          "type": "string",
+          "minLength": 1
+        },
+        "normative_content_origin": {
+          "const": "CANONICAL_PHASES"
+        },
+        "origin": {
+          "enum": [
+            "cross_lecture_observed_consensus",
+            "recommended_enrichment"
+          ]
+        },
+        "observed_skill_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observed_fraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "observed_course_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "per_course_support": {
+          "$ref": "#/$defs/perCourseSupport"
+        },
+        "source_skill_fingerprints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "skill_id",
+        "name",
+        "version",
+        "parameters",
+        "learning_objective",
+        "trigger",
+        "preconditions",
+        "goal",
+        "strategies",
+        "procedure",
+        "teacher_actions",
+        "student_signals",
+        "success_criteria",
+        "failure_modes",
+        "verification"
+      ],
+      "properties": {
+        "skill_id": {
+          "const": "evidence_grounded_adaptive_concept_teaching_v0"
+        },
+        "name": {
+          "const": "跨讲次证据共识驱动的自适应概念教学"
+        },
+        "version": {
+          "const": "0.1"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "concept",
+            "learner_level"
+          ],
+          "properties": {
+            "concept": {
+              "type": "string",
+              "minLength": 1
+            },
+            "learner_level": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "learning_objective": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "statement",
+            "bloom_level",
+            "observable",
+            "assessment"
+          ],
+          "properties": {
+            "statement": {
+              "type": "string",
+              "minLength": 1
+            },
+            "bloom_level": {
+              "const": "apply"
+            },
+            "observable": {
+              "const": true
+            },
+            "assessment": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "trigger": {
+          "$ref": "#/$defs/stringList"
+        },
+        "preconditions": {
+          "$ref": "#/$defs/stringList"
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "strategies": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/strategy"
+          }
+        },
+        "procedure": {
+          "type": "array",
+          "minItems": 9,
+          "maxItems": 9,
+          "items": {
+            "$ref": "#/$defs/procedureStep"
+          }
+        },
+        "teacher_actions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "ask",
+              "explain",
+              "demonstrate",
+              "contrast",
+              "prompt",
+              "check_understanding",
+              "give_feedback",
+              "summarize",
+              "adapt"
+            ]
+          }
+        },
+        "student_signals": {
+          "$ref": "#/$defs/stringList"
+        },
+        "success_criteria": {
+          "$ref": "#/$defs/stringList"
+        },
+        "failure_modes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mode",
+              "mitigation"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "minLength": 1
+              },
+              "mitigation": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "verification": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "prompt",
+              "pass_condition"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "minLength": 1
+              },
+              "prompt": {
+                "type": "string",
+                "minLength": 1
+              },
+              "pass_condition": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "distillation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "vote_unit",
+        "eligible_origin",
+        "input_skill_count",
+        "input_course_count",
+        "course_skill_counts",
+        "thresholds",
+        "source_skills",
+        "source_collection_sha256",
+        "execution_order_policy",
+        "consensus_phase_count",
+        "consensus_strategy_count"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "balanced_binary_lecture_vote_v1"
+        },
+        "vote_unit": {
+          "const": "one_binary_vote_per_unique_course_lesson"
+        },
+        "eligible_origin": {
+          "const": "observed_method"
+        },
+        "input_skill_count": {
+          "type": "integer",
+          "minimum": 10
+        },
+        "input_course_count": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "course_skill_counts": {
+          "type": "object",
+          "minProperties": 2,
+          "propertyNames": {
+            "pattern": "^crs_[0-9a-f]{16}$"
+          },
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 5
+          }
+        },
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "overall_support_fraction",
+            "per_course_support_fraction",
+            "minimum_course_count",
+            "minimum_skills_per_course"
+          ],
+          "properties": {
+            "overall_support_fraction": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "per_course_support_fraction": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            },
+            "minimum_course_count": {
+              "type": "integer",
+              "minimum": 2
+            },
+            "minimum_skills_per_course": {
+              "type": "integer",
+              "minimum": 5
+            }
+          }
+        },
+        "source_skills": {
+          "type": "array",
+          "minItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "course_ref",
+              "lesson_ref",
+              "skill_sha256"
+            ],
+            "properties": {
+              "course_ref": {
+                "$ref": "#/$defs/courseRef"
+              },
+              "lesson_ref": {
+                "$ref": "#/$defs/lessonRef"
+              },
+              "skill_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        },
+        "source_collection_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "execution_order_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "consensus_phase_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9
+        },
+        "consensus_strategy_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "neural_end_to_end_model_trained",
+        "independent_phase_or_strategy_gold_used",
+        "recognition_accuracy_established",
+        "cross_course_generality_established",
+        "population_generalization_established",
+        "expert_consensus_established",
+        "deployment_accuracy_established",
+        "teaching_effectiveness_established",
+        "recommended_counts_as_observed",
+        "internal_score_is_accuracy"
+      ],
+      "properties": {
+        "neural_end_to_end_model_trained": {
+          "const": false
+        },
+        "independent_phase_or_strategy_gold_used": {
+          "const": false
+        },
+        "recognition_accuracy_established": {
+          "const": false
+        },
+        "cross_course_generality_established": {
+          "const": false
+        },
+        "population_generalization_established": {
+          "const": false
+        },
+        "expert_consensus_established": {
+          "const": false
+        },
+        "deployment_accuracy_established": {
+          "const": false
+        },
+        "teaching_effectiveness_established": {
+          "const": false
+        },
+        "recommended_counts_as_observed": {
+          "const": false
+        },
+        "internal_score_is_accuracy": {
+          "const": false
+        }
+      }
+    }
+  }
+}

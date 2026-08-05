@@ -2,7 +2,7 @@
 
 本项目实现题目中的四阶段工程闭环：对教学视频联合分析语音转写、提问等待、关键帧、PPT/板书 OCR 与匿名课堂观察，从“教师如何教”中抽取 Teaching Skill，把 Skill 表示成另一个 Agent 可直接执行的 JSON 与状态机，最后进行自动评分、跨领域新任务测试和双人复核覆盖审计。
 
-默认演示链路只使用 Python 3.10+ 标准库，不需要网络或 API。项目内置按 2 门课程组织、每门 5 讲的人工释义演示数据，一条命令即可复现工程闭环；它本身不是完整公开课字幕。项目另已对 10/10 MIT OCW 完整讲次完成官方 WebVTT、来源页、媒体、内容哈希与整段时间轴绑定，并在私有目录真实运行全程音频静音分析、均匀/场景抽帧、Tesseract OCR、板书/幻灯片变化、CLIP 视觉语义和事件融合。第三方视频、字幕正文、帧、OCR 文本和嵌入均不打进 wheel。当前准确状态是“完整视频多模态工程证据已闭环；真实双人复核、事件级识别准确率、确认性多模态增益、学习效果和外部部署验证待完成”，详见 [`docs/project_status.md`](docs/project_status.md)。
+默认演示链路只使用 Python 3.10+ 标准库，不需要网络或 API。项目内置按 2 门课程组织、每门 5 讲的人工释义演示数据，一条命令即可复现工程闭环；它本身不是完整公开课字幕。项目另已对 10/10 MIT OCW 完整讲次完成官方 WebVTT 文件、来源页、字幕文件哈希、页面关联媒体与整段时间轴绑定，并在私有目录真实运行全程音频静音分析、均匀/场景抽帧、Tesseract OCR、板书/幻灯片变化、CLIP 视觉语义和事件融合。这里的字幕闭环只建立来源、文件身份和时间轴覆盖，没有逐字对听内容，也不建立字幕内容准确率或 WER。第三方视频、字幕正文、帧、OCR 文本和嵌入均不打进 wheel。当前准确状态是“完整视频多模态工程证据已闭环；真实双人复核、事件级识别准确率、确认性多模态增益、学习效果和外部部署验证待完成”，详见 [`docs/project_status.md`](docs/project_status.md)。
 
 ## 一键运行
 
@@ -29,6 +29,72 @@ tsm dashboard --check
 
 看板只内嵌已经审核的聚合指标与 8 秒合成演示，不读取或打包真实私有视频、字幕正文、逐场景 OCR、标签、预测或嵌入。页面明确区分工程验收、探索性多模态增益和仍未建立的 WER、双人复核、部署准确率与学习效果。
 
+### 题目二：实时自适应教学 Agent
+
+题目二已实现逐轮运行的混合 Teaching Agent：`deepseek-v4-flash` 负责理解学生自由文本、提议 Skill 并生成当前一个教学动作；确定性控制器负责显式状态、Skill 白名单、重复上限和终止安全。系统不会一次性预写多轮对话。每收到一条学生回答，它都会更新四维掌握、误解、当前理解信号、下一关注点和交互统计，再从 v2 Library 的 **13 个主 Skill + 3 个支持 Skill** 中重新选择、组合或切换，并公开理由。每个通过约束层验证的 DeepSeek 回合还会在 `student_profile.adaptive_observations` 追加一条 `candidate_unconfirmed` 候选画像，记录回答质量、参与度、误解、下一重点、脱敏证据和置信度；最多保留 12 条，低置信度候选要求人工复核。候选不会覆盖教师提供的画像字段，规则 fallback 不会生成候选；当前仍无跨 session 的长期画像。在线模式支持 `/+skill 名称`、`/auto` 和 `/stop`。
+
+先把外置盘密钥链接到本机私有目录；`.private/` 已被 Git 忽略：
+
+```bash
+mkdir -p .private
+ln -s "/path/to/deepseek_api.txt" .private/deepseek_api.txt
+```
+
+macOS 可双击根目录的 **`打开题目二教学Agent.command`**，也可运行：
+
+```bash
+tsm teacher-agent-dashboard \
+  --agent-backend deepseek \
+  --model deepseek-v4-flash \
+  --api-key-file .private/deepseek_api.txt \
+  --allow-remote-student-data
+
+# 不调用 API 的模板自检 / 规则基线
+tsm teacher-agent-dashboard --check
+tsm teacher-agent-dashboard --agent-backend deterministic
+```
+
+也可设置 `DEEPSEEK_API_KEY_FILE` 直接指向私有密钥文件。网页只绑定 `127.0.0.1`，使用随机 capability URL、CSP 和 `no-store`，会话只保存在服务内存。在线模式会把经过上下文最小化和常见直接标识符模式替换的必要教学文本发送给 DeepSeek；真实媒体不会发送，但不能把它表述为“所有处理完全离线”。若调用或校验失败，页面会把规则降级明确标为 `deterministic_safety_fallback`，不得冒充 DeepSeek 结果。
+
+当前有三层互相独立的评估证据：
+
+- 28 个作者构造的一轮自由文本开发案例，第三次在线运行（v3 报告文件、prompt v2）的信号 Accuracy / Macro-F1 为 **0.892857 / 0.875325**，允许主 Skill 命中率为 **0.785714**；该数据未经专家复核、不是提示词开发后的锁箱集，只能称 post-hoc development regression。
+- 4 条结构化合成轨迹与固定 `skill_stepwise_scaffolding` 基线的机制回归：状态一致率 1.000000、允许决策匹配率 0.916667、终止匹配率 1.000000；自适应/固定内部模拟平均增益为 37.333250/20.416750。它不检验自由文本理解，也不是实际学习效果。
+- `teacher-agent-outcome-evaluate` 接受前测、后测、迁移测和可选延迟测；随附 0.4→0.8 的记录是作者构造 fixture，只验证计算接口。
+
+neural-v1 的九环节/十三策略本体已用于组织 v2 Skill，但其公开 manifest 仍为 `provisional`：证据物化 gate `passed=false`、可物化预测 0/54，不能称为已确认课堂共识。完整方法、运行命令、结果表和声明边界见 [`docs/teacher_agent_task2.md`](docs/teacher_agent_task2.md)；逐项验收见 [`docs/teacher_agent_acceptance_matrix.md`](docs/teacher_agent_acceptance_matrix.md)；现场逐屏讲稿见 [`docs/teacher_agent_defense_guide.md`](docs/teacher_agent_defense_guide.md)；研究依据见 [`docs/teacher_agent_references.md`](docs/teacher_agent_references.md)。
+
+### 本机双成果真实演示
+
+macOS 下可直接双击仓库根目录的 **`打开双成果Demo.command`**：启动器会自动定位项目与两组私有产物，仅在 `127.0.0.1` 启动服务并打开浏览器。演示结束后回到终端窗口按 `Ctrl+C` 停止服务。如 macOS 首次拦截，右键该文件选择“打开”即可。
+
+需要在答辩现场同时展示“真实课堂行为识别”和“完整视频 Skill 蒸馏”时，使用与公开看板分离的本机入口。顶部可在两项成果之间切换：TeachObs 页把完整视频、时间窗字幕、教师行为标签和冻结四臂预测对齐；MIT 页展示 10 个完整讲次生成的真实九环节 Skill、`evi_*` 字幕证据、脱敏后的 `mme_*` 候选事件和达标/回退 Runtime。
+
+```bash
+# 1. 只检查通用页面模板，不读取任何私有数据
+tsm dashboard-real --check-template
+
+# 2. 同时检查 TeachObs 识别证据与 MIT Skill 产物；不启动服务
+tsm dashboard-real \
+  --teachobs-root artifacts/private/external_datasets/teachobs \
+  --skill-root artifacts/private/full_multimodal \
+  --initial-lesson S24 \
+  --initial-skill linear_algebra_l03 \
+  --check-data
+
+# 3. 检查通过后启动本机回放；端口 0 表示随机选择空闲端口
+tsm dashboard-real \
+  --teachobs-root artifacts/private/external_datasets/teachobs \
+  --skill-root artifacts/private/full_multimodal \
+  --initial-lesson S24 \
+  --initial-skill linear_algebra_l03 \
+  --port 0
+```
+
+`--teachobs-root` 和 `--skill-root` 分别默认为上述两个私有目录；默认打开 `S24` 和 `linear_algebra_l03`。需要手动打开页面时可增加 `--no-browser`，再使用终端打印的 capability URL。服务只绑定 `127.0.0.1`，每次启动生成随机 capability token，并对页面、数据与媒体响应设置 `Cache-Control: no-store`。真实视频、字幕、标签和逐样本预测不会写入静态 HTML；Skill 原始 JSON 中的本机路径、URL、OCR 原文和作业目录也不会发送给浏览器。完整参数见 `tsm dashboard-real --help`，准备步骤和安全检查见 [`docs/private_local_dashboard.md`](docs/private_local_dashboard.md)。
+
+这里的“真实”表示两页都读取已完成的离线产物，而不是合成示例。TeachObs 页在启动时验证哈希、顺序和冻结模型绑定，并在内存重算四臂逐场景预测；学生动作因没有逐场景真值、角色跟踪或姿态模型而明确留空。MIT 页验证 10 份 Full Skill 与语义 manifest、消融报告和内部评估指纹：90 个步骤中 62 个是有 `evi_*` 支持的 `observed_method`，28 个是 `recommended_enrichment`；59 条入选 `mme_*` 目前辅助策略计分与证据一致性，procedure 的直接 `mme_*` 引用数为 0。页面还可把新教学主题注入当前 Skill，现场生成九步教学过程，并展示哈希绑定的七维内部评估与六项硬门槛。因此两项成果是互补的独立验证轨，尚不是“TeachObs 预测直接喂给 MIT Skill”的端到端系统。页面不是实时部署；内部 Skill 量表不是 Accuracy，也没有建立专家 Skill 金标准或学习效果。`tsm dashboard` 仍是唯一面向公开分发的聚合看板；`tsm dashboard-real` 及其读取的私有输入不得上传 GitHub、放入 `artifacts/public/` 或打进 wheel。
+
 先分别检查环境能力与内置核心工程证据；这两条命令不替代后文的测试、exact wheel、CI、tracked-file 隐私或外部研究验收：
 
 ```bash
@@ -50,6 +116,30 @@ python3 -m teaching_skill_miner verify-delivery \
 - `artifacts/multimodal_demo/`：真实运行的合成多模态管线演示与独立 fixture 标注报告；
 - `artifacts/human_review.csv`：两名独立复核者的录入模板；新生成的模板每行用 `skill_fingerprint` 绑定完整 canonical Skill 内容，已有旧 CSV 不会被自动覆盖；空模板明确为 `incomplete`，不算人工验证结果；正式实验建议在条件允许时采用盲法；
 - `artifacts/human_review_status.json`：对 10 个预期 Skill 的覆盖缺口、重复复核者和缺失项审计；空模板不会被写成 10/10 已完成。
+
+### 跨讲次通用 Teaching Skill
+
+单讲 Skill 只说明“一位教师在这一讲里怎样教”。要把它用于下一道新题，必须再做一次跨讲次聚合，而不能任选一讲冒充通用方法。下面的命令读取两门课程各五讲的 Full Skill，以“每讲最多一票”统计策略和九个教学环节；只有总讲次支持率不低于 80%，且每门课支持率都不低于 60% 的项目，才标为 `cross_lecture_observed_consensus`。未过门槛的环节仍可作为可执行脚手架，但必须标为 `recommended_enrichment`，不会计入观察共识：
+
+```bash
+python3 -m teaching_skill_miner distill-general-skill \
+  --skill-root artifacts/private/full_multimodal/ablation/skills \
+  --output-dir output/general_skill_v0 \
+  --example-concept "动态规划"
+
+python3 -m teaching_skill_miner apply-general-skill \
+  --skill output/general_skill_v0/general_skill.json \
+  --concept "新的教学主题" \
+  --learner-level beginner \
+  --output output/general_skill_v0/next_teaching_process.md
+
+python3 -m teaching_skill_miner validate general-skill \
+  output/general_skill_v0/general_skill.json
+```
+
+输出包括 `general_skill.json`、独立结构/支持评估、哈希 receipt 和一份可直接讲授的新主题教学过程。正式十讲当前产生 6 个跨课程共识策略；九个执行环节中 5 个达到跨课程观察门槛，另外 4 个明确保留为规范补充。该产物是可复现、可追溯的 `heuristic_provisional` 通用候选，不是人工专家共识，也没有证明教学效果。
+
+当前可运行的 v0 使用已有字幕线索和多模态候选事件生成单讲 Skill，再做课程平衡聚合。真正可训练的神经 v1 已完整设计为 VideoMAE / WavLM / XLM-R / LayoutLMv3 编码、跨模态注意力、长时序建模、事件/阶段/策略联合预测和受监督证据指针；它需要新增双人 phase/strategy/evidence gold 后训练与锁箱验证，尚不能声称已经训练完成。方法、损失函数、数据划分、消融和否证标准见 [`docs/end_to_end_multimodal_general_skill.md`](docs/end_to_end_multimodal_general_skill.md)。
 
 完整本地工程验收（全量测试、Ruff、编译/脚本语法、依赖一致性、schema、公开目录审计、双次可复现 wheel 构建、仓库外安装和 exact-wheel 视频闭环）：
 
@@ -84,7 +174,7 @@ sh scripts/build_release_acceptance.sh
 
 不设这三个变量时，验收会在 TeachObs 阶段以"human-review evidence is partial"失败关闭——这是刻意的：`human_annotation/` 下还留着 5,158 行的完整 profile 旧骨架，与 4,945 行论文 profile 的公开 receipt 并不配对，宁可失败也不允许用不匹配的骨架通过。没有 TeachObs 私有证据的环境（例如公开 CI）会跳过整段检查，直接裸跑即可。
 
-这个入口启动时先把旧 acceptance 降级为 `stale_not_accepted`，随后依次执行全量项目验收、两个独立临时源码副本的字节级一致构建、最终候选 wheel 的隔离安装和视频闭环、wheel/公开目录发布审计；候选通过后才原子替换 `dist/` 中的同名 wheel，再对新 acceptance 本身做发布审计并原子替换 `artifacts/release_acceptance_1.2.0.json`。因此中途失败不会遗留看似仍有效的旧验收。acceptance 的测试数、wheel 哈希/大小/成员、公开目录摘要都由绑定同一 wheel SHA-256 的新鲜 receipt 重算；验证源码或任一产物在验收后变化都会失败，不会复制旧 acceptance 的字段。为保证相同证据生成相同字节，acceptance 有意不写墙钟时间。
+这个入口启动时先把旧 acceptance 降级为 `stale_not_accepted`，随后依次执行全量项目验收、两个独立临时源码副本的字节级一致构建、最终候选 wheel 的隔离安装和视频闭环、wheel/公开目录发布审计；候选通过后才原子替换 `dist/` 中的同名 wheel，再对新 acceptance 本身做发布审计并原子替换 `artifacts/release_acceptance_1.2.0.json`。因此中途失败不会遗留看似仍有效的旧验收。acceptance 的测试数、wheel 哈希/大小/成员、公开目录摘要都由绑定同一 wheel SHA-256 的新鲜 receipt 重算；完整包源码、看板、验证工具、README/治理与研究文档，以及显式纳入验收的公开/私有证据只要在验收后变化，当前 receipt 就会失效。未纳入发布范围的任意本地研究产物不在此概括内。为保证相同证据生成相同字节，acceptance 有意不写墙钟时间。
 
 如需逐步排障，底层入口仍可单独运行：
 
@@ -131,11 +221,13 @@ tsm demo --output artifacts
         ├────────► 新主题教学过程 / 交互状态机
         │
         ▼
-自动评估：结构 + 证据 + 可执行性 + 教学质量 + 留出迁移 + 溯源
+自动评估：结构 + 证据 + 可执行性 + 方法忠实度 + 教学质量 + 留出迁移 + 溯源
         │
         ▼
-两名独立复核者（正式实验建议盲法）与学习效果 A/B
+协议工具（尚未执行）：双人独立复核 / 外部锁箱 / 学习效果 A/B
 ```
+
+流程图最后一行表示仓库已提供任务模板、指纹与覆盖审计、锁箱登记/签名/一次性消费校验和学习效果分析骨架，不表示这些外部研究已经执行。当前没有真实双人评分、被外部治理方消费的目标站点锁箱或真实学习者 A/B 结果。
 
 ### 1. 视频采集与预处理
 
@@ -155,7 +247,7 @@ python3 -m teaching_skill_miner preprocess new_lesson.srt \
 
 ### 多模态视频分析
 
-当转写已存在时，可以直接把视频与转写对齐，无需重复 ASR。外部提供的带时间戳文本标为 `transcript`；只有 ASR provenance 哈希与当前媒体一致时才标为 `speech`，同时产物中的 `audio_content_verified` 为 `true`：
+当转写已存在时，可以直接把视频与转写对齐，无需重复 ASR。外部提供的带时间戳文本标为 `transcript`；只有 ASR provenance 哈希与当前媒体一致时才标为 `speech`，同时历史兼容字段 `audio_content_verified` 为 `true`。这个字段只表示“转写来自同一媒体哈希绑定的 ASR 运行”，不表示人工逐字内容核对，也不建立内容准确率或 WER：
 
 ```bash
 python3 -m teaching_skill_miner multimodal \
@@ -238,7 +330,7 @@ python3 -m teaching_skill_miner multimodal-ablation \
 python3 scripts/build_multimodal_public_receipts.py
 ```
 
-本次最终产物声明 pipeline `teaching_skill_miner.longform_multimodal.v9`、extraction `teaching_skill_miner.longform_extraction.v2`。v2 使用正确的 TSV quoting 解析 Tesseract 输出；此前解析结果和由它派生的聚合值已作废并重新跑完 10 讲。新实跑的可核验证据为：10 个完整视频共 `1,038,813,006` bytes，FFprobe 总时长 `26,656.83` 秒（`7.404675` 小时）；抽取 `2,553` 帧，其中 `2,441` 帧有阈值后 OCR 文本、`1,964` 帧至少有 3 个接受词，共接受 `40,191` 个词；生成 `1,974` 个视觉事件和 `2,270` 个融合事件。10/10 讲通过全时间轴采样覆盖门槛，10/10 讲通过官方字幕—媒体时间轴绑定，审计结果为 `formal_empirical_ready=true`、`multimodal_empirical_ready=true`。
+本次最终产物声明 pipeline `teaching_skill_miner.longform_multimodal.v9`、extraction `teaching_skill_miner.longform_extraction.v2`。v2 使用正确的 TSV quoting 解析 Tesseract 输出；此前解析结果和由它派生的聚合值已作废并重新跑完 10 讲。新实跑的可核验证据为：10 个完整视频共 `1,038,813,006` bytes，FFprobe 总时长 `26,656.83` 秒（`7.404675` 小时）；抽取 `2,553` 帧，其中 `2,441` 帧有阈值后 OCR 文本、`1,964` 帧至少有 3 个接受词，共接受 `40,191` 个词；生成 `1,974` 个视觉事件和 `2,270` 个融合事件。10/10 讲通过全时间轴采样覆盖门槛，10/10 讲通过官方字幕—媒体时间轴绑定，审计结果为 `formal_empirical_ready=true`、`multimodal_empirical_ready=true`；前者仍只表示字幕来源、文件和时间轴门槛通过，不是字幕内容审计或 WER。
 
 CLIP 对 `2,553/2,553` 个哈希绑定帧完成 512 维视觉嵌入和八类封闭 ontology 的相对 prompt 分数。本次使用 `openai/clip-vit-base-patch32` revision `3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268`，本地 FP16 `model.safetensors` SHA-256 为 `676093550c9e05bc3ba55256c278c89f0d15a1a1585f3b81d76454c33b852d5e`，最终推理设备为 CPU。曾用 GPU 服务器处理公开模型权重，但没有把视频、帧、字幕、OCR 或其他私有项目数据上传到该服务器。
 
@@ -251,7 +343,7 @@ CLIP 对 `2,553/2,553` 个哈希绑定帧完成 512 维视觉嵌入和八类封�
 | transcript + visual/OCR | 95.30 | -0.07 | 2,033 |
 | full | 95.32 | -0.05 | 2,270 |
 
-这些分数只是同一流水线的结构、证据引用一致性和可执行性量表；它们不是 Accuracy、Precision、Recall、F1，也没有显示内部 Skill 分数增益。OCR 计数不表示 OCR 正确率，CLIP 相对 prompt 分数不是校准概率，检测器事件数不表示正确事件数。因为没有独立事件 gold label、独立 Skill 质量评分或学习者结果，`recognition_accuracy_established`、`multimodal_gain_established`、`teaching_effectiveness_established` 和 `deployment_accuracy_established` 均为 `false`。完整设计和证据解释见 [`docs/multimodal_design.md`](docs/multimodal_design.md)。
+这些分数来自同一生成与评分流水线的七维内部量表：结构、证据引用一致性、可执行性、方法忠实度、教学质量、迁移和溯源。只有 `method_fidelity` 会从被引用的 evidence 反推 observed 步骤的线索、时间段和引用；其余六维在这 10 份演示 Skill 上标准差均为 0.000。它们仍不是独立人工 Skill 质量评分，也不是 Accuracy、Precision、Recall 或 F1；本次四臂同样没有显示内部 Skill 分数增益。OCR 计数不表示 OCR 正确率，CLIP 相对 prompt 分数不是校准概率，检测器事件数不表示正确事件数。因为没有独立事件 gold label、独立 Skill 质量评分或学习者结果，`recognition_accuracy_established`、`multimodal_gain_established`、`teaching_effectiveness_established` 和 `deployment_accuracy_established` 均为 `false`。完整设计和证据解释见 [`docs/multimodal_design.md`](docs/multimodal_design.md)。
 
 内容最小化的公开证据分别写入 `artifacts/public/full_multimodal_validation_receipt.json` 和 `artifacts/public/multimodal_ablation_receipt.json`。最终总 runner 实跑后的文件 SHA-256 分别为 `33155d14082050ef06302b33f18b5f01894a569147009681d93a18febc90f32b` 与 `81af973544a2a9b49708712ae2cb95f4381791cd4d26e4add7168bf1f95d3410`。它们只保留聚合计数、设计字段和上游私有产物哈希承诺，不包含媒体、字幕/OCR 文本、帧、嵌入、逐讲记录、讲次标识或本地路径；生成后仍须运行 `tsm release-audit artifacts/public` 并做人工披露风险复核。
 
@@ -348,7 +440,7 @@ python3 scripts/run_dipser_hierarchical_challenge.py \
   --artifact-dir artifacts/dipser_credible/full_v5_52_complete_v5
 ```
 
-因果优化结果见 [`OPTIMIZATION_RESULTS.md`](artifacts/dipser_credible/full_v5_52_complete_v5/OPTIMIZATION_RESULTS.md)；0.9 挑战、模态消融、50-seed、未来上下文反事实和阻断审计见 [`HIERARCHICAL_0_9_RESULTS.md`](artifacts/dipser_credible/full_v5_52_complete_v5/HIERARCHICAL_0_9_RESULTS.md)，逐折/逐样本机读产物为同目录的 `hierarchical_0_9_report.json`。层级固定 gate 的 LOCO、LOAO、双重阻断 Accuracy 分别只有 0.6554、0.8919、0.6351。因此 `accuracy_0_9_established`、确认性 `multimodal_gain_established` 和 `deployment_accuracy_established` 均保持 `false`。原始覆盖流和指纹见 [`RESULTS.md`](artifacts/dipser_credible/full_v5_52_complete_v5/RESULTS.md)。
+可公开核对的 DIPSER 数值与边界见 [`dipser_0_9_aggregate_summary.json`](artifacts/public/dipser_0_9_aggregate_summary.json) 和 [`docs/model_card_dipser.md`](docs/model_card_dipser.md)。逐折、逐样本、participant 标识、特征与本地路径产物保留在私有研究目录，不作为公开链接。层级固定 gate 的 LOCO、LOAO、双重阻断 Accuracy 分别只有 0.6554、0.8919、0.6351。因此 `accuracy_0_9_established`、确认性 `multimodal_gain_established` 和 `deployment_accuracy_established` 均保持 `false`。
 
 两个 runner 现在都会从 records、特征名和精确 float64 矩阵重新计算 dataset / feature-bundle fingerprint；只修改 JSON 中重复声明的哈希无法绕过校验。
 
@@ -420,7 +512,7 @@ python3 -m teaching_skill_miner verify-delivery \
 
 只有 checkpoint 内冻结的 Accuracy、Macro-F1、cluster-CI 下界、逐类 Recall/支持、claim-cluster 数、可重算 coverage、前瞻采集、签名登记和一次性消费全部通过，`deployment_accuracy_established` 才可能为 `true`。Ed25519 签名只证明内容由对应私钥签署且未被篡改，**不会自动证明签署者独立**；可信公钥必须由外部治理方在看结果前通过独立渠道固定，开发者自签名不能把开发集变成锁箱。
 
-部署准确率、确认性多模态增益和真实学习者效果使用三条相互独立的外部证据链。后两类可以用 `prepare-external-research-evidence`、`sign-external-research-evidence` 和 `verify-external-research-evidence` 对聚合研究 manifest 重新计算 gate 并验证外部签名，再分别通过 `verify-delivery` 的 `--external-multimodal-*` 与 `--external-learner-*` 参数接入。两类 manifest 还必须绑定同一个实际交付 system artifact，delivery 会实算其 SHA-256。仓库当前不附带任何正向外部证据；一个有效部署 receipt 不能替代配对模态消融或学习效果实验，准备 manifest 也不自动证明其绑定的原始研究产物真实。完整协议见 [`docs/external_research_evidence.md`](docs/external_research_evidence.md)。
+部署准确率、确认性多模态增益和真实学习者效果使用三条相互独立的外部证据链。本仓库目前只实现这些证据链的协议、校验和签名接入工具，没有实际执行外部目标站点锁箱或真实学习者 A/B。后两类可以用 `prepare-external-research-evidence`、`sign-external-research-evidence` 和 `verify-external-research-evidence` 对聚合研究 manifest 重新计算 gate 并验证外部签名，再分别通过 `verify-delivery` 的 `--external-multimodal-*` 与 `--external-learner-*` 参数接入。两类 manifest 还必须绑定同一个实际交付 system artifact，delivery 会实算其 SHA-256。仓库当前不附带任何正向外部证据；一个有效部署 receipt 不能替代配对模态消融或学习效果实验，准备 manifest 也不自动证明其绑定的原始研究产物真实。完整协议见 [`docs/external_research_evidence.md`](docs/external_research_evidence.md)。
 
 ### 新视频一条命令完成现场演示
 
@@ -454,7 +546,7 @@ python3 -m teaching_skill_miner pipeline /path/to/authorized_lesson.mp4 \
   --output artifacts/captioned_video_run
 ```
 
-该路径会在 `pipeline_summary.json` 中写入 `transcript_source_mode`、`language_evidence_status` 和 `audio_content_verified`。提供的文字只算 transcript 模态；只有同一媒体哈希绑定的 ASR provenance 才会标记为已核对语音内容。
+该路径会在 `pipeline_summary.json` 中写入 `transcript_source_mode`、`language_evidence_status` 和历史字段 `audio_content_verified`。提供的文字只算 transcript 模态；只有同一媒体哈希绑定的 ASR provenance 才会让该历史字段为 `true`。它表示来源绑定，不表示人工听写核对、字幕内容正确或 WER 已建立。
 
 对获授权的真实课堂视频可用答辩脚本一次完成“本机 ASR（若就绪）或第八参数官方/审计 transcript”之后的多模态分析、Skill、教学过程、脚本化 fallback 和自动评估：
 
@@ -481,9 +573,9 @@ python3 -m teaching_skill_miner mine \
 
 每个策略和 procedure 步骤都标记 `origin`：`observed_method` 表示有视频/转写证据，`recommended_enrichment` 表示系统补充的通用教学脚手架。每个证据有稳定 `evidence_id`，观察到的步骤必须列出 `evidence_ids`；推荐步骤不会被计入“视频中观察到的方法”覆盖率。
 
-#### 教学步骤：按教师自己的顺序还原九个环节
+#### 教学步骤：只对有证据的环节还原教师顺序
 
-题目 4.2 列出九个教学环节。[`teaching_phases.py`](teaching_skill_miner/teaching_phases.py) 逐条实现它们，用线索匹配定位每个环节在转写中的首次出现，再**按教师自己的时间顺序**排出 procedure——而不是套一个固定模板：
+题目 4.2 列出九个教学环节。[`teaching_phases.py`](teaching_skill_miner/teaching_phases.py) 逐条实现它们，用线索匹配定位有证据环节在转写中的首次出现。只有 `observed_method` 环节按首次证据时间排序，形成对教师实际顺序的可追溯主张；未观察到的 `recommended_enrichment` 会按规范环节位置插入，使 procedure 可以完整执行，但其位置和动作只是系统脚手架，不声称教师在该时刻使用过该环节：
 
 | 环节 | `teaching_phase` |
 |---|---|
@@ -497,7 +589,7 @@ python3 -m teaching_skill_miner mine \
 | 练习与反馈 | `practice_and_feedback` |
 | 总结和迁移 | `summary_and_transfer` |
 
-命中的环节带真实时间段、触发线索和 `evidence_ids`，标 `origin=observed_method`；未命中的环节仍然补进 procedure 以保证可执行，但明确标 `origin=recommended_enrichment` 且 `observed_span` 为 `null`，指令里直接写明"视频中未观察到该环节"。两者在 JSON 里从不混淆：
+命中的环节带真实时间段、触发线索和 `evidence_ids`，标 `origin=observed_method`；未命中的环节仍然补进 procedure 以保证可执行，但明确标 `origin=recommended_enrichment` 且 `observed_span` 为 `null`，指令里直接写明"视频中未观察到该环节"。推荐环节没有教师时序主张，两者在 JSON 里从不混淆：
 
 ```json
 {
@@ -512,7 +604,7 @@ python3 -m teaching_skill_miner mine \
 }
 ```
 
-`mining_metadata.teaching_phase_analysis` 记录本讲实际观察到哪些环节、顺序如何、哪些没出现。10 份演示转写各观察到 4–7 个环节，没有一份凑满九个——凑满才说明检测器在编造。该检测器只记录时间轴上可见的教学动作，不建立识别准确率。
+`mining_metadata.teaching_phase_analysis` 记录本讲由线索启发式检测到哪些环节、其首次证据顺序以及哪些没出现。10 份演示转写各检测到 4–7 个环节，没有一份凑满九个。当前没有独立的 phase-level gold label，因此这些计数只描述检测器输出，不建立教学环节识别准确率。
 
 每个 Skill 都带 `source.evidence`；证据包含开始/结束时间、原转写中的精确引文和所支持的策略。评估器会做逐字匹配，伪造证据无法通过 grounding gate。
 
@@ -577,7 +669,7 @@ python3 -m teaching_skill_miner evaluate \
 | `temporal_monotonicity` | 10% | observed 步骤是否沿视频时间轴单调推进 |
 | `evidence_density` | 10% | 每个 observed 步骤的引文条数（上限 2 条即满分） |
 
-前一、四、六项在诚实的 Skill 之间本就有差异，衡量"方法还原了多少"；后三项在诚实的 Skill 上恒为 1.0，只有在步骤伪造出处时才会塌陷，是这个维度可证伪的一半。当前十个 Skill 的方法忠实度落在 83.3–89.8（标准差 1.64），总分落在 92.3–93.7。
+第 1、4、6 项（`phase_coverage`、`evidence_utilisation`、`evidence_density`）在诚实的 Skill 之间本就有差异，衡量"方法还原了多少"；第 2、3、5 项（`cue_verification`、`span_consistency`、`temporal_monotonicity`）在当前十份诚实产物上恒为 1.0，只有在步骤伪造出处或时序时才会塌陷。它们共同构成内部、可证伪的工程量表，不是独立人工质量评分。当前十个 Skill 的方法忠实度落在 83.3–89.8（标准差 1.64），总分落在 92.3–93.7。
 
 `tests/test_method_fidelity.py` 用五种人工降级（纯模板、伪造线索、打乱时间区间、抽掉证据、塌缩环节）验证它确实在测量：每种降级都必须被对应的子项抓到，且总分严格下降；把这个维度钉成常数会让其中八个测试失败。
 
@@ -594,7 +686,7 @@ python3 -m teaching_skill_miner benchmark \
 
 报告同时给出静态“解释—示例—总结”基线，并检查概念参数替换、源主题泄漏、fallback 触发和失败后恢复。该 benchmark 是确定性的能力覆盖测试，不冒充真实学生学习增益。
 
-完成人工评分表后，可计算逐 Skill 结果和双人二次加权 Cohen's kappa：
+下面是双人复核的协议工具入口，不是已完成的人工实验。当前仓库只有空评分模板、覆盖/指纹校验和汇总代码；真实两名复核者尚未回填。只有未来完成真实评分表后，才可计算逐 Skill 结果和双人二次加权 Cohen's kappa：
 
 ```bash
 python3 -m teaching_skill_miner human-evaluate \
@@ -634,12 +726,12 @@ python3 -m teaching_skill_miner verify-delivery \
   --markdown artifacts/DELIVERY_VERIFICATION.md
 ```
 
-`fetch-formal-captions` 从每个 MIT OCW 讲次页面重新确认页面声明的 WebVTT 与媒体配对，要求字幕 URL 使用 `https://ocw.mit.edu`，校验固定字幕 SHA-256，并用 FFprobe 读取同页所链接媒体的实际时长；该命令本身不保存视频。当前实跑结果为 10/10 正式字幕通过，平均 770.5 个合并后 cue、6172.8 个审计 token，首尾 cue 时间轴覆盖率为 98.84%–99.72%；公开 receipt 只含 URL、哈希、时长和计数，不含字幕文本。随后独立执行 `fetch-full-videos` 已把页面绑定的 10 个完整媒体下载到私有目录，并再次校验本地 SHA-256、容器、音视频流和参考时长；由于上游索引没有发布者固定的媒体哈希，本地 SHA-256 能检测下载后的变化，但不能独立证明发布者原始字节身份。
+`fetch-formal-captions` 从每个 MIT OCW 讲次页面重新确认页面声明的 WebVTT 与媒体配对，要求字幕 URL 使用 `https://ocw.mit.edu`，校验固定字幕文件 SHA-256，并用 FFprobe 读取同页所链接媒体的实际时长；该命令本身不保存视频。当前实跑结果为 10/10 字幕来源、文件与时间轴门槛通过，平均 770.5 个合并后 cue、6172.8 个审计 token，首尾 cue 时间轴覆盖率为 98.84%–99.72%；这不是逐字听写内容审计，也没有计算 WER。公开 receipt 只含 URL、哈希、时长和计数，不含字幕文本。随后独立执行 `fetch-full-videos` 已把页面绑定的 10 个完整媒体下载到私有目录，并再次校验本地 SHA-256、容器、音视频流和参考时长；由于上游索引没有发布者固定的媒体哈希，本地 SHA-256 能检测下载后的变化，但不能独立证明发布者原始字节身份。
 
 因此：
 
 - 自动评估会把这种数据的证据忠实度与溯源分限制在 85；
-- 正式字幕集使用官方 caption 时应报告页面 URL、字幕哈希、媒体时长和时间轴覆盖；若改用 ASR，才必须另外报告模型、版本、模型/解码配置指纹、独立 WER 抽检和人工修订比例；
+- 正式字幕集使用官方 caption 时应报告页面 URL、字幕文件哈希、媒体时长和时间轴覆盖；这些来源与文件证据不替代独立的逐字内容核对。若改用 ASR，还必须另外报告模型、版本、模型/解码配置指纹、独立 WER 抽检和人工修订比例；
 - 使用公开数据时必须遵守来源页面的许可、署名和非商业条款。
 
 TeachObs 的平台字幕缺口另有一条不下载模型/媒体的离线 GPU 交接链：

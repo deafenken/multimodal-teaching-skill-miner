@@ -40,7 +40,9 @@ from teaching_skill_miner.recognition.strict_evaluation import (
     strict_coverage_evidence_fingerprint,
     strict_feature_bundle_fingerprint,
 )
-from teaching_skill_miner.recognition.dipser_experiment import feature_bundle_fingerprint
+from teaching_skill_miner.recognition.dipser_experiment import (
+    feature_bundle_fingerprint,
+)
 from teaching_skill_miner.release_audit import audit_release_path
 from scripts import audit_repository_privacy
 
@@ -79,7 +81,10 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(report["human_validation"]["validation_status"], "incomplete")
         self.assertEqual(report["summary_metrics"]["human_reviewed_skill_count"], 0)
         self.assertTrue(
-            all(row["procedure_evidence_audit"] for row in report["transcripts_and_skills"])
+            all(
+                row["procedure_evidence_audit"]
+                for row in report["transcripts_and_skills"]
+            )
         )
 
     def test_demo_does_not_overwrite_existing_human_review(self) -> None:
@@ -101,10 +106,16 @@ class DeliveryTests(unittest.TestCase):
             review = output / "human_review.csv"
             original = review.read_text(encoding="utf-8-sig")
             self.assertIn("skill_fingerprint", original.splitlines()[0])
-            review.write_text(original + "# human work must survive\n", encoding="utf-8")
+            review.write_text(
+                original + "# human work must survive\n", encoding="utf-8"
+            )
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(main(["demo", "--output", str(output)]), 0)
-            self.assertTrue(review.read_text(encoding="utf-8").endswith("# human work must survive\n"))
+            self.assertTrue(
+                review.read_text(encoding="utf-8").endswith(
+                    "# human work must survive\n"
+                )
+            )
 
     def test_doctor_never_exposes_api_secret(self) -> None:
         original = os.environ.get("TSM_API_KEY")
@@ -134,10 +145,33 @@ class DeliveryTests(unittest.TestCase):
 
 
 class ReleaseAuditTests(unittest.TestCase):
+    def test_reviewed_synthetic_teacher_agent_benchmark_is_public_safe(self) -> None:
+        root = project_root()
+        source = root / "data/teacher_agent_free_text_benchmark.json"
+        report = audit_release_path(source)
+        self.assertTrue(report["passed"], report["findings"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            forged = Path(directory) / source.name
+            value = read_json(source)
+            value["cases"][0]["group_id"]["session_id"] = "real-person-session-01"
+            forged.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            forged_report = audit_release_path(forged)
+        self.assertFalse(forged_report["passed"])
+        self.assertIn(
+            "row_level_identity_field",
+            {finding["rule"] for finding in forged_report["findings"]},
+        )
+
     def test_safe_release_directory_passes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "safe.json").write_text('{"aggregate_accuracy": 0.8}\n', encoding="utf-8")
+            (root / "safe.json").write_text(
+                '{"aggregate_accuracy": 0.8}\n', encoding="utf-8"
+            )
             report = audit_release_path(root)
             self.assertTrue(report["passed"], report["findings"])
 
@@ -146,9 +180,7 @@ class ReleaseAuditTests(unittest.TestCase):
             root = Path(directory)
             fake_secret = "api_" + "key=abcdefghijklmnopqrstuvwxyz012345"
             (root / "classroom.mp4").write_bytes(b"not-real-media")
-            (root / "secret.txt").write_text(
-                fake_secret, encoding="utf-8"
-            )
+            (root / "secret.txt").write_text(fake_secret, encoding="utf-8")
             (root / "rows.json").write_text(
                 '{"participant_id": "p-1", "score": 0.9}', encoding="utf-8"
             )
@@ -286,9 +318,7 @@ class ReleaseAuditTests(unittest.TestCase):
                 f"{fake_secret} {fake_local_path}\n",
                 encoding="utf-8",
             )
-            (root / ".env.production").write_text(
-                f"{fake_secret}\n", encoding="utf-8"
-            )
+            (root / ".env.production").write_text(f"{fake_secret}\n", encoding="utf-8")
             tar_payload = bytearray(512)
             tar_payload[257:262] = b"ustar"
             (root / "archive.bin").write_bytes(tar_payload)
@@ -320,9 +350,7 @@ class ReleaseAuditTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "utf16-rows.json").write_bytes(
-                '{"columns":["reviewer_id"],"rows":[["r-1"]]}'.encode(
-                    "utf-16-le"
-                )
+                '{"columns":["reviewer_id"],"rows":[["r-1"]]}'.encode("utf-16-le")
             )
             (root / "utf16-secret.txt").write_bytes(
                 f"{fake_secret} {fake_local_path}".encode("utf-16-be")
@@ -332,8 +360,7 @@ class ReleaseAuditTests(unittest.TestCase):
             details = {finding["detail"] for finding in report["findings"]}
             self.assertFalse(report["passed"])
             self.assertTrue(
-                {"participant_id", "session_id", "teacher_id", "reviewer_id"}
-                <= details
+                {"participant_id", "session_id", "teacher_id", "reviewer_id"} <= details
             )
             self.assertIn("possible_secret", rules)
             self.assertIn("absolute_local_path", rules)
@@ -350,20 +377,14 @@ class ReleaseAuditTests(unittest.TestCase):
                             "session_id": {"type": "string"},
                         },
                         "required": ["participant_id", "session_id"],
-                        "dependentRequired": {
-                            "participant_id": ["session_id"]
-                        },
+                        "dependentRequired": {"participant_id": ["session_id"]},
                         "$defs": {
-                            "identity_field": {
-                                "enum": ["participant_id", "session_id"]
-                            }
+                            "identity_field": {"enum": ["participant_id", "session_id"]}
                         },
                         "allOf": [
                             {
                                 "properties": {
-                                    "primary_identity": {
-                                        "const": "participant_id"
-                                    }
+                                    "primary_identity": {"const": "participant_id"}
                                 }
                             }
                         ],
@@ -394,6 +415,46 @@ class ReleaseAuditTests(unittest.TestCase):
 
 
 class RepositoryPrivacyAuditTests(unittest.TestCase):
+    def test_untracked_release_candidate_is_scanned_before_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "data/teacher_agent_free_text_benchmark_receipt.json"
+            candidate.parent.mkdir(parents=True)
+            candidate.write_bytes(b'{"credential":"sk-' + b"x" * 24 + b'"}\n')
+            with (
+                patch.object(audit_repository_privacy, "ROOT", root),
+                patch.object(
+                    audit_repository_privacy,
+                    "tracked_files",
+                    return_value=[],
+                ),
+                redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(audit_repository_privacy.main(), 2)
+
+    def test_tracked_complete_subtitle_formats_fail(self) -> None:
+        for suffix in (".vtt", ".srt", ".ass", ".ssa", ".ttml"):
+            with (
+                self.subTest(suffix=suffix),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                root = Path(directory)
+                relative = f"lecture-caption{suffix}"
+                (root / relative).write_text(
+                    "WEBVTT\n\n00:00.000 --> 00:01.000\nprivate classroom text\n",
+                    encoding="utf-8",
+                )
+                with (
+                    patch.object(audit_repository_privacy, "ROOT", root),
+                    patch.object(
+                        audit_repository_privacy,
+                        "tracked_files",
+                        return_value=[relative],
+                    ),
+                    redirect_stderr(io.StringIO()),
+                ):
+                    self.assertEqual(audit_repository_privacy.main(), 2)
+
     def test_tracked_disguised_media_and_example_identity_fail(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -420,7 +481,9 @@ class RepositoryPrivacyAuditTests(unittest.TestCase):
             patch.object(
                 audit_repository_privacy,
                 "tracked_files",
-                side_effect=RuntimeError("repository privacy audit requires a Git checkout"),
+                side_effect=RuntimeError(
+                    "repository privacy audit requires a Git checkout"
+                ),
             ),
             redirect_stderr(io.StringIO()) as stderr,
         ):
@@ -446,9 +509,7 @@ class RepositoryPrivacyAuditTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fake_secret = "api_" + "key=abcdefghijklmnopqrstuvwxyz012345"
-            (root / "secret.txt").write_bytes(
-                fake_secret.encode("utf-16-le")
-            )
+            (root / "secret.txt").write_bytes(fake_secret.encode("utf-16-le"))
             (root / "wrapped.bin").write_bytes(b"JUNK\x80\x04N.")
             with (
                 patch.object(audit_repository_privacy, "ROOT", root),
@@ -487,10 +548,14 @@ class SchemaTests(unittest.TestCase):
         ).validate(read_json(root / "data/formal_caption_sources.json"))
 
 
-@unittest.skipUnless(RECOGNITION_DEPS_AVAILABLE, "recognition dependencies are optional")
+@unittest.skipUnless(
+    RECOGNITION_DEPS_AVAILABLE, "recognition dependencies are optional"
+)
 class FrozenRecognitionCliTests(unittest.TestCase):
     @staticmethod
-    def _fixture(prefix: str, sessions: int, site: str, external: bool) -> tuple[dict, dict]:
+    def _fixture(
+        prefix: str, sessions: int, site: str, external: bool
+    ) -> tuple[dict, dict]:
         records = []
         visual = []
         audio = []
@@ -500,7 +565,9 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                 records.append(
                     {
                         "sample_id": sample_id,
-                        "content_sha256": hashlib.sha256(sample_id.encode()).hexdigest(),
+                        "content_sha256": hashlib.sha256(
+                            sample_id.encode()
+                        ).hexdigest(),
                         "label": label,
                         "label_name": ("low", "medium", "high")[label],
                         "session_id": f"{prefix}-session-{session}",
@@ -549,7 +616,9 @@ class FrozenRecognitionCliTests(unittest.TestCase):
         provenance = {
             name: {
                 "extractor_id": f"fixed-{name}",
-                "extractor_fingerprint": hashlib.sha256(f"fixed-{name}".encode()).hexdigest(),
+                "extractor_fingerprint": hashlib.sha256(
+                    f"fixed-{name}".encode()
+                ).hexdigest(),
                 "frozen_before_evaluation": True,
                 "uses_ground_truth_labels": False,
                 "fitted_on_evaluation_records": False,
@@ -568,19 +637,29 @@ class FrozenRecognitionCliTests(unittest.TestCase):
             "feature_provenance": provenance,
             "matrices": {"visual": visual, "audio": audio},
         }
-        feature_bundle["feature_bundle_fingerprint"] = strict_feature_bundle_fingerprint(
-            records,
-            feature_bundle["feature_names_by_modality"],
-            feature_bundle["matrices"],
-            provenance,
+        feature_bundle["feature_bundle_fingerprint"] = (
+            strict_feature_bundle_fingerprint(
+                records,
+                feature_bundle["feature_names_by_modality"],
+                feature_bundle["matrices"],
+                provenance,
+            )
         )
-        return {"schema_version": "2.0", "audit": audit, "records": records}, feature_bundle
+        return {
+            "schema_version": "2.0",
+            "audit": audit,
+            "records": records,
+        }, feature_bundle
 
     def test_freeze_and_external_evaluate_cli_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source_manifest, source_features = self._fixture("source", 6, "site-a", False)
-            external_manifest, external_features = self._fixture("external", 3, "site-b", True)
+            source_manifest, source_features = self._fixture(
+                "source", 6, "site-a", False
+            )
+            external_manifest, external_features = self._fixture(
+                "external", 3, "site-b", True
+            )
             contract = {
                 "schema_version": "1.0",
                 "primary_metric": "macro_f1",
@@ -612,15 +691,25 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                 freeze_code = main(
                     [
                         "freeze-recognition-model",
-                        "--manifest", str(paths["source_manifest"]),
-                        "--features", str(paths["source_features"]),
-                        "--claim-contract", str(paths["contract"]),
-                        "--class-name", "low",
-                        "--class-name", "medium",
-                        "--class-name", "high",
-                        "--inner-splits", "2",
-                        "--c-grid", "0.1", "1.0",
-                        "--output", str(model_path),
+                        "--manifest",
+                        str(paths["source_manifest"]),
+                        "--features",
+                        str(paths["source_features"]),
+                        "--claim-contract",
+                        str(paths["contract"]),
+                        "--class-name",
+                        "low",
+                        "--class-name",
+                        "medium",
+                        "--class-name",
+                        "high",
+                        "--inner-splits",
+                        "2",
+                        "--c-grid",
+                        "0.1",
+                        "1.0",
+                        "--output",
+                        str(model_path),
                     ]
                 )
             self.assertEqual(freeze_code, 0)
@@ -647,11 +736,16 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                     main(
                         [
                             "create-freeze-registration",
-                            "--model", str(model_path),
-                            "--manifest", str(paths["external_manifest"]),
-                            "--features", str(paths["external_features"]),
-                            "--registration-id", "cli-lockbox-001",
-                            "--output", str(request_path),
+                            "--model",
+                            str(model_path),
+                            "--manifest",
+                            str(paths["external_manifest"]),
+                            "--features",
+                            str(paths["external_features"]),
+                            "--registration-id",
+                            "cli-lockbox-001",
+                            "--output",
+                            str(request_path),
                         ]
                     ),
                     0,
@@ -660,11 +754,16 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                     main(
                         [
                             "sign-freeze-registration",
-                            "--request", str(request_path),
-                            "--private-key", str(private_key_path),
-                            "--issuer", "independent-cli-test-custodian",
-                            "--key-id", "cli-key-2026",
-                            "--output", str(attestation_path),
+                            "--request",
+                            str(request_path),
+                            "--private-key",
+                            str(private_key_path),
+                            "--issuer",
+                            "independent-cli-test-custodian",
+                            "--key-id",
+                            "cli-key-2026",
+                            "--output",
+                            str(attestation_path),
                         ]
                     ),
                     0,
@@ -674,14 +773,22 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                 evaluate_code = main(
                     [
                         "evaluate-frozen-recognition",
-                        "--model", str(model_path),
-                        "--manifest", str(paths["external_manifest"]),
-                        "--features", str(paths["external_features"]),
-                        "--bootstrap-replicates", "30",
-                        "--registration-attestation", str(attestation_path),
-                        "--trusted-public-key", str(public_key_path),
-                        "--one-time-ledger", str(root / "one-time-ledger"),
-                        "--output", str(report_path),
+                        "--model",
+                        str(model_path),
+                        "--manifest",
+                        str(paths["external_manifest"]),
+                        "--features",
+                        str(paths["external_features"]),
+                        "--bootstrap-replicates",
+                        "30",
+                        "--registration-attestation",
+                        str(attestation_path),
+                        "--trusted-public-key",
+                        str(public_key_path),
+                        "--one-time-ledger",
+                        str(root / "one-time-ledger"),
+                        "--output",
+                        str(report_path),
                     ]
                 )
             self.assertEqual(evaluate_code, 0)
@@ -694,11 +801,16 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                     main(
                         [
                             "sign-evaluation-report",
-                            "--report", str(report_path),
-                            "--private-key", str(private_key_path),
-                            "--issuer", "independent-cli-test-custodian",
-                            "--key-id", "cli-key-2026",
-                            "--output", str(signed_receipt_path),
+                            "--report",
+                            str(report_path),
+                            "--private-key",
+                            str(private_key_path),
+                            "--issuer",
+                            "independent-cli-test-custodian",
+                            "--key-id",
+                            "cli-key-2026",
+                            "--output",
+                            str(signed_receipt_path),
                         ]
                     ),
                     0,
@@ -711,9 +823,7 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                 trusted_attestation_public_key_path=public_key_path,
             )
             self.assertTrue(
-                delivery["external_evidence_checks"][
-                    "prospective_deployment_accuracy"
-                ]
+                delivery["external_evidence_checks"]["prospective_deployment_accuracy"]
             )
             self.assertTrue(delivery["external_deployment_validation"]["passed"])
 
@@ -728,7 +838,9 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                 external_evaluation_receipt_path=signed_receipt_path,
                 trusted_attestation_public_key_path=public_key_path,
             )
-            self.assertFalse(tampered_delivery["external_deployment_validation"]["passed"])
+            self.assertFalse(
+                tampered_delivery["external_deployment_validation"]["passed"]
+            )
             self.assertIn(
                 "report fingerprint mismatch",
                 tampered_delivery["external_deployment_validation"]["reason"],
@@ -737,8 +849,8 @@ class FrozenRecognitionCliTests(unittest.TestCase):
             tampered_receipt = read_json(signed_receipt_path)
             signature = tampered_receipt["signature_base64"]
             tampered_receipt["signature_base64"] = (
-                ("A" if signature[0] != "A" else "B") + signature[1:]
-            )
+                "A" if signature[0] != "A" else "B"
+            ) + signature[1:]
             tampered_receipt_path = root / "tampered-evaluation-receipt.json"
             write_json(tampered_receipt_path, tampered_receipt)
             tampered_delivery = verify_delivery(
@@ -748,7 +860,9 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                 external_evaluation_receipt_path=tampered_receipt_path,
                 trusted_attestation_public_key_path=public_key_path,
             )
-            self.assertFalse(tampered_delivery["external_deployment_validation"]["passed"])
+            self.assertFalse(
+                tampered_delivery["external_deployment_validation"]["passed"]
+            )
             self.assertIn(
                 "receipt signature failed",
                 tampered_delivery["external_deployment_validation"]["reason"],
@@ -756,10 +870,12 @@ class FrozenRecognitionCliTests(unittest.TestCase):
 
     def test_feature_bundle_tampering_fails_closed_before_training(self) -> None:
         mutations = {
-            "matrix": lambda bundle: bundle["matrices"]["visual"][0].__setitem__(0, -1.75),
-            "provenance": lambda bundle: bundle["feature_provenance"]["visual"].__setitem__(
-                "extractor_id", "changed-after-freeze"
+            "matrix": lambda bundle: bundle["matrices"]["visual"][0].__setitem__(
+                0, -1.75
             ),
+            "provenance": lambda bundle: bundle["feature_provenance"][
+                "visual"
+            ].__setitem__("extractor_id", "changed-after-freeze"),
             "dataset fingerprint": lambda bundle: bundle.__setitem__(
                 "dataset_fingerprint", "0" * 64
             ),
@@ -767,16 +883,16 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                 "feature_bundle_fingerprint"
             ),
             "row order": lambda bundle: bundle["sample_ids"].reverse(),
-            "boolean matrix value": lambda bundle: bundle["matrices"]["audio"][0].__setitem__(
-                0, True
-            ),
-            "numeric feature name": lambda bundle: bundle[
-                "feature_names_by_modality"
-            ]["visual"].__setitem__(0, 1),
+            "boolean matrix value": lambda bundle: bundle["matrices"]["audio"][
+                0
+            ].__setitem__(0, True),
+            "numeric feature name": lambda bundle: bundle["feature_names_by_modality"][
+                "visual"
+            ].__setitem__(0, 1),
             "numeric sample id": lambda bundle: bundle["sample_ids"].__setitem__(0, 1),
-            "overflowing feature": lambda bundle: bundle["matrices"]["audio"][0].__setitem__(
-                0, 10 ** 4000
-            ),
+            "overflowing feature": lambda bundle: bundle["matrices"]["audio"][
+                0
+            ].__setitem__(0, 10**4000),
         }
         for name, mutate in mutations.items():
             with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
@@ -787,7 +903,9 @@ class FrozenRecognitionCliTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     _load_strict_feature_bundle(path, manifest)
 
-    def test_unmarked_legacy_dipser_fingerprint_remains_narrowly_compatible(self) -> None:
+    def test_unmarked_legacy_dipser_fingerprint_remains_narrowly_compatible(
+        self,
+    ) -> None:
         manifest, bundle = self._fixture("dipser", 6, "site-a", False)
         manifest["audit"]["dataset_id"] = "DIPSER"
         manifest["audit"]["archive_catalog_fingerprint"] = hashlib.sha256(
@@ -802,7 +920,9 @@ class FrozenRecognitionCliTests(unittest.TestCase):
         bundle["feature_names_by_modality"]["sensor"] = bundle[
             "feature_names_by_modality"
         ].pop("audio")
-        bundle["feature_provenance"]["sensor"] = bundle["feature_provenance"].pop("audio")
+        bundle["feature_provenance"]["sensor"] = bundle["feature_provenance"].pop(
+            "audio"
+        )
         bundle["matrices"]["sensor"] = bundle["matrices"].pop("audio")
         bundle.pop("fingerprint_algorithm")
         bundle["feature_bundle_fingerprint"] = feature_bundle_fingerprint(
@@ -816,7 +936,9 @@ class FrozenRecognitionCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "features.json"
             path.write_text(json.dumps(bundle), encoding="utf-8")
-            matrices, names, provenance, binding = _load_strict_feature_bundle(path, manifest)
+            matrices, names, provenance, binding = _load_strict_feature_bundle(
+                path, manifest
+            )
             self.assertEqual(set(matrices), {"visual", "sensor"})
             self.assertEqual(set(names), set(provenance))
             self.assertTrue(binding["legacy_input_upgraded_to_strict_binding"])

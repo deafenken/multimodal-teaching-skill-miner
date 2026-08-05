@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_learning_report.schema.json",
+  "title": "Paired Teaching Agent learning score report",
+  "type": "object",
+  "required": ["schema", "artifact_kind", "case_id", "provenance", "scores", "metrics", "claim_boundary", "input_fingerprint", "content_sha256"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.teacher_agent_learning_report.v1"},
+    "artifact_kind": {"const": "paired_teaching_assessment_score_report"},
+    "case_id": {"type": "string", "minLength": 1},
+    "provenance": {"type": "string", "minLength": 1},
+    "scores": {"type": "object"},
+    "metrics": {
+      "type": "object",
+      "required": ["absolute_gain", "normalized_gain", "posttest_improved", "transfer_proportion", "delayed_retention_ratio"],
+      "properties": {
+        "absolute_gain": {"type": "number", "minimum": -1, "maximum": 1},
+        "normalized_gain": {"type": ["number", "null"]},
+        "posttest_improved": {"type": "boolean"},
+        "transfer_proportion": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "delayed_retention_ratio": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "claim_boundary": {
+      "type": "object",
+      "required": ["scores_are_user_or_fixture_supplied", "grading_correctness_independently_validated", "single_record_establishes_causal_learning_effect", "real_learner_effectiveness_established", "record_declares_real_learner_data"],
+      "properties": {
+        "scores_are_user_or_fixture_supplied": {"const": true},
+        "grading_correctness_independently_validated": {"const": false},
+        "single_record_establishes_causal_learning_effect": {"const": false},
+        "real_learner_effectiveness_established": {"const": false},
+        "record_declares_real_learner_data": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "input_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

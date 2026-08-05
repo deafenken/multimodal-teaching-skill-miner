@@ -1,0 +1,842 @@
+{
+  "schema": "teaching_skill_miner.teacher_agent_free_text_benchmark.v1",
+  "description": "28 条作者自行构建的中文自由文本单轮诊断样例，覆盖四个学科和七类学习者信号。样例用于开发与回归测试，不是专家标注 benchmark，也不包含真实学生数据。",
+  "label_taxonomy": {
+    "correct": "回答满足当前问题的关键判据，且未出现实质性错误。",
+    "partial": "回答方向合理但缺少当前步骤所需的关键条件、依据或操作。",
+    "misconception": "回答包含可定位、可命名的稳定错误观念或错误规则。",
+    "confused": "回答明确表达无法区分概念或不知道如何开始，但没有形成可定位的错误主张。",
+    "no_response": "当前轮没有收到可供判断的学习者文本。",
+    "off_topic": "文本与当前教学问题无关，不能作为知识掌握证据。",
+    "valid_alternative": "回答没有采用预期路径，但给出了满足目标约束的有效替代思路。"
+  },
+  "split_policy": {
+    "primary_split_unit": "learner_id",
+    "grouping_keys": ["learner_id", "session_id", "problem_id", "kc_id"],
+    "leakage_rule": "训练、开发与测试应优先按 learner_id 整组划分，并核查 session_id、problem_id 与 kc_id 的交叉重合；不得把同一学习者或同一会话的近重复回答随机拆到不同集合。"
+  },
+  "cases": [
+    {
+      "case_id": "dp_correct_state_meaning",
+      "group_id": {
+        "learner_id": "learner_dp_a",
+        "session_id": "session_dp_a_01",
+        "problem_id": "problem_dp_stairs",
+        "kc_id": "kc_dp_state_semantics"
+      },
+      "goal": {
+        "domain": "dynamic_programming",
+        "concept": "动态规划的状态含义",
+        "objective": "能够用子问题解释状态，并据此继续构造求解过程。"
+      },
+      "current_action": {
+        "skill_id": "skill_stepwise_scaffolding",
+        "action_type": "guide_one_micro_step",
+        "turn_index": 4,
+        "max_rounds": 10,
+        "prompt": "先不写完整程序。请说明你定义的状态代表哪个子问题，以及下标变化时子问题怎样变化。"
+      },
+      "expected_signal": "能把状态和一个明确的子问题对应起来，并解释下标的含义。",
+      "learner_response": "我把 dp[i] 看成只处理到第 i 个位置时这个子问题的结果；i 增加就是把问题范围向后扩一格。",
+      "gold_signal": "correct",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_practice_feedback", "skill_transfer_check"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "dp_partial_missing_boundary",
+      "group_id": {
+        "learner_id": "learner_dp_a",
+        "session_id": "session_dp_a_01",
+        "problem_id": "problem_dp_stairs",
+        "kc_id": "kc_dp_boundary_conditions"
+      },
+      "goal": {
+        "domain": "dynamic_programming",
+        "concept": "动态规划的边界条件",
+        "objective": "能够识别递推开始前必须独立初始化的最小子问题。"
+      },
+      "current_action": {
+        "skill_id": "skill_practice_feedback",
+        "action_type": "assign_targeted_practice",
+        "turn_index": 5,
+        "max_rounds": 10,
+        "prompt": "检查你写出的递推过程：它从最小规模开始时，还需要补充哪些信息才能实际运行？"
+      },
+      "expected_signal": "能指出需要初始化，但还需说明初始化对象及其与递推起点的关系。",
+      "learner_response": "我知道前面要先初始化，不然循环没法算，不过具体该初始化哪几个位置我还没确定。",
+      "gold_signal": "partial",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_practice_feedback", "skill_stepwise_scaffolding"],
+      "should_switch": false,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "dp_misconception_greedy_equivalence",
+      "group_id": {
+        "learner_id": "learner_dp_b",
+        "session_id": "session_dp_b_01",
+        "problem_id": "problem_dp_coin_change",
+        "kc_id": "kc_dp_optimal_substructure"
+      },
+      "goal": {
+        "domain": "dynamic_programming",
+        "concept": "局部选择与全局最优",
+        "objective": "能够区分贪心选择和动态规划中的子问题组合。"
+      },
+      "current_action": {
+        "skill_id": "skill_concept_mapping",
+        "action_type": "map_example_to_definition",
+        "turn_index": 3,
+        "max_rounds": 9,
+        "prompt": "请说明你每一步的选择依据，并判断只看当前最优是否足以保证最后的结果。"
+      },
+      "expected_signal": "能区分局部选择规则与对多个子问题结果的比较。",
+      "learner_response": "每一步都拿当前面值最大的硬币肯定就是最少个数，所以这和动态规划其实完全一样。",
+      "gold_signal": "misconception",
+      "gold_misconception_tag": "dp_greedy_always_equals_global_optimum",
+      "allowed_primary_skill_ids": ["skill_misconception_contrast"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "dp_confused_state_transition",
+      "group_id": {
+        "learner_id": "learner_dp_c",
+        "session_id": "session_dp_c_01",
+        "problem_id": "problem_dp_grid_path",
+        "kc_id": "kc_dp_transition"
+      },
+      "goal": {
+        "domain": "dynamic_programming",
+        "concept": "状态与状态转移",
+        "objective": "能够分别说明状态记录什么、转移描述什么。"
+      },
+      "current_action": {
+        "skill_id": "skill_diagnostic_questioning",
+        "action_type": "ask_diagnostic_question",
+        "turn_index": 2,
+        "max_rounds": 9,
+        "prompt": "在你的表格中，单个格子保存的信息和从相邻格子得到它的规则分别是什么？"
+      },
+      "expected_signal": "至少能尝试区分被保存的信息和计算该信息的关系。",
+      "learner_response": "我分不清哪个叫状态、哪个叫转移，感觉它们都是公式，我不知道从哪里说起。",
+      "gold_signal": "confused",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_concrete_example_bridge"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "dp_no_response_after_diagnostic",
+      "group_id": {
+        "learner_id": "learner_dp_c",
+        "session_id": "session_dp_c_02",
+        "problem_id": "problem_dp_subsequence",
+        "kc_id": "kc_dp_prerequisite_recursion"
+      },
+      "goal": {
+        "domain": "dynamic_programming",
+        "concept": "递归子问题",
+        "objective": "能够识别原问题与更小同类问题之间的关系。"
+      },
+      "current_action": {
+        "skill_id": "skill_diagnostic_questioning",
+        "action_type": "ask_diagnostic_question",
+        "turn_index": 2,
+        "max_rounds": 8,
+        "prompt": "请只说一个你认为更小的同类子问题；不确定也可以写出你的猜测。"
+      },
+      "expected_signal": "收到一个相关子问题或明确的不确定表达。",
+      "learner_response": "",
+      "gold_signal": "no_response",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_diagnostic_questioning", "skill_concrete_example_bridge"],
+      "should_switch": false,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "dp_off_topic_career_question",
+      "group_id": {
+        "learner_id": "learner_dp_d",
+        "session_id": "session_dp_d_01",
+        "problem_id": "problem_dp_knapsack",
+        "kc_id": "kc_dp_transfer"
+      },
+      "goal": {
+        "domain": "dynamic_programming",
+        "concept": "动态规划的适用条件",
+        "objective": "能够在新问题中判断是否适合采用动态规划。"
+      },
+      "current_action": {
+        "skill_id": "skill_transfer_check",
+        "action_type": "probe_transfer",
+        "turn_index": 7,
+        "max_rounds": 10,
+        "prompt": "面对这个新问题，你会先检查哪些结构，再决定是否使用动态规划？"
+      },
+      "expected_signal": "围绕子问题、重复计算或组合结构给出判断依据。",
+      "learner_response": "老师，学会这个以后找实习容易吗？我更想聊一下简历应该怎么写。",
+      "gold_signal": "off_topic",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_diagnostic_questioning"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "dp_valid_alternative_top_down",
+      "group_id": {
+        "learner_id": "learner_dp_d",
+        "session_id": "session_dp_d_02",
+        "problem_id": "problem_dp_interval",
+        "kc_id": "kc_dp_implementation_strategy"
+      },
+      "goal": {
+        "domain": "dynamic_programming",
+        "concept": "动态规划的实现路径",
+        "objective": "能够构造可复用子问题并避免重复计算，不限定自底向上或自顶向下。"
+      },
+      "current_action": {
+        "skill_id": "skill_transfer_check",
+        "action_type": "probe_transfer",
+        "turn_index": 8,
+        "max_rounds": 8,
+        "prompt": "请把刚才的方法迁移到新区间问题，并说明你会怎样组织对子问题的求解。"
+      },
+      "expected_signal": "给出满足子问题复用和终止条件的可执行思路，允许不同实现顺序。",
+      "learner_response": "我不按表格长度从小到大填，而是从目标区间递归下去，把算过的区间结果缓存起来，遇到缓存就直接复用。",
+      "gold_signal": "valid_alternative",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_transfer_check", "skill_learner_summary"],
+      "should_switch": false,
+      "should_terminate": true,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "la_correct_span_reasoning",
+      "group_id": {
+        "learner_id": "learner_la_a",
+        "session_id": "session_la_a_01",
+        "problem_id": "problem_la_span_membership",
+        "kc_id": "kc_la_span"
+      },
+      "goal": {
+        "domain": "linear_algebra",
+        "concept": "向量组的张成空间",
+        "objective": "能够说明一个向量是否由给定向量组线性组合得到。"
+      },
+      "current_action": {
+        "skill_id": "skill_learner_summary",
+        "action_type": "elicit_learner_summary",
+        "turn_index": 8,
+        "max_rounds": 8,
+        "prompt": "请用自己的话说明怎样判断目标向量是否属于给定向量组的张成空间。"
+      },
+      "expected_signal": "能把判断转化为是否存在一组系数，并说明如何检验。",
+      "learner_response": "就是看能不能找到一组系数，让给定向量按这些系数组合后得到目标向量；可以把它写成方程组检查是否有解。",
+      "gold_signal": "correct",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_learner_summary"],
+      "should_switch": false,
+      "should_terminate": true,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "la_partial_eigenvector_condition",
+      "group_id": {
+        "learner_id": "learner_la_a",
+        "session_id": "session_la_a_02",
+        "problem_id": "problem_la_eigenvector",
+        "kc_id": "kc_la_eigenvector_definition"
+      },
+      "goal": {
+        "domain": "linear_algebra",
+        "concept": "特征向量的定义条件",
+        "objective": "能够完整检查候选向量是否满足特征向量条件。"
+      },
+      "current_action": {
+        "skill_id": "skill_concept_mapping",
+        "action_type": "map_example_to_definition",
+        "turn_index": 3,
+        "max_rounds": 9,
+        "prompt": "请把候选向量代入定义，列出你需要检查的全部条件。"
+      },
+      "expected_signal": "除方向关系外，还应意识到候选对象本身存在必要条件。",
+      "learner_response": "我会检查矩阵作用以后方向是不是不变，但我暂时没想到还要检查什么。",
+      "gold_signal": "partial",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_concept_mapping", "skill_stepwise_scaffolding"],
+      "should_switch": false,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "la_misconception_matrix_commutative",
+      "group_id": {
+        "learner_id": "learner_la_b",
+        "session_id": "session_la_b_01",
+        "problem_id": "problem_la_matrix_product",
+        "kc_id": "kc_la_matrix_multiplication"
+      },
+      "goal": {
+        "domain": "linear_algebra",
+        "concept": "矩阵乘法的顺序",
+        "objective": "能够根据线性变换的复合解释乘法顺序。"
+      },
+      "current_action": {
+        "skill_id": "skill_practice_feedback",
+        "action_type": "assign_targeted_practice",
+        "turn_index": 5,
+        "max_rounds": 9,
+        "prompt": "不直接计算全部元素，先比较交换两个矩阵后所表示的变换顺序是否相同。"
+      },
+      "expected_signal": "能依据变换复合或维度条件判断顺序是否可交换。",
+      "learner_response": "矩阵乘法和普通数字乘法一样，交换前后顺序不会影响结果。",
+      "gold_signal": "misconception",
+      "gold_misconception_tag": "la_matrix_multiplication_is_commutative",
+      "allowed_primary_skill_ids": ["skill_misconception_contrast"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "la_confused_rank_nullity",
+      "group_id": {
+        "learner_id": "learner_la_b",
+        "session_id": "session_la_b_02",
+        "problem_id": "problem_la_rank_nullity",
+        "kc_id": "kc_la_rank_nullity"
+      },
+      "goal": {
+        "domain": "linear_algebra",
+        "concept": "秩与零空间",
+        "objective": "能够区分秩、零空间维数及其描述的对象。"
+      },
+      "current_action": {
+        "skill_id": "skill_stepwise_scaffolding",
+        "action_type": "guide_one_micro_step",
+        "turn_index": 4,
+        "max_rounds": 10,
+        "prompt": "先只说秩和零空间各自在描述什么，不需要立刻写公式。"
+      },
+      "expected_signal": "能分别指出两个概念关注的空间或信息，或明确具体困惑点。",
+      "learner_response": "我完全绕晕了，不知道秩是行数、列数还是零空间里的向量个数。",
+      "gold_signal": "confused",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_concrete_example_bridge"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "la_no_response_basis_probe",
+      "group_id": {
+        "learner_id": "learner_la_c",
+        "session_id": "session_la_c_01",
+        "problem_id": "problem_la_basis",
+        "kc_id": "kc_la_basis"
+      },
+      "goal": {
+        "domain": "linear_algebra",
+        "concept": "基与线性无关",
+        "objective": "能够判断候选向量组是否能作为给定空间的一组基。"
+      },
+      "current_action": {
+        "skill_id": "skill_concept_mapping",
+        "action_type": "map_example_to_definition",
+        "turn_index": 3,
+        "max_rounds": 8,
+        "prompt": "从张成和线性无关两个角度中任选一个，先说明你会检查什么。"
+      },
+      "expected_signal": "收到一个与张成或线性无关有关的检查思路。",
+      "learner_response": "",
+      "gold_signal": "no_response",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_diagnostic_questioning", "skill_concrete_example_bridge"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "la_off_topic_device_issue",
+      "group_id": {
+        "learner_id": "learner_la_c",
+        "session_id": "session_la_c_02",
+        "problem_id": "problem_la_determinant",
+        "kc_id": "kc_la_determinant_geometry"
+      },
+      "goal": {
+        "domain": "linear_algebra",
+        "concept": "行列式的几何意义",
+        "objective": "能够把行列式与线性变换的尺度和方向联系起来。"
+      },
+      "current_action": {
+        "skill_id": "skill_diagnostic_questioning",
+        "action_type": "ask_diagnostic_question",
+        "turn_index": 2,
+        "max_rounds": 9,
+        "prompt": "观察变换前后的图形，你觉得面积或方向发生了什么变化？"
+      },
+      "expected_signal": "描述图形尺度或方向变化，允许使用直观语言。",
+      "learner_response": "我的平板快没电了，这个软件能不能切成深色模式？",
+      "gold_signal": "off_topic",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_diagnostic_questioning"],
+      "should_switch": false,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "la_valid_alternative_row_reduction",
+      "group_id": {
+        "learner_id": "learner_la_d",
+        "session_id": "session_la_d_01",
+        "problem_id": "problem_la_independence",
+        "kc_id": "kc_la_linear_independence"
+      },
+      "goal": {
+        "domain": "linear_algebra",
+        "concept": "线性无关的判定",
+        "objective": "能够用有效方法判断给定向量组是否线性无关。"
+      },
+      "current_action": {
+        "skill_id": "skill_practice_feedback",
+        "action_type": "assign_targeted_practice",
+        "turn_index": 6,
+        "max_rounds": 9,
+        "prompt": "请选择一种方法检验这组向量，并说明判定依据，不要求沿用刚才的几何方法。"
+      },
+      "expected_signal": "给出逻辑完整的判定路径；允许代数或几何方法。",
+      "learner_response": "我把这些向量作为列组成矩阵，用行变换检查主元个数；这样不用画图也能判断是否存在非零系数组合成零向量。",
+      "gold_signal": "valid_alternative",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_transfer_check", "skill_learner_summary"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "py_correct_aliasing",
+      "group_id": {
+        "learner_id": "learner_py_a",
+        "session_id": "session_py_a_01",
+        "problem_id": "problem_py_list_alias",
+        "kc_id": "kc_py_mutability_aliasing"
+      },
+      "goal": {
+        "domain": "python",
+        "concept": "可变对象与别名",
+        "objective": "能够预测两个变量引用同一列表时修改操作的影响。"
+      },
+      "current_action": {
+        "skill_id": "skill_practice_feedback",
+        "action_type": "assign_targeted_practice",
+        "turn_index": 5,
+        "max_rounds": 9,
+        "prompt": "先不要运行代码。请说明两个变量当前引用的对象关系，再预测原地修改后能观察到什么。"
+      },
+      "expected_signal": "能区分变量名和对象，并根据共享引用预测修改传播。",
+      "learner_response": "两个名字现在指向同一个列表对象，所以通过其中一个名字原地添加元素，另一个名字看到的列表也会变化。",
+      "gold_signal": "correct",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_transfer_check", "skill_learner_summary"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "py_partial_recursion_base_case",
+      "group_id": {
+        "learner_id": "learner_py_a",
+        "session_id": "session_py_a_02",
+        "problem_id": "problem_py_recursive_sum",
+        "kc_id": "kc_py_recursion"
+      },
+      "goal": {
+        "domain": "python",
+        "concept": "递归函数的终止条件",
+        "objective": "能够同时说明递归规模缩小方式和终止条件。"
+      },
+      "current_action": {
+        "skill_id": "skill_stepwise_scaffolding",
+        "action_type": "guide_one_micro_step",
+        "turn_index": 4,
+        "max_rounds": 8,
+        "prompt": "只检查递归能否停下：每次调用改变了什么，什么时候不再继续调用？"
+      },
+      "expected_signal": "需要同时说明规模如何接近终止点以及终止判断。",
+      "learner_response": "我会写一个情况让它直接返回，不过还没有想清楚参数每次怎样靠近那个情况。",
+      "gold_signal": "partial",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_stepwise_scaffolding", "skill_practice_feedback"],
+      "should_switch": false,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "py_misconception_mutable_default",
+      "group_id": {
+        "learner_id": "learner_py_b",
+        "session_id": "session_py_b_01",
+        "problem_id": "problem_py_default_argument",
+        "kc_id": "kc_py_function_defaults"
+      },
+      "goal": {
+        "domain": "python",
+        "concept": "可变默认参数",
+        "objective": "能够解释多次调用函数时默认列表的生命周期。"
+      },
+      "current_action": {
+        "skill_id": "skill_diagnostic_questioning",
+        "action_type": "ask_diagnostic_question",
+        "turn_index": 2,
+        "max_rounds": 8,
+        "prompt": "连续两次省略这个参数调用函数时，你认为两次调用使用的是怎样的对象？请说明理由。"
+      },
+      "expected_signal": "能正确判断默认对象是否在调用之间复用，并给出生命周期依据。",
+      "learner_response": "每调用一次函数，默认列表都会重新创建，所以前一次追加的内容肯定不会留下来。",
+      "gold_signal": "misconception",
+      "gold_misconception_tag": "py_mutable_default_recreated_each_call",
+      "allowed_primary_skill_ids": ["skill_misconception_contrast"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "py_confused_generator_execution",
+      "group_id": {
+        "learner_id": "learner_py_b",
+        "session_id": "session_py_b_02",
+        "problem_id": "problem_py_generator",
+        "kc_id": "kc_py_lazy_evaluation"
+      },
+      "goal": {
+        "domain": "python",
+        "concept": "生成器与惰性求值",
+        "objective": "能够描述生成器何时产生下一个值。"
+      },
+      "current_action": {
+        "skill_id": "skill_concept_mapping",
+        "action_type": "map_example_to_definition",
+        "turn_index": 3,
+        "max_rounds": 9,
+        "prompt": "观察创建生成器和请求下一个元素这两个时刻，分别发生了什么？"
+      },
+      "expected_signal": "尝试区分生成器对象的创建和元素的实际计算。",
+      "learner_response": "我不知道，生成器、迭代器和列表在我看来都是一串值，我完全分不清代码什么时候执行。",
+      "gold_signal": "confused",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_concrete_example_bridge"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "py_no_response_at_round_limit",
+      "group_id": {
+        "learner_id": "learner_py_c",
+        "session_id": "session_py_c_01",
+        "problem_id": "problem_py_exception",
+        "kc_id": "kc_py_exception_flow"
+      },
+      "goal": {
+        "domain": "python",
+        "concept": "异常控制流",
+        "objective": "能够判断异常发生后哪些语句仍会执行。"
+      },
+      "current_action": {
+        "skill_id": "skill_practice_feedback",
+        "action_type": "assign_targeted_practice",
+        "turn_index": 6,
+        "max_rounds": 6,
+        "prompt": "这是本次最后一次尝试：请按执行顺序列出你认为会经过的代码块，不要求解释。"
+      },
+      "expected_signal": "在轮数上限前收到至少一个与执行路径相关的尝试。",
+      "learner_response": "",
+      "gold_signal": "no_response",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_diagnostic_questioning"],
+      "should_switch": false,
+      "should_terminate": true,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "py_off_topic_game_chat",
+      "group_id": {
+        "learner_id": "learner_py_c",
+        "session_id": "session_py_c_02",
+        "problem_id": "problem_py_loop_invariant",
+        "kc_id": "kc_py_loop_reasoning"
+      },
+      "goal": {
+        "domain": "python",
+        "concept": "循环执行过程",
+        "objective": "能够逐轮跟踪变量并解释循环终止。"
+      },
+      "current_action": {
+        "skill_id": "skill_concrete_example_bridge",
+        "action_type": "present_minimal_example",
+        "turn_index": 3,
+        "max_rounds": 8,
+        "prompt": "只跟踪第一次循环：进入循环前有哪些变量，执行一次后各自变成什么？"
+      },
+      "expected_signal": "给出与第一次迭代相关的变量变化。",
+      "learner_response": "我昨天玩的游戏更新了新角色，抽卡运气特别差。",
+      "gold_signal": "off_topic",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_diagnostic_questioning"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "py_valid_alternative_comprehension",
+      "group_id": {
+        "learner_id": "learner_py_d",
+        "session_id": "session_py_d_01",
+        "problem_id": "problem_py_transform_filter",
+        "kc_id": "kc_py_sequence_processing"
+      },
+      "goal": {
+        "domain": "python",
+        "concept": "序列筛选与变换",
+        "objective": "能够正确完成筛选后变换的程序，不限定具体语法形式。"
+      },
+      "current_action": {
+        "skill_id": "skill_transfer_check",
+        "action_type": "probe_transfer",
+        "turn_index": 8,
+        "max_rounds": 8,
+        "prompt": "请把刚才的筛选和变换迁移到新序列，写出一种清楚且可执行的实现。"
+      },
+      "expected_signal": "实现应保持筛选与变换的语义，允许循环、推导式或等价内置工具。",
+      "learner_response": "我没有写列表推导式，而是先建空列表，再遍历元素，满足条件时把变换后的值 append 进去，结果和要求一致。",
+      "gold_signal": "valid_alternative",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_transfer_check", "skill_learner_summary"],
+      "should_switch": false,
+      "should_terminate": true,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "prob_correct_conditional_sample_space",
+      "group_id": {
+        "learner_id": "learner_prob_a",
+        "session_id": "session_prob_a_01",
+        "problem_id": "problem_prob_conditional",
+        "kc_id": "kc_prob_conditional_probability"
+      },
+      "goal": {
+        "domain": "probability",
+        "concept": "条件概率中的样本空间",
+        "objective": "能够在给定条件后重新确定计数范围。"
+      },
+      "current_action": {
+        "skill_id": "skill_practice_feedback",
+        "action_type": "assign_targeted_practice",
+        "turn_index": 5,
+        "max_rounds": 9,
+        "prompt": "先不代公式。已知条件发生以后，你现在只应在哪些可能结果中进行比较？"
+      },
+      "expected_signal": "能说明条件会缩小当前比较范围，并在该范围内考虑目标事件。",
+      "learner_response": "条件给出以后，我只在满足这个条件的结果里重新看目标事件占多少，不能再用原来全部结果作比较范围。",
+      "gold_signal": "correct",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_transfer_check", "skill_learner_summary"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "prob_partial_expectation_model",
+      "group_id": {
+        "learner_id": "learner_prob_a",
+        "session_id": "session_prob_a_02",
+        "problem_id": "problem_prob_expected_count",
+        "kc_id": "kc_prob_linearity_expectation"
+      },
+      "goal": {
+        "domain": "probability",
+        "concept": "期望的线性性",
+        "objective": "能够把总计数拆成若干指示量并组织期望计算。"
+      },
+      "current_action": {
+        "skill_id": "skill_transfer_check",
+        "action_type": "probe_transfer",
+        "turn_index": 6,
+        "max_rounds": 9,
+        "prompt": "面对这个新的总计数问题，请先说明你准备把总量拆成哪些局部量。"
+      },
+      "expected_signal": "能提出局部随机量，并说明它们相加与总量的关系。",
+      "learner_response": "我觉得可以把总期望拆开相加，但还没定义每一项到底表示哪个事件。",
+      "gold_signal": "partial",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_stepwise_scaffolding", "skill_practice_feedback"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "prob_misconception_exclusive_independent",
+      "group_id": {
+        "learner_id": "learner_prob_b",
+        "session_id": "session_prob_b_01",
+        "problem_id": "problem_prob_event_relation",
+        "kc_id": "kc_prob_independence"
+      },
+      "goal": {
+        "domain": "probability",
+        "concept": "互斥与独立",
+        "objective": "能够分别根据能否同时发生和概率乘法关系判断事件关系。"
+      },
+      "current_action": {
+        "skill_id": "skill_concept_mapping",
+        "action_type": "map_example_to_definition",
+        "turn_index": 3,
+        "max_rounds": 9,
+        "prompt": "请分别检查这两个事件能否同时发生，以及知道一个发生后是否改变另一个的可能性。"
+      },
+      "expected_signal": "能把互斥和独立对应到不同的检查问题。",
+      "learner_response": "两个事件既然不能同时发生，就说明它们互不影响，所以互斥事件一定独立。",
+      "gold_signal": "misconception",
+      "gold_misconception_tag": "prob_mutually_exclusive_implies_independent",
+      "allowed_primary_skill_ids": ["skill_misconception_contrast"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "prob_confused_bayes_direction",
+      "group_id": {
+        "learner_id": "learner_prob_b",
+        "session_id": "session_prob_b_02",
+        "problem_id": "problem_prob_bayes_test",
+        "kc_id": "kc_prob_bayes"
+      },
+      "goal": {
+        "domain": "probability",
+        "concept": "贝叶斯更新中的条件方向",
+        "objective": "能够区分观察在原因下的概率与观察后原因的概率。"
+      },
+      "current_action": {
+        "skill_id": "skill_diagnostic_questioning",
+        "action_type": "ask_diagnostic_question",
+        "turn_index": 2,
+        "max_rounds": 10,
+        "prompt": "请用一句话分别说明题目给出的条件概率和要求的条件概率在问什么。"
+      },
+      "expected_signal": "能区分两个条件方向，或指出自己具体无法区分的位置。",
+      "learner_response": "我越看越乱，两个概率的条件只是写在竖线两边，为什么不能直接当成一样的？我不知道该从哪边开始。",
+      "gold_signal": "confused",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_concrete_example_bridge"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "prob_no_response_tree_prompt",
+      "group_id": {
+        "learner_id": "learner_prob_c",
+        "session_id": "session_prob_c_01",
+        "problem_id": "problem_prob_tree",
+        "kc_id": "kc_prob_sequential_events"
+      },
+      "goal": {
+        "domain": "probability",
+        "concept": "分步随机过程",
+        "objective": "能够按发生顺序组织事件分支。"
+      },
+      "current_action": {
+        "skill_id": "skill_diagnostic_questioning",
+        "action_type": "ask_diagnostic_question",
+        "turn_index": 2,
+        "max_rounds": 8,
+        "prompt": "只写第一次随机选择可能出现的分支名称，不需要计算概率。"
+      },
+      "expected_signal": "收到至少一个与第一次随机选择有关的分支。",
+      "learner_response": "",
+      "gold_signal": "no_response",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_diagnostic_questioning", "skill_concrete_example_bridge"],
+      "should_switch": false,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "prob_off_topic_exam_schedule",
+      "group_id": {
+        "learner_id": "learner_prob_c",
+        "session_id": "session_prob_c_02",
+        "problem_id": "problem_prob_variance",
+        "kc_id": "kc_prob_variance"
+      },
+      "goal": {
+        "domain": "probability",
+        "concept": "方差与波动",
+        "objective": "能够用偏离均值的程度解释方差。"
+      },
+      "current_action": {
+        "skill_id": "skill_practice_feedback",
+        "action_type": "assign_targeted_practice",
+        "turn_index": 5,
+        "max_rounds": 9,
+        "prompt": "比较两个分布时，先描述它们围绕均值的集中或分散程度。"
+      },
+      "expected_signal": "描述与均值附近的集中程度或偏离程度有关的观察。",
+      "learner_response": "期末考试到底是哪一天？老师会不会提前划重点？",
+      "gold_signal": "off_topic",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_diagnostic_questioning"],
+      "should_switch": true,
+      "should_terminate": false,
+      "provenance": "author_constructed_not_expert_validated"
+    },
+    {
+      "case_id": "prob_valid_alternative_complement",
+      "group_id": {
+        "learner_id": "learner_prob_d",
+        "session_id": "session_prob_d_01",
+        "problem_id": "problem_prob_at_least_one",
+        "kc_id": "kc_prob_complement_rule"
+      },
+      "goal": {
+        "domain": "probability",
+        "concept": "至少一次事件的概率",
+        "objective": "能够用有效且可核验的方法计算至少一次发生的概率。"
+      },
+      "current_action": {
+        "skill_id": "skill_transfer_check",
+        "action_type": "probe_transfer",
+        "turn_index": 8,
+        "max_rounds": 8,
+        "prompt": "请为新情境选择一种计算路径，并说明怎样检查它覆盖了目标事件。"
+      },
+      "expected_signal": "可使用直接分类或补事件，只要事件覆盖关系和计算路径成立。",
+      "learner_response": "我不逐个枚举恰好发生一次、两次这些情况，而是先算一次都没有发生的概率，再用总概率减去它。",
+      "gold_signal": "valid_alternative",
+      "gold_misconception_tag": null,
+      "allowed_primary_skill_ids": ["skill_transfer_check", "skill_learner_summary"],
+      "should_switch": false,
+      "should_terminate": true,
+      "provenance": "author_constructed_not_expert_validated"
+    }
+  ],
+  "claim_boundary": {
+    "source_type": "author_constructed_not_expert_validated",
+    "expert_validated": false,
+    "real_students_involved": false,
+    "free_text_diagnostic_accuracy_established": false,
+    "skill_routing_quality_established": false,
+    "real_learning_effect_established": false,
+    "intended_use": "用于开发期自由文本分类、Skill 路由和终止逻辑的回归测试，以及后续专家标注协议的起始样例。",
+    "prohibited_claim": "不得将本数据上的结果表述为真实学生诊断准确率、真实教学效果、专家一致性或外部泛化能力。"
+  }
+}

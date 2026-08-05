@@ -78,6 +78,40 @@ fi
   "$verification_tmp/core-venv/bin/python" -c \
     'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); assert value["passed"] is True; assert value["private_media_embedded"] is False; assert value["row_level_private_data_embedded"] is False' \
     "$verification_tmp/dashboard-check.json"
+  "$verification_tmp/core-venv/bin/tsm" dashboard-real --check-template \
+    >"$verification_tmp/private-dashboard-template-check.json"
+  "$verification_tmp/core-venv/bin/python" -c \
+    'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); assert value["passed"] is True; assert value["contains_private_data"] is False; assert value["dashboard_kind"] == "local_private_real_evidence_template"' \
+    "$verification_tmp/private-dashboard-template-check.json"
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-dashboard --check \
+    >"$verification_tmp/teacher-agent-dashboard-check.json"
+  "$verification_tmp/core-venv/bin/python" -c \
+    'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); assert value["passed"] is True; assert value["real_time_skill_switching"] is True; assert value["real_learning_effectiveness_established"] is False' \
+    "$verification_tmp/teacher-agent-dashboard-check.json"
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-evaluate \
+    --output "$verification_tmp/teacher-agent-evaluation.json" >/dev/null
+  "$verification_tmp/core-venv/bin/python" -c \
+    'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); assert value["passed"] is True; assert value["aggregate"]["simulated_mean_gain_delta"] > 0; assert value["claim_boundary"]["real_learner_effectiveness_established"] is False' \
+    "$verification_tmp/teacher-agent-evaluation.json"
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-start --help >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-step --help >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-benchmark --help >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-outcome-evaluate --help >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-benchmark \
+    --output "$verification_tmp/teacher-agent-benchmark-offline.json" >/dev/null
+  "$verification_tmp/core-venv/bin/python" -m \
+    teaching_skill_miner.teacher_agent_benchmark \
+    --output "$verification_tmp/teacher-agent-benchmark-standalone.json" >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-outcome-evaluate \
+    --output "$verification_tmp/teacher-agent-learning-report.json" >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" teacher-agent-demo \
+    --output-dir "$verification_tmp/teacher-agent-demo" >/dev/null
+  "$verification_tmp/core-venv/bin/python" -c \
+    'import json,sys; reports=[json.load(open(path, encoding="utf-8")) for path in sys.argv[1:3]]; outcome=json.load(open(sys.argv[3], encoding="utf-8")); demo=json.load(open(sys.argv[4], encoding="utf-8")); assert all(report["run_status"] == "baseline_only" for report in reports); assert all(report["claim_boundary"]["free_text_diagnostic_accuracy_established"] is False for report in reports); assert all(report["privacy"]["api_key_persisted_or_logged"] is False for report in reports); assert outcome["provenance"] == "author_constructed_demo_not_real"; assert outcome["claim_boundary"]["real_learner_effectiveness_established"] is False; assert demo["real_learning_effectiveness_established"] is False' \
+    "$verification_tmp/teacher-agent-benchmark-offline.json" \
+    "$verification_tmp/teacher-agent-benchmark-standalone.json" \
+    "$verification_tmp/teacher-agent-learning-report.json" \
+    "$verification_tmp/teacher-agent-demo/summary.json"
   asr_model_hash=$(
     "$verification_tmp/core-venv/bin/tsm" hash-teachobs-asr-model \
       --model-directory "$repo_root/configs"
@@ -104,6 +138,23 @@ fi
   "$verification_tmp/core-venv/bin/tsm" visual-semantic-dataset --help >/dev/null
   "$verification_tmp/core-venv/bin/tsm" visual-semantic-apply --help >/dev/null
   "$verification_tmp/core-venv/bin/tsm" demo --output "$verification_tmp/core-demo" >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" distill-general-skill \
+    --skill-root "$verification_tmp/core-demo/skills" \
+    --pattern '*.skill.json' \
+    --output-dir "$verification_tmp/general-skill" \
+    --example-concept "dynamic programming" >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" validate general-skill \
+    "$verification_tmp/general-skill/general_skill.json" >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" evaluate-general-skill \
+    --skill "$verification_tmp/general-skill/general_skill.json" \
+    --output "$verification_tmp/general-skill/reevaluation.json" >/dev/null
+  "$verification_tmp/core-venv/bin/tsm" apply-general-skill \
+    --skill "$verification_tmp/general-skill/general_skill.json" \
+    --concept "Newton's method" \
+    --output "$verification_tmp/general-skill/newton-process.md" >/dev/null
+  "$verification_tmp/core-venv/bin/python" -c \
+    'import json, pathlib, sys; root=pathlib.Path(sys.argv[1]); skill=json.loads((root/"general_skill.json").read_text(encoding="utf-8")); report=json.loads((root/"reevaluation.json").read_text(encoding="utf-8")); assert skill["status"] == "heuristic_provisional"; assert report["passed"] is True; assert report["claim_boundary"]["internal_score_is_accuracy"] is False; assert "Newton'"'"'s method" in (root/"newton-process.md").read_text(encoding="utf-8")' \
+    "$verification_tmp/general-skill"
   "$verification_tmp/core-venv/bin/tsm" release-audit "$wheel" \
     --output "$verification_tmp/wheel-self-audit.json" >/dev/null
   "$verification_tmp/core-venv/bin/tsm" pipeline \

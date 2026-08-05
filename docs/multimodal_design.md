@@ -60,7 +60,7 @@ scripts/run_full_video_multimodal_study.sh \
 - 保留 segment 的 `start/end/text`，检测提问、例子、比较、代码讲解等语言行为；
 - 官方字幕标为 `transcript`，并记录来源页、WebVTT 哈希、覆盖证明和媒体绑定；
 - 只有转写由当前媒体 ASR 产生且 provenance 绑定同一媒体 SHA-256 时才标为 `speech`；
-- 本次 10 讲使用官方字幕，不是同媒体 ASR，所以虽然字幕—媒体时间轴 10/10 通过，`audio_content_verified=false`：这表示没有独立验证音频逐字内容，不能把页面绑定误写成 ASR 正确率。
+- 本次 10 讲使用官方字幕，不是同媒体 ASR，所以虽然字幕—媒体时间轴 10/10 通过，历史字段 `audio_content_verified=false`。该字段只区分“外部 transcript”与“同媒体 SHA-256 绑定的 ASR provenance”；即使为 `true` 也不表示文字经过人工核对，不能据此建立内容准确率或 WER。
 
 ### Audio
 
@@ -131,7 +131,7 @@ scripts/run_full_video_multimodal_study.sh \
 | transcript + visual/OCR | 95.30 | -0.07 | 10/10 | 2,033 |
 | full | 95.32 | -0.05 | 10/10 | 2,270 |
 
-`internal_overall_score` 是项目自身对结构、证据、执行性和可追溯性的量表；`internal_evidence_consistency_score` 检查引用是否精确匹配同一分析记录。两者都不衡量事件是否符合独立真值。当前结果只能支持“音频/视觉改变了保留事件和可引用证据”，不能支持“多模态提高准确率或 Skill 质量”；内部 Overall 甚至没有出现正向增益。
+`internal_overall_score` 是项目自身的七维内部量表，覆盖结构、证据、执行性、`method_fidelity`、教学质量、迁移和溯源；其中只有 `method_fidelity` 会从被引用 evidence 反推 observed 步骤的声明，其余六维在这 10 份演示 Skill 上标准差均为 0.000。`internal_evidence_consistency_score` 只检查引用是否精确匹配同一分析记录。两者都不衡量事件是否符合独立真值，也不是独立人工 Skill 质量评分。当前结果只能支持“音频/视觉改变了保留事件和可引用证据”，不能支持“多模态提高准确率或 Skill 质量”；内部 Overall 甚至没有出现正向增益。
 
 要建立确认性多模态增益，必须先冻结 pipeline 和假设，再在未用于开发的新完整讲次上取得独立双人事件/Skill gold label，以讲次或 session 为配对单位报告 Accuracy/Precision/Recall/F1 或独立质量分的差值、置信区间和多重比较规则。学习效果还需要另一条伦理审批后的学习者对照实验，不能由事件消融替代。
 

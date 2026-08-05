@@ -1,0 +1,76 @@
+{
+  "schema": "teaching_skill_miner.teacher_agent_demo_input.v1",
+  "goal": {
+    "concept": "动态规划的状态与转移",
+    "objective": "学习者能够定义状态、写出状态转移并判断一个新问题是否适合动态规划。",
+    "success_thresholds": {
+      "prerequisite": 0.6,
+      "conceptual": 0.65,
+      "procedural": 0.6,
+      "transfer": 0.55
+    },
+    "max_rounds": 12,
+    "materials": {
+      "example": "爬 4 级楼梯，每次走 1 级或 2 级，问共有多少种走法",
+      "practice": "写出爬楼梯问题中 dp[i] 的含义，以及 dp[4] 由哪些更小状态得到",
+      "transfer_task": "给定不同面额硬币，判断求最少硬币数时如何定义状态并说明最优子结构"
+    }
+  },
+  "student_profile": {
+    "profile_ref": "synthetic_demo_beginner",
+    "learner_level": "beginner",
+    "preferences": ["直观例子", "逐步提示"],
+    "initial_mastery": {
+      "prerequisite": 0.45,
+      "conceptual": 0.15,
+      "procedural": 0.1,
+      "transfer": 0.05
+    },
+    "known_misconceptions": [],
+    "conversation_history": []
+  },
+  "demo_feedback_sequence": [
+    {
+      "response": "我知道递归会把问题拆小，但不确定状态是什么。",
+      "signal": "partial"
+    },
+    {
+      "response": "dp[i] 可能表示走到第 i 级的方法数。",
+      "signal": "correct"
+    },
+    {
+      "response": "我觉得 dp[i] 只等于 dp[i-1]，因为最后走一步。",
+      "signal": "misconception",
+      "misconception_tag": "missing_second_transition"
+    },
+    {
+      "response": "还漏了最后走两级，所以要同时看 dp[i-1] 和 dp[i-2]。",
+      "signal": "correct"
+    },
+    {
+      "response": "第一步先定义 dp[i] 是到第 i 级的方案数，然后写 dp[i]=dp[i-1]+dp[i-2]。",
+      "signal": "correct"
+    },
+    {
+      "response": "换到硬币问题，要把状态改成凑出金额 i 的最少硬币数，并检查子问题能组合。",
+      "signal": "correct"
+    },
+    {
+      "response": "我能独立写出状态、转移和边界，并逐步检查每个量的含义。",
+      "signal": "correct"
+    },
+    {
+      "response": "硬币问题也能把大金额的最优解建立在更小金额的最优解上，所以可以尝试动态规划。",
+      "signal": "correct"
+    },
+    {
+      "response": "如果当前选择会改变后续可选集合，只记录金额可能不够，状态还要加入能表达这个限制的信息。",
+      "signal": "correct"
+    }
+  ],
+  "privacy": {
+    "contains_real_student_identity": false,
+    "contains_private_conversation": false,
+    "fixture_is_synthetic": true
+  }
+}

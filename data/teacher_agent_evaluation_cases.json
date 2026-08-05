@@ -1,0 +1,293 @@
+{
+  "schema": "teaching_skill_miner.teacher_agent_evaluation_cases.v1",
+  "description": "题目二的确定性合成状态轨迹，用于回归测试状态更新、Skill 选择、切换与停止条件。不是实际学生学习效果数据。",
+  "cases": [
+    {
+      "case_id": "beginner_misconception_recovery",
+      "expected_terminal_status": "succeeded",
+      "goal": {
+        "concept": "动态规划的状态与转移",
+        "objective": "定义状态、写出状态转移并完成变式迁移。",
+        "success_thresholds": {
+          "prerequisite": 0.6,
+          "conceptual": 0.65,
+          "procedural": 0.6,
+          "transfer": 0.55
+        },
+        "max_rounds": 12,
+        "materials": {
+          "example": "爬 4 级楼梯的走法计数",
+          "practice": "写出 dp[i] 的含义和转移",
+          "transfer_task": "判断最少硬币问题的状态定义"
+        }
+      },
+      "student_profile": {
+        "profile_ref": "synthetic_case_01",
+        "learner_level": "beginner",
+        "preferences": ["直观例子"],
+        "initial_mastery": {
+          "prerequisite": 0.45,
+          "conceptual": 0.15,
+          "procedural": 0.1,
+          "transfer": 0.05
+        },
+        "known_misconceptions": [],
+        "conversation_history": []
+      },
+      "feedback_sequence": [
+        {
+          "signal": "partial",
+          "response": "知道递归拆分，但说不清状态。",
+          "expected_skill_ids": ["skill_diagnostic_questioning"],
+          "expected_next_focus": "prerequisite"
+        },
+        {
+          "signal": "correct",
+          "response": "递归把原问题写成更小的同类问题。",
+          "expected_skill_ids": ["skill_diagnostic_questioning"],
+          "expected_next_focus": "conceptual"
+        },
+        {
+          "signal": "misconception",
+          "misconception_tag": "missing_transition",
+          "response": "状态只需要看前一个位置。",
+          "expected_skill_ids": ["skill_concept_mapping"],
+          "expected_next_focus": "conceptual"
+        },
+        {
+          "signal": "correct",
+          "response": "还可能从前两个位置转移过来。",
+          "expected_skill_ids": ["skill_misconception_contrast"],
+          "expected_next_focus": "conceptual"
+        },
+        {
+          "signal": "correct",
+          "response": "状态表示子问题答案，转移表示状态之间的依赖。",
+          "expected_skill_ids": ["skill_concept_mapping"],
+          "expected_next_focus": "procedural"
+        },
+        {
+          "signal": "correct",
+          "response": "第一步定义状态，第二步找转移来源。",
+          "expected_skill_ids": ["skill_stepwise_scaffolding"],
+          "expected_next_focus": "procedural"
+        },
+        {
+          "signal": "correct",
+          "response": "我独立写出状态、转移和边界。",
+          "expected_skill_ids": ["skill_practice_feedback"],
+          "expected_next_focus": "transfer"
+        },
+        {
+          "signal": "correct",
+          "response": "硬币问题可由更小金额状态组合。",
+          "expected_skill_ids": ["skill_transfer_check"],
+          "expected_next_focus": "transfer"
+        },
+        {
+          "signal": "correct",
+          "response": "若约束会改变未来选择，状态需要增加约束维度。",
+          "expected_skill_ids": ["skill_transfer_check"]
+        }
+      ]
+    },
+    {
+      "case_id": "confusion_to_example_then_transfer",
+      "expected_terminal_status": "succeeded",
+      "goal": {
+        "concept": "二分查找的不变量",
+        "objective": "说明循环不变量、写出区间更新并迁移到边界查找。",
+        "success_thresholds": {
+          "prerequisite": 0.6,
+          "conceptual": 0.65,
+          "procedural": 0.6,
+          "transfer": 0.55
+        },
+        "max_rounds": 12,
+        "materials": {
+          "example": "在有序数组 [1,3,5,7] 中查找 5",
+          "practice": "写出闭区间版本的中点与左右边界更新",
+          "transfer_task": "查找第一个大于等于目标值的位置"
+        }
+      },
+      "student_profile": {
+        "profile_ref": "synthetic_case_02",
+        "learner_level": "beginner",
+        "preferences": ["逐步提示"],
+        "initial_mastery": {
+          "prerequisite": 0.65,
+          "conceptual": 0.2,
+          "procedural": 0.1,
+          "transfer": 0.0
+        },
+        "known_misconceptions": [],
+        "conversation_history": []
+      },
+      "feedback_sequence": [
+        {
+          "signal": "confused",
+          "response": "我只记得数组必须有序。",
+          "expected_skill_ids": ["skill_diagnostic_questioning"],
+          "expected_next_focus": "conceptual"
+        },
+        {
+          "signal": "correct",
+          "response": "每次排除一半仍不可能包含答案的区域。",
+          "expected_skill_ids": ["skill_concrete_example_bridge"],
+          "expected_next_focus": "conceptual"
+        },
+        {
+          "signal": "correct",
+          "response": "不变量是答案如果存在就始终在候选区间内。",
+          "expected_skill_ids": ["skill_concept_mapping"],
+          "expected_next_focus": "procedural"
+        },
+        {
+          "signal": "correct",
+          "response": "比较中点后只更新一侧边界。",
+          "expected_skill_ids": ["skill_stepwise_scaffolding"],
+          "expected_next_focus": "procedural"
+        },
+        {
+          "signal": "correct",
+          "response": "我能独立维持闭区间不变量。",
+          "expected_skill_ids": ["skill_practice_feedback"],
+          "expected_next_focus": "transfer"
+        },
+        {
+          "signal": "correct",
+          "response": "查左边界时要改变相等情况下保留哪一半。",
+          "expected_skill_ids": ["skill_transfer_check"],
+          "expected_next_focus": "transfer"
+        },
+        {
+          "signal": "correct",
+          "response": "新任务仍靠不变量决定区间更新。",
+          "expected_skill_ids": ["skill_transfer_check"]
+        }
+      ]
+    },
+    {
+      "case_id": "known_misconception_then_recovery",
+      "expected_terminal_status": "succeeded",
+      "goal": {
+        "concept": "梯度下降的学习率",
+        "objective": "解释学习率作用、执行更新并判断新损失曲线。",
+        "success_thresholds": {
+          "prerequisite": 0.6,
+          "conceptual": 0.65,
+          "procedural": 0.6,
+          "transfer": 0.55
+        },
+        "max_rounds": 12,
+        "materials": {
+          "example": "沿一维抛物线的负梯度方向移动",
+          "practice": "给定梯度和学习率计算一次参数更新",
+          "transfer_task": "根据震荡损失曲线判断学习率是否过大"
+        }
+      },
+      "student_profile": {
+        "profile_ref": "synthetic_case_03",
+        "learner_level": "intermediate",
+        "preferences": ["错误对比"],
+        "initial_mastery": {
+          "prerequisite": 0.7,
+          "conceptual": 0.4,
+          "procedural": 0.35,
+          "transfer": 0.15
+        },
+        "known_misconceptions": [
+          {
+            "tag": "larger_is_always_faster",
+            "description": "学习率越大一定收敛越快",
+            "confidence": 0.9
+          }
+        ],
+        "conversation_history": []
+      },
+      "feedback_sequence": [
+        {
+          "signal": "correct",
+          "response": "过大的学习率可能跨过最低点并震荡。",
+          "expected_skill_ids": ["skill_misconception_contrast"],
+          "expected_next_focus": "procedural"
+        },
+        {
+          "signal": "correct",
+          "response": "学习率控制每次沿负梯度移动的步长。",
+          "expected_skill_ids": ["skill_stepwise_scaffolding"],
+          "expected_next_focus": "transfer"
+        },
+        {
+          "signal": "correct",
+          "response": "新参数等于旧参数减去学习率乘梯度。",
+          "expected_skill_ids": ["skill_transfer_check"],
+          "expected_next_focus": "transfer"
+        },
+        {
+          "signal": "correct",
+          "response": "震荡通常提示步长太大，可以先减小学习率。",
+          "expected_skill_ids": ["skill_transfer_check"]
+        }
+      ]
+    },
+    {
+      "case_id": "persistent_no_progress_escalation",
+      "expected_terminal_status": "terminated_unable",
+      "goal": {
+        "concept": "分数加法的通分",
+        "objective": "理解公分母的作用，并完成两个异分母分数的加法。",
+        "success_thresholds": {
+          "prerequisite": 0.6,
+          "conceptual": 0.65,
+          "procedural": 0.6,
+          "transfer": 0.55
+        },
+        "max_rounds": 8,
+        "materials": {
+          "example": "把二分之一和三分之一表示在同一条数轴上",
+          "practice": "计算二分之一加三分之一",
+          "transfer_task": "比较四分之三与六分之五的大小"
+        }
+      },
+      "student_profile": {
+        "profile_ref": "synthetic_case_04",
+        "learner_level": "beginner",
+        "preferences": ["图示"],
+        "initial_mastery": {
+          "prerequisite": 0.65,
+          "conceptual": 0.1,
+          "procedural": 0.1,
+          "transfer": 0.0
+        },
+        "known_misconceptions": [],
+        "conversation_history": []
+      },
+      "feedback_sequence": [
+        {
+          "signal": "no_response",
+          "response": "",
+          "expected_skill_ids": ["skill_diagnostic_questioning"],
+          "expected_next_focus": "conceptual"
+        },
+        {
+          "signal": "confused",
+          "response": "不知道为什么要找公分母。",
+          "expected_skill_ids": ["skill_concrete_example_bridge"],
+          "expected_next_focus": "conceptual"
+        },
+        {
+          "signal": "no_response",
+          "response": "",
+          "expected_skill_ids": ["skill_concrete_example_bridge"]
+        }
+      ]
+    }
+  ],
+  "claim_boundary": {
+    "fixtures_are_synthetic": true,
+    "real_students_involved": false,
+    "free_text_scoring_accuracy_established": false,
+    "real_learning_effect_established": false
+  }
+}

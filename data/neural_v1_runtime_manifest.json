@@ -1,0 +1,58 @@
+{
+  "schema": "teaching_skill_miner.neural_v1_runtime_manifest.v1",
+  "artifact_kind": "public_runtime_link_to_model_assisted_neural_v1",
+  "skill_id": "evidence_grounded_multimodal_teaching_neural_v1",
+  "name": "证据约束的多模态通用教学 Skill",
+  "version": "1.0-provisional",
+  "source": {
+    "training_input_lecture_count": 10,
+    "training_input_course_count": 2,
+    "inference_protocol": "grouped_5fold_out_of_fold_development",
+    "candidate_sha256": "1b26db44de8cfa48f71637f0ae35d489c3379e234f484b3809c632c318cae741",
+    "structural_audit_sha256": "4e95efcbab82c500af48d10a962a15ea0764adeb1f04bc19286817be0b5c2c17"
+  },
+  "materialization_gate": {
+    "passed": false,
+    "eligible_prediction_count": 0,
+    "excluded_prediction_count": 54,
+    "observed_phase_count": 0,
+    "observed_consensus_strategy_count": 0,
+    "runtime_use": "provisional_normative_execution_ontology_only",
+    "display_label": "neural-v1 provisional · evidence gate not passed"
+  },
+  "canonical_phases": [
+    "prior_knowledge_review",
+    "problem_or_context_setup",
+    "intuitive_example",
+    "abstract_concept_building",
+    "derivation_or_operation_walkthrough",
+    "understanding_check",
+    "error_diagnosis_and_correction",
+    "practice_and_feedback",
+    "summary_and_transfer"
+  ],
+  "strategy_ontology": [
+    "concrete_example",
+    "step_by_step",
+    "question_and_wait",
+    "socratic_followup",
+    "error_correction",
+    "contrastive_learning",
+    "intuition_to_formalization",
+    "line_by_line_explanation",
+    "practice_feedback_loop",
+    "difficulty_progression",
+    "review_and_spaced_recall",
+    "summary_and_transfer",
+    "adaptive_teaching"
+  ],
+  "claim_boundary": {
+    "runtime_library_uses_neural_v1_ontology": true,
+    "neural_v1_passed_materialization_gate": false,
+    "phases_are_confirmed_observed_consensus": false,
+    "strategies_are_confirmed_observed_consensus": false,
+    "recognition_accuracy_established": false,
+    "cross_course_generality_established": false,
+    "teaching_effectiveness_established": false
+  }
+}

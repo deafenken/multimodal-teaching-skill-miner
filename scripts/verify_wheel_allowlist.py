@@ -29,6 +29,14 @@ PUBLIC_DATA_FILES = (
     "dataset_manifest.json",
     "evaluation_cases.json",
     "formal_caption_sources.json",
+    "neural_v1_runtime_manifest.json",
+    "teacher_agent_demo_input.json",
+    "teacher_agent_evaluation_cases.json",
+    "teacher_agent_free_text_benchmark.json",
+    "teacher_agent_free_text_benchmark_receipt.json",
+    "teacher_agent_learning_outcome_demo.json",
+    "teacher_agent_skill_library.json",
+    "teacher_agent_skill_library_v2.json",
 )
 GOVERNANCE_FILES = (
     "CHANGELOG.md",
@@ -38,6 +46,12 @@ GOVERNANCE_FILES = (
 )
 PACKAGE_RESOURCE_FILES = (
     "teaching_skill_miner/web/index.html",
+    "teaching_skill_miner/web/private_demo.html",
+    "teaching_skill_miner/web/private_skill_demo.css",
+    "teaching_skill_miner/web/private_skill_demo.js",
+    "teaching_skill_miner/web/teacher_agent_demo.css",
+    "teaching_skill_miner/web/teacher_agent_demo.html",
+    "teaching_skill_miner/web/teacher_agent_demo.js",
 )
 DIST_INFO_FILES = (
     "METADATA",

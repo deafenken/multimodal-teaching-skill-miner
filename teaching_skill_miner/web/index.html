@@ -470,13 +470,13 @@
           <div class="proof-cell"><span class="proof-value">29/30</span><span class="proof-label">TeachObs 转写来源覆盖</span><span class="proof-note">19 platform creator-provided · 4 automatic · 6 technically audited ASR</span></div>
           <div class="proof-cell"><span class="proof-value">4,945</span><span class="proof-label">已对齐场景</span><span class="proof-note">4,509 transcript non-empty · OCR 4,945/4,945</span></div>
           <div class="proof-cell"><span class="proof-value">0.8176</span><span class="proof-label">DIPSER 严格因果 Accuracy</span><span class="proof-note">post-selection exploratory · real-time compatible</span></div>
-          <div class="proof-cell"><span class="proof-value">495</span><span class="proof-label">测试与子测试全部通过</span><span class="proof-note">374 tests + 121 subtests</span></div>
+          <div class="proof-cell"><span class="proof-value">PASS</span><span class="proof-label">发布验收门禁</span><span class="proof-note">pytest · privacy · reproducible wheel · exact install</span></div>
         </div>
       </section>
 
       <section class="screen" id="timeline" data-screen-label="02 Multimodal timeline">
         <div class="section-head">
-          <div><p class="eyebrow">Synchronized evidence</p><h2>一条时间线，五种模态</h2></div>
+          <div><p class="eyebrow">Synchronized evidence</p><h2>一条时间线，五路证据</h2></div>
           <p class="section-note">下面是公开安全的 8 秒合成课堂片段。播放时可观察提供的合成转写、静音、视觉、OCR 与课堂观察如何共同触发教学事件。</p>
         </div>
 
@@ -597,7 +597,7 @@ solve(2)  →  3</div>
           <article class="claim-panel verified">
             <h3>已经建立 / 已观察</h3>
             <div class="claim-list">
-              <div class="claim-item"><span class="claim-mark"></span><div><strong>可复现工程发布</strong><small>测试、隐私审计、双重洁净构建与 exact-wheel 均通过。</small></div></div>
+              <div class="claim-item"><span class="claim-mark"></span><div><strong>工程候选已验收</strong><small>测试、隐私审计、双重洁净构建与 exact-wheel 均通过。</small></div></div>
               <div class="claim-item"><span class="claim-mark"></span><div><strong>完整媒体与时间线溯源</strong><small>六讲 ASR 绑定媒体哈希、时长及全程覆盖策略。</small></div></div>
               <div class="claim-item"><span class="claim-mark"></span><div><strong>真实视觉处理链</strong><small>4,945 场景完成 OCR，音频、视觉、CLIP 特征齐备。</small></div></div>
               <div class="claim-item"><span class="claim-mark"></span><div><strong>已观察的探索性模态差异</strong><small>Full 对 Macro-F1 与视觉类别 Macro-F1 的区间为正；确认性增益尚未建立。</small></div></div>
@@ -607,8 +607,8 @@ solve(2)  →  3</div>
             <h3>尚未建立</h3>
             <div class="claim-list">
               <div class="claim-item"><span class="claim-mark"></span><div><strong>ASR 内容准确率与 WER</strong><small>仍需独立参考转写或人工内容审计。</small></div></div>
-              <div class="claim-item"><span class="claim-mark"></span><div><strong>双人独立标注完成</strong><small>任务包已生成，但真实标注、身份、签名和一致性尚为空。</small></div></div>
-              <div class="claim-item"><span class="claim-mark"></span><div><strong>外部锁箱与部署准确率</strong><small>冻结模型和预注册草案已绑定，尚未在新站点一次性执行。</small></div></div>
+              <div class="claim-item"><span class="claim-mark"></span><div><strong>双人独立标注完成度：0%</strong><small>仅生成 2 份盲化 assignment skeleton；operational definitions 为 0/39，尚不可正式开标。</small></div></div>
+              <div class="claim-item"><span class="claim-mark"></span><div><strong>外部锁箱与部署准确率尚未建立</strong><small>冻结模型和预注册草案已绑定；新站点一次性锁箱评测尚未执行，部署准确率未建立。</small></div></div>
               <div class="claim-item"><span class="claim-mark"></span><div><strong>真实学习效果</strong><small>仍需伦理审批后的随机对照或等价前瞻实验。</small></div></div>
             </div>
           </article>

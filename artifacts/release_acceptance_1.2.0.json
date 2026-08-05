@@ -10,11 +10,11 @@
   "validation": {
     "pytest": {
       "passed": true,
-      "testcase_count": 374,
-      "subtest_count": 121,
-      "total_count": 495,
-      "skipped_count": 0,
-      "passed_count": 495
+      "testcase_count": 483,
+      "subtest_count": 852,
+      "total_count": 1335,
+      "skipped_count": 3,
+      "passed_count": 1332
     },
     "ruff_passed": true,
     "compileall_passed": true,
@@ -28,6 +28,7 @@
     "byte_identical_double_build_passed": true,
     "exact_release_wheel_verification_passed": true,
     "generated_skill_schema_validation_passed": true,
+    "task_two_entrypoints_and_claim_boundaries_passed": true,
     "wheel_release_audit_passed": true
   },
   "conditional_validation": {
@@ -156,27 +157,172 @@
       "binding_sha256": "5e5a998e48eccd2afc7a98e88cc40902b1f3114509c72a6b13506ec73f04f155"
     },
     "tracked_file_privacy_scan_run": true,
-    "tracked_file_privacy_scan_passed": true
+    "tracked_file_privacy_scan_passed": true,
+    "task_two_public_evidence_checked": true,
+    "task_two_public_evidence_binding": {
+      "file_count": 24,
+      "files": [
+        {
+          "role": "general_teaching_skill_schema",
+          "path": "schema/general_teaching_skill.schema.json",
+          "sha256": "4ad3fb07ef7b3aa0288ee84b6b5358441420c9ae46be08631119212261157e90"
+        },
+        {
+          "role": "neural_v1_runtime_manifest",
+          "path": "data/neural_v1_runtime_manifest.json",
+          "sha256": "e18108cc9b522e9a9802eb5931ec27060801377a8b63fe26a5c1e24c6caa67e5"
+        },
+        {
+          "role": "neural_v1_runtime_manifest_schema",
+          "path": "schema/neural_v1_runtime_manifest.schema.json",
+          "sha256": "3a09bc7e2f5887a677f7ad2db2f180b7587c5890d09b0b6a62d00a3df5f3d729"
+        },
+        {
+          "role": "teacher_agent_dashboard_css",
+          "path": "teaching_skill_miner/web/teacher_agent_demo.css",
+          "sha256": "010ef527c2f4f78f3737543609fea9dcac793960806dd5c31c640a68999e71e3"
+        },
+        {
+          "role": "teacher_agent_dashboard_html",
+          "path": "teaching_skill_miner/web/teacher_agent_demo.html",
+          "sha256": "83d183f5f91cfcd7ae77780129ac038c3c1d25f72df55171faa22e94812f2468"
+        },
+        {
+          "role": "teacher_agent_dashboard_js",
+          "path": "teaching_skill_miner/web/teacher_agent_demo.js",
+          "sha256": "b271baaf60775de637f9ef811b0a0c226636f2db953f9988aec40191235d889a"
+        },
+        {
+          "role": "teacher_agent_demo_input",
+          "path": "data/teacher_agent_demo_input.json",
+          "sha256": "1d2e71cd569fe45ea5a0cc93a9356fe8e22375e662c2a77f07352c9f3b7b0cd5"
+        },
+        {
+          "role": "teacher_agent_evaluation_cases",
+          "path": "data/teacher_agent_evaluation_cases.json",
+          "sha256": "277021edb55149c05de7fcb1297dc7f187efa0d369fd3f52f3549ea979e09b2b"
+        },
+        {
+          "role": "teacher_agent_evaluation_cases_schema",
+          "path": "schema/teacher_agent_evaluation_cases.schema.json",
+          "sha256": "4bae3d88be85b0ec95fc6e12f36cefc2d91280bf1bd0f30731e3ae6057ea53c1"
+        },
+        {
+          "role": "teacher_agent_evaluation_report_schema",
+          "path": "schema/teacher_agent_evaluation_report.schema.json",
+          "sha256": "0650beaabe36fd049b90449cebce04eedf6e617a989a69a4e56c6bd99b5af523"
+        },
+        {
+          "role": "teacher_agent_free_text_benchmark",
+          "path": "data/teacher_agent_free_text_benchmark.json",
+          "sha256": "6c2b2ec6b9a829f653c4cf452c5367162b0a4c717a7cf6df4d8d272982fa6b86"
+        },
+        {
+          "role": "teacher_agent_free_text_benchmark_receipt",
+          "path": "data/teacher_agent_free_text_benchmark_receipt.json",
+          "sha256": "10bf93e645ac5ed193e030b46d952f40ece74d1076da661a17b32a8496c26492"
+        },
+        {
+          "role": "teacher_agent_free_text_benchmark_receipt_schema",
+          "path": "schema/teacher_agent_free_text_benchmark_receipt.schema.json",
+          "sha256": "f3dee5db8b6e8a16559d5b0378aad3acf92105dc24ec34af7f3900ed681d46ec"
+        },
+        {
+          "role": "teacher_agent_free_text_benchmark_report_schema",
+          "path": "schema/teacher_agent_free_text_benchmark_report.schema.json",
+          "sha256": "48a7a19eab2ce402c2cf406e2f67548eda21054953d89d53b100b2f6d7efd220"
+        },
+        {
+          "role": "teacher_agent_free_text_benchmark_schema",
+          "path": "schema/teacher_agent_free_text_benchmark.schema.json",
+          "sha256": "d362cce22f84de62cac7b73aed326ec2e59bb4187f3135440ebfe57d2aebaecf"
+        },
+        {
+          "role": "teacher_agent_learning_observation_schema",
+          "path": "schema/teacher_agent_learning_observation.schema.json",
+          "sha256": "b05e3e339d722b006da84603d37a67da4ea84c77d02c75dcbbefe4e8ba6d2b20"
+        },
+        {
+          "role": "teacher_agent_learning_outcome_demo",
+          "path": "data/teacher_agent_learning_outcome_demo.json",
+          "sha256": "636008864dd6fa93e7a8f28d8a67cc0441b8df47b8fb4b8f83477e6043a69824"
+        },
+        {
+          "role": "teacher_agent_learning_report_schema",
+          "path": "schema/teacher_agent_learning_report.schema.json",
+          "sha256": "001998ed4b0516e3a51ccf2abb3fc49a528ddb955b1c7f838a443e3e940eb66c"
+        },
+        {
+          "role": "teacher_agent_live_session_schema",
+          "path": "schema/teacher_agent_live_session.schema.json",
+          "sha256": "dd6b72856eca38e0f80c670da735e8e036a3b5c74529b9cf02d4f145f68b908a"
+        },
+        {
+          "role": "teacher_agent_session_schema",
+          "path": "schema/teacher_agent_session.schema.json",
+          "sha256": "26eb68739011094e211c46b9b06d341023b89817dad89f47db7d98c014657fb9"
+        },
+        {
+          "role": "teacher_agent_skill_library_v1",
+          "path": "data/teacher_agent_skill_library.json",
+          "sha256": "868c05a5c71636e6bd28a3e883d3fc8528f3307ef056ebe112887870cc3950b3"
+        },
+        {
+          "role": "teacher_agent_skill_library_v1_schema",
+          "path": "schema/teacher_agent_skill_library.schema.json",
+          "sha256": "6d8c4eea44d02f2d94324a4dcae31751c6bdeb2098b9985b78a9fbeb0fc08371"
+        },
+        {
+          "role": "teacher_agent_skill_library_v2",
+          "path": "data/teacher_agent_skill_library_v2.json",
+          "sha256": "e272fb7501408480df48eb246d5b31c422bdf3472c3e7e367ffb0a50f3cfdfe0"
+        },
+        {
+          "role": "teacher_agent_skill_library_v2_schema",
+          "path": "schema/teacher_agent_skill_library_v2.schema.json",
+          "sha256": "79ba85a9675c46b6802964c206ce2122d426f140abb7dff66586e2299c92c33e"
+        }
+      ],
+      "binding_sha256": "d2c3c569aa812921b3514bb4f95c1c62e08ed5a6ce4bc05b9162eb6c287ef058",
+      "evidence_summary": {
+        "neural_v1_materialization_gate_passed": false,
+        "runtime_skill_count": 16,
+        "free_text_benchmark_case_count": 28,
+        "free_text_benchmark_provider": "deepseek",
+        "free_text_benchmark_model": "deepseek-v4-flash",
+        "free_text_online_development_run_completed": true,
+        "learning_outcome_provenance": "author_constructed_demo_not_real",
+        "frontend_resource_count": 3
+      },
+      "claim_boundaries": {
+        "benchmark_expert_validated": false,
+        "real_students_in_benchmark": false,
+        "free_text_diagnostic_accuracy_established": false,
+        "skill_routing_quality_established": false,
+        "deployment_accuracy_established": false,
+        "real_learner_effectiveness_established": false
+      }
+    }
   },
   "release_artifact": {
     "artifact": "dist/teaching_skill_miner-1.2.0-py3-none-any.whl",
-    "size_bytes": 566603,
-    "uncompressed_bytes": 2352568,
-    "member_count": 98,
-    "sha256": "bad5ea0b1abdb41b959a66fb5116c259a047fc46eccd8497d68bd7da3596cdfe",
+    "size_bytes": 774723,
+    "uncompressed_bytes": 3161320,
+    "member_count": 134,
+    "sha256": "ef2a9bd8d93f20b3b8d2db60e0e90a916dd100c9569aeb2323f7d800a7f7dddf",
     "distribution": "teaching-skill-miner",
     "version": "1.2.0",
     "license_expression": "LicenseRef-Academic-Evaluation-1.0",
     "requires_python": ">=3.10",
     "release_audit_finding_count": 0,
-    "members_sha256": "2475a862efdfa3db46a191d332ac055add9997d45200f7e6216cdd70d05f559a"
+    "members_sha256": "cfd6b0244671b1b2b441e5d29155e6831b5b83386ca705b79f61034063c1a408"
   },
   "public_artifacts": {
     "directory": "artifacts/public",
     "member_count": 14,
-    "total_size_bytes": 90376,
+    "total_size_bytes": 90620,
     "release_audit_finding_count": 0,
-    "members_sha256": "ede68664c60adc802f1a18231c04a8597e70cbc110a58eb5e1067ecc365495c9"
+    "members_sha256": "bcd33f157834019fa6292ea84fa373c736781585648b76925c89093c8a7bfe18"
   },
   "environment": {
     "python": "3.13.11",
@@ -189,11 +335,155 @@
   },
   "verification_binding": {
     "verification_scope": {
-      "file_count": 85,
-      "sha256": "92b4f38feb3af8a70a709a1b460abfbd8a2a9565f89f40d6c08bad288ca4b368"
+      "file_count": 247,
+      "sha256": "cdd06b943eb21e652fbaa286d62d5b51d5677b3558f836c8f9af1dd08f8a10c5"
     },
-    "project_verification_receipt_sha256": "499901e96dd4dbfe7a1814e071e3b388c9b65612604000d790d513db4e12e223",
-    "exact_wheel_verification_receipt_sha256": "a3ff7b90918bbfd96378033cf790079c2882fd929fde6886dcc52b89124bce5a"
+    "project_verification_receipt_sha256": "2c8aaa1197e7b6bf8672b6b04f16d27d1172611472ae5aaecc7ac7b484cdf021",
+    "exact_wheel_verification_receipt_sha256": "99580bad389d72b47f1e8bb59f8cccac01338e7442cae269aa4c4355efec82c5"
+  },
+  "task_two_evidence": {
+    "file_count": 24,
+    "files": [
+      {
+        "role": "general_teaching_skill_schema",
+        "path": "schema/general_teaching_skill.schema.json",
+        "sha256": "4ad3fb07ef7b3aa0288ee84b6b5358441420c9ae46be08631119212261157e90"
+      },
+      {
+        "role": "neural_v1_runtime_manifest",
+        "path": "data/neural_v1_runtime_manifest.json",
+        "sha256": "e18108cc9b522e9a9802eb5931ec27060801377a8b63fe26a5c1e24c6caa67e5"
+      },
+      {
+        "role": "neural_v1_runtime_manifest_schema",
+        "path": "schema/neural_v1_runtime_manifest.schema.json",
+        "sha256": "3a09bc7e2f5887a677f7ad2db2f180b7587c5890d09b0b6a62d00a3df5f3d729"
+      },
+      {
+        "role": "teacher_agent_dashboard_css",
+        "path": "teaching_skill_miner/web/teacher_agent_demo.css",
+        "sha256": "010ef527c2f4f78f3737543609fea9dcac793960806dd5c31c640a68999e71e3"
+      },
+      {
+        "role": "teacher_agent_dashboard_html",
+        "path": "teaching_skill_miner/web/teacher_agent_demo.html",
+        "sha256": "83d183f5f91cfcd7ae77780129ac038c3c1d25f72df55171faa22e94812f2468"
+      },
+      {
+        "role": "teacher_agent_dashboard_js",
+        "path": "teaching_skill_miner/web/teacher_agent_demo.js",
+        "sha256": "b271baaf60775de637f9ef811b0a0c226636f2db953f9988aec40191235d889a"
+      },
+      {
+        "role": "teacher_agent_demo_input",
+        "path": "data/teacher_agent_demo_input.json",
+        "sha256": "1d2e71cd569fe45ea5a0cc93a9356fe8e22375e662c2a77f07352c9f3b7b0cd5"
+      },
+      {
+        "role": "teacher_agent_evaluation_cases",
+        "path": "data/teacher_agent_evaluation_cases.json",
+        "sha256": "277021edb55149c05de7fcb1297dc7f187efa0d369fd3f52f3549ea979e09b2b"
+      },
+      {
+        "role": "teacher_agent_evaluation_cases_schema",
+        "path": "schema/teacher_agent_evaluation_cases.schema.json",
+        "sha256": "4bae3d88be85b0ec95fc6e12f36cefc2d91280bf1bd0f30731e3ae6057ea53c1"
+      },
+      {
+        "role": "teacher_agent_evaluation_report_schema",
+        "path": "schema/teacher_agent_evaluation_report.schema.json",
+        "sha256": "0650beaabe36fd049b90449cebce04eedf6e617a989a69a4e56c6bd99b5af523"
+      },
+      {
+        "role": "teacher_agent_free_text_benchmark",
+        "path": "data/teacher_agent_free_text_benchmark.json",
+        "sha256": "6c2b2ec6b9a829f653c4cf452c5367162b0a4c717a7cf6df4d8d272982fa6b86"
+      },
+      {
+        "role": "teacher_agent_free_text_benchmark_receipt",
+        "path": "data/teacher_agent_free_text_benchmark_receipt.json",
+        "sha256": "10bf93e645ac5ed193e030b46d952f40ece74d1076da661a17b32a8496c26492"
+      },
+      {
+        "role": "teacher_agent_free_text_benchmark_receipt_schema",
+        "path": "schema/teacher_agent_free_text_benchmark_receipt.schema.json",
+        "sha256": "f3dee5db8b6e8a16559d5b0378aad3acf92105dc24ec34af7f3900ed681d46ec"
+      },
+      {
+        "role": "teacher_agent_free_text_benchmark_report_schema",
+        "path": "schema/teacher_agent_free_text_benchmark_report.schema.json",
+        "sha256": "48a7a19eab2ce402c2cf406e2f67548eda21054953d89d53b100b2f6d7efd220"
+      },
+      {
+        "role": "teacher_agent_free_text_benchmark_schema",
+        "path": "schema/teacher_agent_free_text_benchmark.schema.json",
+        "sha256": "d362cce22f84de62cac7b73aed326ec2e59bb4187f3135440ebfe57d2aebaecf"
+      },
+      {
+        "role": "teacher_agent_learning_observation_schema",
+        "path": "schema/teacher_agent_learning_observation.schema.json",
+        "sha256": "b05e3e339d722b006da84603d37a67da4ea84c77d02c75dcbbefe4e8ba6d2b20"
+      },
+      {
+        "role": "teacher_agent_learning_outcome_demo",
+        "path": "data/teacher_agent_learning_outcome_demo.json",
+        "sha256": "636008864dd6fa93e7a8f28d8a67cc0441b8df47b8fb4b8f83477e6043a69824"
+      },
+      {
+        "role": "teacher_agent_learning_report_schema",
+        "path": "schema/teacher_agent_learning_report.schema.json",
+        "sha256": "001998ed4b0516e3a51ccf2abb3fc49a528ddb955b1c7f838a443e3e940eb66c"
+      },
+      {
+        "role": "teacher_agent_live_session_schema",
+        "path": "schema/teacher_agent_live_session.schema.json",
+        "sha256": "dd6b72856eca38e0f80c670da735e8e036a3b5c74529b9cf02d4f145f68b908a"
+      },
+      {
+        "role": "teacher_agent_session_schema",
+        "path": "schema/teacher_agent_session.schema.json",
+        "sha256": "26eb68739011094e211c46b9b06d341023b89817dad89f47db7d98c014657fb9"
+      },
+      {
+        "role": "teacher_agent_skill_library_v1",
+        "path": "data/teacher_agent_skill_library.json",
+        "sha256": "868c05a5c71636e6bd28a3e883d3fc8528f3307ef056ebe112887870cc3950b3"
+      },
+      {
+        "role": "teacher_agent_skill_library_v1_schema",
+        "path": "schema/teacher_agent_skill_library.schema.json",
+        "sha256": "6d8c4eea44d02f2d94324a4dcae31751c6bdeb2098b9985b78a9fbeb0fc08371"
+      },
+      {
+        "role": "teacher_agent_skill_library_v2",
+        "path": "data/teacher_agent_skill_library_v2.json",
+        "sha256": "e272fb7501408480df48eb246d5b31c422bdf3472c3e7e367ffb0a50f3cfdfe0"
+      },
+      {
+        "role": "teacher_agent_skill_library_v2_schema",
+        "path": "schema/teacher_agent_skill_library_v2.schema.json",
+        "sha256": "79ba85a9675c46b6802964c206ce2122d426f140abb7dff66586e2299c92c33e"
+      }
+    ],
+    "binding_sha256": "d2c3c569aa812921b3514bb4f95c1c62e08ed5a6ce4bc05b9162eb6c287ef058",
+    "evidence_summary": {
+      "neural_v1_materialization_gate_passed": false,
+      "runtime_skill_count": 16,
+      "free_text_benchmark_case_count": 28,
+      "free_text_benchmark_provider": "deepseek",
+      "free_text_benchmark_model": "deepseek-v4-flash",
+      "free_text_online_development_run_completed": true,
+      "learning_outcome_provenance": "author_constructed_demo_not_real",
+      "frontend_resource_count": 3
+    },
+    "claim_boundaries": {
+      "benchmark_expert_validated": false,
+      "real_students_in_benchmark": false,
+      "free_text_diagnostic_accuracy_established": false,
+      "skill_routing_quality_established": false,
+      "deployment_accuracy_established": false,
+      "real_learner_effectiveness_established": false
+    }
   },
   "research_claim_boundaries": {
     "independent_human_review_complete": false,
@@ -201,6 +491,9 @@
     "prospective_deployment_accuracy_established": false,
     "real_learner_effectiveness_established": false,
     "stable_cross_session_accuracy_0_9_established": false,
+    "teacher_agent_free_text_diagnostic_accuracy_established": false,
+    "teacher_agent_skill_routing_quality_established": false,
+    "teacher_agent_deployment_accuracy_established": false,
     "note": "Release engineering checks do not establish annotation validity, confirmatory multimodal gain, deployment accuracy, or learner effects."
   },
   "unverified_external_state": {

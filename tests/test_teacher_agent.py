@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+from contextlib import redirect_stdout
+from copy import deepcopy
+import io
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+import jsonschema
+
+from teaching_skill_miner.cli import main
+from teaching_skill_miner.io_utils import project_root, read_json
+from teaching_skill_miner.teacher_agent import (
+    TeacherAgentError,
+    advance_teacher_agent_session,
+    evaluate_teacher_agent,
+    session_turn_summary,
+    start_teacher_agent_session,
+    validate_session,
+    validate_skill_library,
+)
+
+
+class TeacherAgentTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = project_root()
+        cls.library = read_json(root / "data/teacher_agent_skill_library.json")
+        cls.demo = read_json(root / "data/teacher_agent_demo_input.json")
+        cls.cases = read_json(root / "data/teacher_agent_evaluation_cases.json")
+
+    def _start(self, profile: dict | None = None) -> dict:
+        return start_teacher_agent_session(
+            self.demo["goal"],
+            profile or self.demo["student_profile"],
+            self.library,
+        )
+
+    def test_public_skill_library_is_valid_and_source_bounded(self) -> None:
+        validate_skill_library(self.library)
+        self.assertEqual(len(self.library["skills"]), 10)
+        primary = [item for item in self.library["skills"] if item["role"] != "support"]
+        self.assertEqual(len(primary), 8)
+        for skill in self.library["skills"]:
+            with self.subTest(skill_id=skill["skill_id"]):
+                self.assertEqual(
+                    skill["source"]["origin"],
+                    "operational_wrapper_from_general_skill_v0",
+                )
+                self.assertEqual(
+                    skill["source"]["general_skill_id"],
+                    "evidence_grounded_adaptive_concept_teaching_v0",
+                )
+
+    def test_neural_v1_runtime_library_and_manifest_are_schema_valid_and_bounded(
+        self,
+    ) -> None:
+        root = project_root()
+        library = read_json(root / "data/teacher_agent_skill_library_v2.json")
+        manifest = read_json(root / "data/neural_v1_runtime_manifest.json")
+        validate_skill_library(library)
+        jsonschema.Draft202012Validator(
+            read_json(root / "schema/teacher_agent_skill_library_v2.schema.json")
+        ).validate(library)
+        jsonschema.Draft202012Validator(
+            read_json(root / "schema/neural_v1_runtime_manifest.schema.json")
+        ).validate(manifest)
+        self.assertEqual(library["derivation"]["general_skill_id"], manifest["skill_id"])
+        self.assertEqual(len(manifest["canonical_phases"]), 9)
+        self.assertFalse(manifest["materialization_gate"]["passed"])
+        self.assertFalse(
+            library["claim_boundary"]["neural_v1_materialization_gate_passed"]
+        )
+
+    def test_free_text_benchmark_is_schema_valid_and_author_constructed(self) -> None:
+        root = project_root()
+        benchmark = read_json(root / "data/teacher_agent_free_text_benchmark.json")
+        jsonschema.Draft202012Validator(
+            read_json(root / "schema/teacher_agent_free_text_benchmark.schema.json")
+        ).validate(benchmark)
+        self.assertGreaterEqual(len(benchmark["cases"]), 24)
+        self.assertFalse(benchmark["claim_boundary"]["expert_validated"])
+        self.assertFalse(benchmark["claim_boundary"]["real_students_involved"])
+
+    def test_public_fixtures_and_generated_artifacts_match_json_schemas(self) -> None:
+        root = project_root()
+        jsonschema.Draft202012Validator(
+            read_json(root / "schema/teacher_agent_skill_library.schema.json")
+        ).validate(self.library)
+        jsonschema.Draft202012Validator(
+            read_json(root / "schema/teacher_agent_evaluation_cases.schema.json")
+        ).validate(self.cases)
+        session = self._start()
+        jsonschema.Draft202012Validator(
+            read_json(root / "schema/teacher_agent_session.schema.json")
+        ).validate(session)
+        report = evaluate_teacher_agent(self.library, self.cases)
+        jsonschema.Draft202012Validator(
+            read_json(root / "schema/teacher_agent_evaluation_report.schema.json")
+        ).validate(report)
+
+    def test_start_emits_only_one_action_and_explicit_state(self) -> None:
+        session = self._start()
+        validate_session(session)
+        self.assertEqual(session["round"], 0)
+        self.assertEqual(session["history"], [])
+        self.assertEqual(
+            session["current_action"]["primary_skill"]["skill_id"],
+            "skill_diagnostic_questioning",
+        )
+        self.assertTrue(
+            session["current_action"]["teacher_action"][
+                "wait_for_student_before_next_action"
+            ]
+        )
+        state = session["student_state"]
+        self.assertEqual(
+            set(state["knowledge_mastery"]),
+            {"prerequisite", "conceptual", "procedural", "transfer"},
+        )
+        self.assertIn("misconceptions", state)
+        self.assertIn("understanding_signal", state)
+        self.assertIn("next_focus", state)
+        self.assertTrue(session["current_action"]["selection_reason"])
+
+    def test_misconception_triggers_correction_and_can_be_resolved(self) -> None:
+        session = self._start()
+        session = advance_teacher_agent_session(
+            session,
+            learner_response="状态只看上一步。",
+            signal="misconception",
+            misconception_tag="missing_transition",
+        )
+        self.assertEqual(
+            session["current_action"]["primary_skill"]["skill_id"],
+            "skill_misconception_contrast",
+        )
+        self.assertEqual(session["student_state"]["misconceptions"][0]["status"], "active")
+        session = advance_teacher_agent_session(
+            session,
+            learner_response="还需要考虑从前两步转移。",
+            signal="correct",
+        )
+        self.assertEqual(
+            session["student_state"]["misconceptions"][0]["status"],
+            "resolved",
+        )
+
+    def test_three_no_progress_signals_stop_and_escalate(self) -> None:
+        session = self._start()
+        for signal in ("confused", "no_response", "confused"):
+            session = advance_teacher_agent_session(
+                session,
+                learner_response="不知道",
+                signal=signal,
+            )
+        self.assertEqual(session["status"], "terminated_unable")
+        self.assertEqual(session["round"], 3)
+        self.assertEqual(session["current_action"]["type"], "terminate_unable")
+        with self.assertRaisesRegex(TeacherAgentError, "terminal"):
+            advance_teacher_agent_session(
+                session,
+                learner_response="继续",
+                signal="correct",
+            )
+
+    def test_demo_reaches_success_with_multiple_skill_switches(self) -> None:
+        session = self._start()
+        for item in self.demo["demo_feedback_sequence"]:
+            if session["status"] != "active":
+                break
+            session = advance_teacher_agent_session(
+                session,
+                learner_response=item["response"],
+                signal=item["signal"],
+                misconception_tag=item.get("misconception_tag"),
+            )
+        self.assertEqual(session["status"], "succeeded")
+        self.assertEqual(session["round"], 9)
+        self.assertGreaterEqual(session["control"]["skill_switch_count"], 5)
+        self.assertTrue(
+            all(
+                session["student_state"]["knowledge_mastery"][dimension]
+                >= session["goal"]["success_thresholds"][dimension]
+                for dimension in session["goal"]["success_thresholds"]
+            )
+        )
+        self.assertFalse(
+            session["claim_boundary"]["real_learning_effectiveness_established"]
+        )
+
+    def test_fixed_baseline_does_not_switch(self) -> None:
+        session = start_teacher_agent_session(
+            self.demo["goal"],
+            self.demo["student_profile"],
+            self.library,
+            policy="fixed_single_skill_baseline",
+            fixed_skill_id="skill_stepwise_scaffolding",
+        )
+        for signal in ("partial", "correct", "misconception", "correct"):
+            self.assertEqual(
+                session["current_action"]["primary_skill"]["skill_id"],
+                "skill_stepwise_scaffolding",
+            )
+            session = advance_teacher_agent_session(
+                session,
+                learner_response="fixture response",
+                signal=signal,
+                misconception_tag="fixture_error" if signal == "misconception" else None,
+            )
+        self.assertEqual(session["control"]["skill_switch_count"], 0)
+
+    def test_integrity_rejects_tampered_session(self) -> None:
+        session = self._start()
+        tampered = deepcopy(session)
+        tampered["student_state"]["knowledge_mastery"]["conceptual"] = 1.0
+        with self.assertRaisesRegex(TeacherAgentError, "integrity"):
+            validate_session(tampered)
+
+    def test_evaluation_is_reproducible_and_beats_fixed_simulation(self) -> None:
+        first = evaluate_teacher_agent(self.library, self.cases)
+        second = evaluate_teacher_agent(self.library, self.cases)
+        self.assertEqual(first, second)
+        self.assertTrue(first["passed"], first)
+        self.assertEqual(first["aggregate"]["student_state_judgement_rate"], 1.0)
+        self.assertEqual(first["aggregate"]["teaching_decision_match_rate"], 1.0)
+        self.assertEqual(first["aggregate"]["case_count"], 4)
+        self.assertEqual(first["aggregate"]["expected_success_case_count"], 3)
+        self.assertEqual(first["aggregate"]["expected_unable_case_count"], 1)
+        self.assertEqual(first["aggregate"]["terminal_decision_match_rate"], 1.0)
+        failure = next(
+            row
+            for row in first["cases"]
+            if row["case_id"] == "persistent_no_progress_escalation"
+        )
+        self.assertEqual(failure["adaptive_agent"]["status"], "terminated_unable")
+        self.assertEqual(
+            failure["adaptive_agent"]["termination_reason"],
+            "three consecutive rounds without observable progress",
+        )
+        self.assertGreater(first["aggregate"]["simulated_mean_gain_delta"], 0)
+        self.assertFalse(
+            first["claim_boundary"]["real_learner_effectiveness_established"]
+        )
+
+    def test_summary_is_ui_safe_and_cli_round_trip_persists_session(self) -> None:
+        summary = session_turn_summary(self._start())
+        self.assertEqual(summary["rounds_completed"], 0)
+        self.assertNotIn("skill_library", summary)
+        with tempfile.TemporaryDirectory() as directory:
+            session_path = Path(directory) / "session.json"
+            with redirect_stdout(io.StringIO()):
+                code = main(
+                    [
+                        "teacher-agent-start",
+                        "--input",
+                        str(project_root() / "data/teacher_agent_demo_input.json"),
+                        "--library",
+                        str(project_root() / "data/teacher_agent_skill_library.json"),
+                        "--session",
+                        str(session_path),
+                    ]
+                )
+            self.assertEqual(code, 0)
+            self.assertTrue(session_path.is_file())
+            self.assertEqual(session_path.stat().st_mode & 0o777, 0o600)
+            with redirect_stdout(io.StringIO()):
+                code = main(
+                    [
+                        "teacher-agent-step",
+                        "--session",
+                        str(session_path),
+                        "--response",
+                        "我能说明递归拆分。",
+                        "--signal",
+                        "partial",
+                    ]
+                )
+            self.assertEqual(code, 0)
+            validate_session(json.loads(session_path.read_text(encoding="utf-8")))
+
+
+if __name__ == "__main__":
+    unittest.main()

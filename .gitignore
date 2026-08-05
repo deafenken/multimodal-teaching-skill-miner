@@ -17,6 +17,16 @@ htmlcov/
 .ruff_cache/
 *.log
 
+# Local experiment, temporary, and presentation workspaces are intentionally
+# excluded from the public source release. Reviewed public artifacts belong in
+# artifacts/public/ and are allowlisted separately below.
+/output/
+/runs/
+/tmp/
+/defense/
+/report/
+/.private/
+
 # Real classroom recordings contain identifiable people and must stay local.
 data/real/**
 !data/real/README.md

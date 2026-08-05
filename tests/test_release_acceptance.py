@@ -12,8 +12,10 @@ import zipfile
 
 from scripts.generate_release_acceptance import (
     ACCEPTANCE_SCHEMA,
+    TASK_TWO_RELEASE_FILES,
     AcceptanceError,
     _recompute_teachobs_governance_binding,
+    _task_two_release_binding,
     _teachobs_governance_binding,
     build_acceptance,
     record_project,
@@ -31,9 +33,11 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         )
 
     def _fixture(self, root: Path) -> dict[str, Path]:
+        (root / "teaching_skill_miner/web").mkdir(parents=True)
         (root / "scripts").mkdir()
         (root / "tests").mkdir()
         (root / "release").mkdir()
+        (root / "docs").mkdir()
         (root / "dist").mkdir()
         public = root / "artifacts/public"
         public.mkdir(parents=True)
@@ -48,10 +52,20 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         (root / "scripts/generate_release_acceptance.py").write_text(
             "# fixture\n", encoding="utf-8"
         )
-        (root / "tests/test_fixture.py").write_text("def test_ok(): pass\n", encoding="utf-8")
+        (root / "tests/test_fixture.py").write_text(
+            "def test_ok(): pass\n", encoding="utf-8"
+        )
         (root / "release/public_json_resources.txt").write_text(
             "schema/example.json\n", encoding="utf-8"
         )
+        (root / "teaching_skill_miner/__init__.py").write_text(
+            '__version__ = "1.2.0"\n', encoding="utf-8"
+        )
+        (root / "teaching_skill_miner/web/index.html").write_text(
+            "<!doctype html><title>fixture</title>\n", encoding="utf-8"
+        )
+        (root / "README.md").write_text("# Fixture\n", encoding="utf-8")
+        (root / "docs/status.md").write_text("# Status\n", encoding="utf-8")
         (public / "README.md").write_text(
             "Aggregate public evidence only.\n", encoding="utf-8"
         )
@@ -65,7 +79,9 @@ class ReleaseAcceptanceTests(unittest.TestCase):
             "Requires-Python: >=3.10\n\n"
         )
         with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr("teaching_skill_miner/__init__.py", '__version__ = "1.2.0"\n')
+            archive.writestr(
+                "teaching_skill_miner/__init__.py", '__version__ = "1.2.0"\n'
+            )
             archive.writestr("teaching_skill_miner-1.2.0.dist-info/METADATA", metadata)
         (root / "second-dist").mkdir()
         second_wheel = root / "second-dist" / wheel.name
@@ -165,7 +181,9 @@ class ReleaseAcceptanceTests(unittest.TestCase):
             )
         )
 
-    def test_acceptance_is_deterministic_and_contains_only_bound_positive_claims(self) -> None:
+    def test_acceptance_is_deterministic_and_contains_only_bound_positive_claims(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths = self._fixture(root)
@@ -187,9 +205,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                 False,
             )
             self.assertIs(
-                result["conditional_validation"][
-                    "teachobs_private_receipt_audit_run"
-                ],
+                result["conditional_validation"]["teachobs_private_receipt_audit_run"],
                 False,
             )
             self.assertTrue(
@@ -200,10 +216,75 @@ class ReleaseAcceptanceTests(unittest.TestCase):
             self.assertFalse(boundaries["confirmatory_multimodal_gain_established"])
             self.assertFalse(boundaries["prospective_deployment_accuracy_established"])
             self.assertFalse(boundaries["real_learner_effectiveness_established"])
+            self.assertFalse(
+                boundaries["teacher_agent_free_text_diagnostic_accuracy_established"]
+            )
+            self.assertIsNone(result["task_two_evidence"])
 
-    def test_acceptance_rejects_stale_wheel_public_audit_and_verification_scope(self) -> None:
-        for tamper in ("wheel", "public", "scope"):
-            with self.subTest(tamper=tamper), tempfile.TemporaryDirectory() as directory:
+    def test_task_two_release_binding_is_complete_safe_and_stale_sensitive(
+        self,
+    ) -> None:
+        project = Path(__file__).resolve().parents[1]
+        current = _task_two_release_binding(project)
+        self.assertIsNotNone(current)
+        assert current is not None
+        self.assertEqual(current["file_count"], len(TASK_TWO_RELEASE_FILES))
+        self.assertEqual(current["evidence_summary"]["runtime_skill_count"], 16)
+        self.assertEqual(
+            current["evidence_summary"]["free_text_benchmark_case_count"], 28
+        )
+        self.assertTrue(
+            current["evidence_summary"]["free_text_online_development_run_completed"]
+        )
+        self.assertFalse(
+            current["evidence_summary"]["neural_v1_materialization_gate_passed"]
+        )
+        self.assertFalse(current["claim_boundaries"]["deployment_accuracy_established"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for relative in TASK_TWO_RELEASE_FILES.values():
+                source = project / relative
+                target = root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
+            copied = _task_two_release_binding(root)
+            self.assertEqual(copied, current)
+
+            receipt_path = (
+                root
+                / TASK_TWO_RELEASE_FILES["teacher_agent_free_text_benchmark_receipt"]
+            )
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["claim_boundary"]["deployment_accuracy_established"] = True
+            self._write_json(receipt_path, receipt)
+            with self.assertRaisesRegex(AcceptanceError, "stale or overclaimed"):
+                _task_two_release_binding(root)
+
+            shutil.copyfile(
+                project
+                / TASK_TWO_RELEASE_FILES["teacher_agent_free_text_benchmark_receipt"],
+                receipt_path,
+            )
+            (root / TASK_TWO_RELEASE_FILES["teacher_agent_dashboard_js"]).unlink()
+            with self.assertRaisesRegex(AcceptanceError, "partial"):
+                _task_two_release_binding(root)
+
+    def test_acceptance_rejects_stale_wheel_public_audit_and_verification_scope(
+        self,
+    ) -> None:
+        for tamper in (
+            "wheel",
+            "public",
+            "verification_script",
+            "package_source",
+            "dashboard",
+            "documentation",
+        ):
+            with (
+                self.subTest(tamper=tamper),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 root = Path(directory)
                 paths = self._fixture(root)
                 exact, project = self._receipts(root, paths)
@@ -214,9 +295,22 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                     (paths["public"] / "README.md").write_text(
                         "changed after audit\n", encoding="utf-8"
                     )
-                else:
+                elif tamper == "verification_script":
                     (root / "scripts/verify_project.sh").write_text(
                         "exit 1\n", encoding="utf-8"
+                    )
+                elif tamper == "package_source":
+                    (root / "teaching_skill_miner/__init__.py").write_text(
+                        '__version__ = "tampered"\n', encoding="utf-8"
+                    )
+                elif tamper == "dashboard":
+                    (root / "teaching_skill_miner/web/index.html").write_text(
+                        "<!doctype html><title>changed</title>\n",
+                        encoding="utf-8",
+                    )
+                else:
+                    (root / "docs/status.md").write_text(
+                        "# Changed after verification\n", encoding="utf-8"
                     )
                 with self.assertRaises(AcceptanceError):
                     self._build(
@@ -227,7 +321,9 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                         root / "acceptance.json",
                     )
 
-    def test_failed_or_incomplete_evidence_cannot_create_positive_receipts(self) -> None:
+    def test_failed_or_incomplete_evidence_cannot_create_positive_receipts(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths = self._fixture(root)
@@ -245,8 +341,10 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                     )
                 )
 
-            junit = paths["junit"].read_text(encoding="utf-8").replace(
-                "failures='0'", "failures='1'"
+            junit = (
+                paths["junit"]
+                .read_text(encoding="utf-8")
+                .replace("failures='0'", "failures='1'")
             )
             paths["junit"].write_text(junit, encoding="utf-8")
             with self.assertRaises(AcceptanceError):
@@ -304,8 +402,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                 )
 
             annotation = (
-                root
-                / "artifacts/private/external_datasets/teachobs/"
+                root / "artifacts/private/external_datasets/teachobs/"
                 "imported_annotations/dataset_audit.json"
             )
             annotation.parent.mkdir(parents=True)
@@ -334,26 +431,18 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                     }
                 },
             )
-            self._write_json(
-                paths["public_audit"], audit_release_path(paths["public"])
-            )
+            self._write_json(paths["public_audit"], audit_release_path(paths["public"]))
             with patch(
                 "scripts.generate_release_acceptance._tool_version",
                 return_value="fixture-version",
             ):
                 project = root / "accepted.json"
-                result = record_project(
-                    arguments(audit_run=True, output=project)
-                )
+                result = record_project(arguments(audit_run=True, output=project))
             self.assertIs(
-                result["conditional_checks"][
-                    "teachobs_private_receipt_audit_passed"
-                ],
+                result["conditional_checks"]["teachobs_private_receipt_audit_passed"],
                 True,
             )
-            binding = result["conditional_checks"][
-                "teachobs_private_receipt_binding"
-            ]
+            binding = result["conditional_checks"]["teachobs_private_receipt_binding"]
             self.assertEqual(binding["file_count"], 6)
             self.assertEqual(len(binding["binding_sha256"]), 64)
             self._build(
@@ -367,7 +456,9 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                 audit_release_path(root / "accepted-release.json")["passed"]
             )
             media.write_text('{"changed":true}\n', encoding="utf-8")
-            with self.assertRaisesRegex(AcceptanceError, "TeachObs ASR receipt is stale"):
+            with self.assertRaisesRegex(
+                AcceptanceError, "TeachObs ASR receipt is stale"
+            ):
                 self._build(
                     root,
                     paths,
@@ -382,16 +473,11 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             human_manifest = (
-                root
-                / "artifacts/private/external_datasets/teachobs/human_fresh/"
+                root / "artifacts/private/external_datasets/teachobs/human_fresh/"
                 "assignment_manifest.json"
             )
-            human_receipt = (
-                root / "artifacts/public/teachobs_human_fresh_receipt.json"
-            )
-            lockbox_draft = (
-                root / "artifacts/public/teachobs_lockbox_fresh_draft.json"
-            )
+            human_receipt = root / "artifacts/public/teachobs_human_fresh_receipt.json"
+            lockbox_draft = root / "artifacts/public/teachobs_lockbox_fresh_draft.json"
             human_manifest.parent.mkdir(parents=True)
             human_receipt.parent.mkdir(parents=True)
             for path in (human_manifest, human_receipt, lockbox_draft):
@@ -414,9 +500,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                 _recompute_teachobs_governance_binding(root, binding),
                 binding,
             )
-            with self.assertRaisesRegex(
-                AcceptanceError, "requires human manifest"
-            ):
+            with self.assertRaisesRegex(AcceptanceError, "requires human manifest"):
                 _teachobs_governance_binding(
                     root,
                     human_manifest=human_manifest,
@@ -469,17 +553,11 @@ class ReleaseAcceptanceTests(unittest.TestCase):
             self.assertIn(required, benchmark_gate)
         self.assertLess(
             benchmark_gate.index("teachobs_benchmark_required=true"),
-            benchmark_gate.index(
-                "check_teachobs_external_study.py benchmark"
-            ),
+            benchmark_gate.index("check_teachobs_external_study.py benchmark"),
         )
         self.assertLess(
-            benchmark_gate.index(
-                "check_teachobs_external_study.py benchmark"
-            ),
-            benchmark_gate.index(
-                "check_teachobs_external_study.py human"
-            ),
+            benchmark_gate.index("check_teachobs_external_study.py benchmark"),
+            benchmark_gate.index("check_teachobs_external_study.py human"),
         )
         self.assertLess(
             benchmark_gate.index("check_teachobs_external_study.py human"),
@@ -495,11 +573,11 @@ class ReleaseAcceptanceTests(unittest.TestCase):
             "--transcript-materialization-manifest",
             verify_wheel,
         )
-        self.assertIn("cmp \"$wheel\" \"$comparison_wheel\"", verify_project)
+        self.assertIn('cmp "$wheel" "$comparison_wheel"', verify_project)
         self.assertIn("scripts/verify_project.sh", finalizer)
         self.assertIn("scripts/verify_release_wheel.sh", finalizer)
-        self.assertIn("release-audit \"$candidate_wheel\"", finalizer)
-        self.assertIn("release-audit \"$staged_acceptance\"", finalizer)
+        self.assertIn('release-audit "$candidate_wheel"', finalizer)
+        self.assertIn('release-audit "$staged_acceptance"', finalizer)
         self.assertIn("generate_release_acceptance.py acceptance", finalizer)
         self.assertLess(
             finalizer.index("generate_release_acceptance.py pending"),
@@ -515,9 +593,13 @@ class ReleaseAcceptanceTests(unittest.TestCase):
             )
             self.assertEqual(result["overall_status"], "stale_not_accepted")
             self.assertIs(result["engineering_release_accepted"], False)
-            self.assertNotIn('"overall_status":"passed"', output.read_text(encoding="utf-8"))
+            self.assertNotIn(
+                '"overall_status":"passed"', output.read_text(encoding="utf-8")
+            )
 
-    def test_checked_in_acceptance_is_explicitly_pending_or_machine_generated(self) -> None:
+    def test_checked_in_acceptance_is_explicitly_pending_or_machine_generated(
+        self,
+    ) -> None:
         project_root = Path(__file__).resolve().parents[1]
         receipt = json.loads(
             (project_root / "artifacts/release_acceptance_1.2.0.json").read_text(
@@ -536,7 +618,9 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         if receipt["schema_version"].endswith(".pending.v1"):
             self.assertEqual(receipt["overall_status"], "stale_not_accepted")
             self.assertIs(receipt["engineering_release_accepted"], False)
-            self.assertIs(receipt["prior_acceptance_values_valid_for_current_source"], False)
+            self.assertIs(
+                receipt["prior_acceptance_values_valid_for_current_source"], False
+            )
         else:
             self.assertEqual(receipt["schema_version"], ACCEPTANCE_SCHEMA)
             self.assertEqual(

@@ -5,9 +5,12 @@ from importlib import resources
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Any
 import webbrowser
+
+from .release_audit import SENSITIVE_DATA_FIELDS, audit_release_path
 
 
 DASHBOARD_PACKAGE = "teaching_skill_miner.web"
@@ -45,6 +48,46 @@ def dashboard_self_check() -> dict[str, Any]:
     forbidden_matches = [
         marker for marker in forbidden_release_paths if marker in text
     ]
+    embedded_media_markers = (
+        "data:video/",
+        "data:audio/",
+        "data:image/",
+        "data:application/octet-stream",
+        "<video",
+        "<audio",
+    )
+    embedded_media_matches = [
+        marker for marker in embedded_media_markers if marker in text.casefold()
+    ]
+    row_level_marker_matches = [
+        field
+        for field in sorted(SENSITIVE_DATA_FIELDS)
+        if re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(field)}(?![A-Za-z0-9_])",
+            text,
+        )
+    ]
+    with tempfile.TemporaryDirectory(prefix="tsm-dashboard-audit-") as directory:
+        audit_target = Path(directory) / DASHBOARD_RESOURCE
+        audit_target.write_bytes(payload)
+        release_audit = audit_release_path(audit_target)
+    audit_findings = release_audit["findings"]
+    private_media_embedded = bool(embedded_media_matches) or any(
+        finding["rule"]
+        in {"forbidden_binary_or_archive", "forbidden_binary_signature"}
+        for finding in audit_findings
+    )
+    row_level_private_data_embedded = bool(row_level_marker_matches) or any(
+        finding["rule"] == "row_level_identity_field"
+        for finding in audit_findings
+    )
+    passed = (
+        not missing_markers
+        and not forbidden_matches
+        and not embedded_media_matches
+        and not row_level_marker_matches
+        and release_audit["passed"]
+    )
     return {
         "schema_version": "1.0",
         "dashboard_kind": "public_aggregate_evidence_frontend",
@@ -57,10 +100,15 @@ def dashboard_self_check() -> dict[str, Any]:
         "missing_markers": missing_markers,
         "forbidden_release_paths_absent": not forbidden_matches,
         "forbidden_matches": forbidden_matches,
+        "release_audit_passed": release_audit["passed"],
+        "release_audit_finding_count": release_audit["finding_count"],
+        "release_audit_findings": audit_findings,
+        "embedded_media_matches": embedded_media_matches,
+        "row_level_marker_matches": row_level_marker_matches,
         "external_network_assets_required": False,
-        "private_media_embedded": False,
-        "row_level_private_data_embedded": False,
-        "passed": not missing_markers and not forbidden_matches,
+        "private_media_embedded": private_media_embedded,
+        "row_level_private_data_embedded": row_level_private_data_embedded,
+        "passed": passed,
     }
 
 
@@ -120,7 +168,8 @@ def open_dashboard(
                 "browser_open_requested": open_browser,
                 "browser_open_result": opened if open_browser else None,
                 "public_aggregate_only": True,
-                "private_media_embedded": False,
+                "private_media_embedded": check["private_media_embedded"],
+                "release_audit_passed": check["release_audit_passed"],
             },
             ensure_ascii=False,
             indent=2,

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/neural_v1_runtime_manifest.schema.json",
+  "title": "Public neural-v1 runtime provenance manifest",
+  "type": "object",
+  "required": ["schema", "artifact_kind", "skill_id", "name", "version", "source", "materialization_gate", "canonical_phases", "strategy_ontology", "claim_boundary"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.neural_v1_runtime_manifest.v1"},
+    "artifact_kind": {"const": "public_runtime_link_to_model_assisted_neural_v1"},
+    "skill_id": {"const": "evidence_grounded_multimodal_teaching_neural_v1"},
+    "name": {"type": "string", "minLength": 1},
+    "version": {"const": "1.0-provisional"},
+    "source": {
+      "type": "object",
+      "required": ["training_input_lecture_count", "training_input_course_count", "inference_protocol", "candidate_sha256", "structural_audit_sha256"],
+      "properties": {
+        "training_input_lecture_count": {"const": 10},
+        "training_input_course_count": {"const": 2},
+        "inference_protocol": {"const": "grouped_5fold_out_of_fold_development"},
+        "candidate_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "structural_audit_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "materialization_gate": {
+      "type": "object",
+      "required": ["passed", "eligible_prediction_count", "excluded_prediction_count", "observed_phase_count", "observed_consensus_strategy_count", "runtime_use", "display_label"],
+      "properties": {
+        "passed": {"const": false},
+        "eligible_prediction_count": {"const": 0},
+        "excluded_prediction_count": {"type": "integer", "minimum": 1},
+        "observed_phase_count": {"const": 0},
+        "observed_consensus_strategy_count": {"const": 0},
+        "runtime_use": {"const": "provisional_normative_execution_ontology_only"},
+        "display_label": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "canonical_phases": {"type": "array", "minItems": 9, "maxItems": 9, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "strategy_ontology": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["runtime_library_uses_neural_v1_ontology", "neural_v1_passed_materialization_gate", "phases_are_confirmed_observed_consensus", "strategies_are_confirmed_observed_consensus", "recognition_accuracy_established", "cross_course_generality_established", "teaching_effectiveness_established"],
+      "properties": {
+        "runtime_library_uses_neural_v1_ontology": {"const": true},
+        "neural_v1_passed_materialization_gate": {"const": false},
+        "phases_are_confirmed_observed_consensus": {"const": false},
+        "strategies_are_confirmed_observed_consensus": {"const": false},
+        "recognition_accuracy_established": {"const": false},
+        "cross_course_generality_established": {"const": false},
+        "teaching_effectiveness_established": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

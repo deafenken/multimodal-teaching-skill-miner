@@ -50,6 +50,11 @@ class DashboardTests(unittest.TestCase):
     def test_dashboard_is_single_file_public_aggregate_ui(self) -> None:
         report = dashboard_self_check()
         self.assertTrue(report["passed"], report)
+        self.assertTrue(report["release_audit_passed"], report)
+        self.assertEqual(report["release_audit_finding_count"], 0)
+        self.assertEqual(report["release_audit_findings"], [])
+        self.assertEqual(report["embedded_media_matches"], [])
+        self.assertEqual(report["row_level_marker_matches"], [])
         self.assertGreater(report["size_bytes"], 20_000)
         self.assertEqual(len(report["sha256"]), 64)
         parser = _DashboardParser()
@@ -147,6 +152,31 @@ class DashboardTests(unittest.TestCase):
         report = json.loads(output.getvalue())
         self.assertTrue(report["passed"])
         self.assertFalse(report["private_media_embedded"])
+        self.assertFalse(report["row_level_private_data_embedded"])
+        self.assertTrue(report["release_audit_passed"])
+
+    def test_dashboard_self_check_derives_privacy_result_from_release_audit(
+        self,
+    ) -> None:
+        contaminated = self.payload + b"\nparticipant_id\n"
+        with patch(
+            "teaching_skill_miner.dashboard.dashboard_html_bytes",
+            return_value=contaminated,
+        ):
+            report = dashboard_self_check()
+        self.assertFalse(report["passed"])
+        self.assertTrue(report["release_audit_passed"])
+        self.assertTrue(report["row_level_private_data_embedded"])
+        self.assertEqual(report["row_level_marker_matches"], ["participant_id"])
+
+        with patch(
+            "teaching_skill_miner.dashboard.dashboard_html_bytes",
+            return_value=self.payload + b"\ndata:image/png;base64,AAAA\n",
+        ):
+            media_report = dashboard_self_check()
+        self.assertFalse(media_report["passed"])
+        self.assertTrue(media_report["private_media_embedded"])
+        self.assertEqual(media_report["embedded_media_matches"], ["data:image/"])
 
     def test_dashboard_materializes_exact_reviewed_html(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

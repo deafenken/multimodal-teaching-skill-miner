@@ -32,14 +32,16 @@ class ReleasePackagingTests(unittest.TestCase):
             "schema/example.json": "{}\n",
             "configs/example.json": "{}\n",
             PUBLIC_JSON_ALLOWLIST.as_posix(): (
-                "configs/example.json\n"
-                "schema/example.json\n"
+                "configs/example.json\nschema/example.json\n"
             ),
         }
-        files.update({name: "<!doctype html><title>fixture</title>\n" for name in PACKAGE_RESOURCE_FILES})
         files.update(
-            {f"data/{name}": "{}\n" for name in PUBLIC_DATA_FILES}
+            {
+                name: "<!doctype html><title>fixture</title>\n"
+                for name in PACKAGE_RESOURCE_FILES
+            }
         )
+        files.update({f"data/{name}": "{}\n" for name in PUBLIC_DATA_FILES})
         files.update(
             {
                 f"data/transcripts/{name}": '{"fixture": true}\n'
@@ -209,29 +211,59 @@ class ReleasePackagingTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("include-package-data = false", pyproject)
         self.assertNotIn('"data/transcripts/*.json"', pyproject)
-        self.assertNotIn('data/transcripts/*.json', build_script)
+        self.assertNotIn("data/transcripts/*.json", build_script)
         self.assertNotIn('"schema/*.json"', pyproject)
         self.assertNotIn('"configs/*.json"', pyproject)
-        self.assertNotIn("find \"$repo_root/$public_directory\"", build_script)
-        self.assertIn('"teaching_skill_miner.web" = ["index.html"]', pyproject)
-        self.assertIn("teaching_skill_miner/web/index.html", build_script)
+        self.assertNotIn('find "$repo_root/$public_directory"', build_script)
+        self.assertIn('"private_demo.html"', pyproject)
+        self.assertIn('"private_skill_demo.css"', pyproject)
+        self.assertIn('"private_skill_demo.js"', pyproject)
+        for resource in PACKAGE_RESOURCE_FILES:
+            self.assertIn(resource, build_script)
+            self.assertIn(f'"{Path(resource).name}"', pyproject)
+        for filename in PUBLIC_DATA_FILES:
+            self.assertIn(f"data/{filename}", pyproject)
+            self.assertIn(f"data/{filename}", build_script)
         self.assertIn("python_command=${PYTHON:-python3}", dashboard_script)
-        self.assertIn('"$python_command" -m teaching_skill_miner dashboard', dashboard_script)
+        self.assertIn(
+            '"$python_command" -m teaching_skill_miner dashboard', dashboard_script
+        )
         self.assertIn(
             '"package_resource_files": list(PACKAGE_RESOURCE_FILES)',
             allowlist_script,
         )
         for filename in BUNDLED_TRANSCRIPTS:
-            self.assertIn(f'data/transcripts/{filename}', pyproject)
-            self.assertIn(f'data/transcripts/{filename}', build_script)
+            self.assertIn(f"data/transcripts/{filename}", pyproject)
+            self.assertIn(f"data/transcripts/{filename}", build_script)
         reviewed = (
-            project_root / PUBLIC_JSON_ALLOWLIST
-        ).read_text(encoding="utf-8").splitlines()
+            (project_root / PUBLIC_JSON_ALLOWLIST)
+            .read_text(encoding="utf-8")
+            .splitlines()
+        )
         self.assertEqual(reviewed, sorted(set(reviewed)))
         for relative in reviewed:
             self.assertIn(f'"{relative}"', pyproject)
         self.assertIn("--check-public-json-source-only", build_script)
         self.assertIn(PUBLIC_JSON_ALLOWLIST.as_posix(), build_script)
+
+    def test_release_audit_rejects_complete_subtitle_tracks(self) -> None:
+        subtitle_suffixes = (".vtt", ".srt", ".ass", ".ssa", ".ttml")
+        for suffix in subtitle_suffixes:
+            with (
+                self.subTest(suffix=suffix),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                subtitle = Path(directory) / f"private-caption{suffix}"
+                subtitle.write_text(
+                    "WEBVTT\n\n00:00.000 --> 00:01.000\nprivate classroom text\n",
+                    encoding="utf-8",
+                )
+                report = audit_release_path(subtitle)
+                self.assertFalse(report["passed"], report)
+                self.assertIn(
+                    "forbidden_binary_or_archive",
+                    {item["rule"] for item in report["findings"]},
+                )
 
     def test_new_wheel_cli_entrypoints_have_safe_help_paths(self) -> None:
         for command in (
@@ -256,8 +288,18 @@ class ReleasePackagingTests(unittest.TestCase):
             "visual-semantic-dataset",
             "visual-semantic-apply",
             "dashboard",
+            "teacher-agent-start",
+            "teacher-agent-step",
+            "teacher-agent-evaluate",
+            "teacher-agent-benchmark",
+            "teacher-agent-outcome-evaluate",
+            "teacher-agent-demo",
+            "teacher-agent-dashboard",
         ):
-            with self.subTest(command=command), redirect_stdout(io.StringIO()) as output:
+            with (
+                self.subTest(command=command),
+                redirect_stdout(io.StringIO()) as output,
+            ):
                 with self.assertRaises(SystemExit) as raised:
                     main([command, "--help"])
                 self.assertEqual(raised.exception.code, 0)

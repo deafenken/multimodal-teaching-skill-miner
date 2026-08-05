@@ -38,6 +38,66 @@ MAX_MEMBER_BYTES = 64 * 1024 * 1024
 MAX_TOTAL_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_MEMBER_COUNT = 10_000
 MAX_COMPRESSION_RATIO = 1_000.0
+TASK_TWO_RELEASE_FILES = {
+    "neural_v1_runtime_manifest": Path("data/neural_v1_runtime_manifest.json"),
+    "teacher_agent_demo_input": Path("data/teacher_agent_demo_input.json"),
+    "teacher_agent_evaluation_cases": Path("data/teacher_agent_evaluation_cases.json"),
+    "teacher_agent_free_text_benchmark": Path(
+        "data/teacher_agent_free_text_benchmark.json"
+    ),
+    "teacher_agent_free_text_benchmark_receipt": Path(
+        "data/teacher_agent_free_text_benchmark_receipt.json"
+    ),
+    "teacher_agent_learning_outcome_demo": Path(
+        "data/teacher_agent_learning_outcome_demo.json"
+    ),
+    "teacher_agent_skill_library_v1": Path("data/teacher_agent_skill_library.json"),
+    "teacher_agent_skill_library_v2": Path("data/teacher_agent_skill_library_v2.json"),
+    "teacher_agent_dashboard_css": Path(
+        "teaching_skill_miner/web/teacher_agent_demo.css"
+    ),
+    "teacher_agent_dashboard_html": Path(
+        "teaching_skill_miner/web/teacher_agent_demo.html"
+    ),
+    "teacher_agent_dashboard_js": Path(
+        "teaching_skill_miner/web/teacher_agent_demo.js"
+    ),
+    "general_teaching_skill_schema": Path("schema/general_teaching_skill.schema.json"),
+    "neural_v1_runtime_manifest_schema": Path(
+        "schema/neural_v1_runtime_manifest.schema.json"
+    ),
+    "teacher_agent_evaluation_cases_schema": Path(
+        "schema/teacher_agent_evaluation_cases.schema.json"
+    ),
+    "teacher_agent_evaluation_report_schema": Path(
+        "schema/teacher_agent_evaluation_report.schema.json"
+    ),
+    "teacher_agent_free_text_benchmark_schema": Path(
+        "schema/teacher_agent_free_text_benchmark.schema.json"
+    ),
+    "teacher_agent_free_text_benchmark_report_schema": Path(
+        "schema/teacher_agent_free_text_benchmark_report.schema.json"
+    ),
+    "teacher_agent_free_text_benchmark_receipt_schema": Path(
+        "schema/teacher_agent_free_text_benchmark_receipt.schema.json"
+    ),
+    "teacher_agent_learning_observation_schema": Path(
+        "schema/teacher_agent_learning_observation.schema.json"
+    ),
+    "teacher_agent_learning_report_schema": Path(
+        "schema/teacher_agent_learning_report.schema.json"
+    ),
+    "teacher_agent_live_session_schema": Path(
+        "schema/teacher_agent_live_session.schema.json"
+    ),
+    "teacher_agent_session_schema": Path("schema/teacher_agent_session.schema.json"),
+    "teacher_agent_skill_library_v1_schema": Path(
+        "schema/teacher_agent_skill_library.schema.json"
+    ),
+    "teacher_agent_skill_library_v2_schema": Path(
+        "schema/teacher_agent_skill_library_v2.schema.json"
+    ),
+}
 
 
 class AcceptanceError(ValueError):
@@ -137,12 +197,18 @@ def _wheel_summary(path: Path) -> tuple[dict[str, Any], dict[str, tuple[int, str
             if len(infos) > MAX_MEMBER_COUNT:
                 raise AcceptanceError("release wheel contains too many members")
             if sum(info.file_size for info in infos) > MAX_TOTAL_MEMBER_BYTES:
-                raise AcceptanceError("release wheel expands beyond the safe receipt limit")
+                raise AcceptanceError(
+                    "release wheel expands beyond the safe receipt limit"
+                )
             for info in infos:
                 if info.is_dir():
-                    raise AcceptanceError("release wheel must not contain directory entries")
+                    raise AcceptanceError(
+                        "release wheel must not contain directory entries"
+                    )
                 if info.file_size > MAX_MEMBER_BYTES:
-                    raise AcceptanceError(f"release wheel member is too large: {info.filename}")
+                    raise AcceptanceError(
+                        f"release wheel member is too large: {info.filename}"
+                    )
                 if info.file_size and not info.compress_size:
                     raise AcceptanceError(
                         f"release wheel member has an invalid compressed size: {info.filename}"
@@ -159,14 +225,18 @@ def _wheel_summary(path: Path) -> tuple[dict[str, Any], dict[str, tuple[int, str
                     raise AcceptanceError(f"duplicate wheel member: {info.filename}")
                 member_payload = archive.read(info)
                 if len(member_payload) != info.file_size:
-                    raise AcceptanceError(f"wheel member size mismatch: {info.filename}")
+                    raise AcceptanceError(
+                        f"wheel member size mismatch: {info.filename}"
+                    )
                 members[info.filename] = (info.file_size, _sha256_bytes(member_payload))
                 if info.filename.endswith(".dist-info/METADATA"):
                     metadata_payloads.append(member_payload)
     except (zipfile.BadZipFile, RuntimeError) as exc:
         raise AcceptanceError(f"invalid release wheel: {path}") from exc
     if len(metadata_payloads) != 1:
-        raise AcceptanceError("release wheel must contain exactly one dist-info/METADATA")
+        raise AcceptanceError(
+            "release wheel must contain exactly one dist-info/METADATA"
+        )
     message = BytesParser(policy=email_policy).parsebytes(metadata_payloads[0])
     metadata_headers = {
         "distribution": "Name",
@@ -180,7 +250,9 @@ def _wheel_summary(path: Path) -> tuple[dict[str, Any], dict[str, tuple[int, str
         if len(values) != 1:
             raise AcceptanceError(f"release wheel metadata must contain one {header}")
         required_metadata[field] = values[0]
-    if any(not isinstance(value, str) or not value for value in required_metadata.values()):
+    if any(
+        not isinstance(value, str) or not value for value in required_metadata.values()
+    ):
         raise AcceptanceError("release wheel metadata is incomplete")
     if str(required_metadata["distribution"]).lower().replace("_", "-") != (
         "teaching-skill-miner"
@@ -211,7 +283,9 @@ def _directory_members(root: Path) -> dict[str, tuple[int, str]]:
         for name in directory_names:
             child = directory_path / name
             if child.is_symlink():
-                raise AcceptanceError(f"public artifact directory contains a symlink: {child}")
+                raise AcceptanceError(
+                    f"public artifact directory contains a symlink: {child}"
+                )
         for name in file_names:
             child = directory_path / name
             payload = _require_regular_file(child, max_bytes=MAX_MEMBER_BYTES)
@@ -219,7 +293,9 @@ def _directory_members(root: Path) -> dict[str, tuple[int, str]]:
             _safe_member_name(relative)
             total_size += len(payload)
             if total_size > MAX_TOTAL_MEMBER_BYTES:
-                raise AcceptanceError("public artifacts exceed the safe receipt byte limit")
+                raise AcceptanceError(
+                    "public artifacts exceed the safe receipt byte limit"
+                )
             members[relative] = (len(payload), _sha256_bytes(payload))
             if len(members) > MAX_MEMBER_COUNT:
                 raise AcceptanceError("public artifacts contain too many files")
@@ -339,12 +415,16 @@ def _teachobs_private_receipt_binding(root: Path) -> dict[str, Any]:
         ),
     }
     for arm in ("transcript_only", "transcript_audio", "transcript_visual", "full"):
-        benchmark_paths[f"teachobs_frozen_{arm}_manifest"] = Path(
-            "artifacts/private/external_datasets/teachobs/frozen_models"
-        ) / arm / "manifest.json"
-        benchmark_paths[f"teachobs_frozen_{arm}_arrays"] = Path(
-            "artifacts/private/external_datasets/teachobs/frozen_models"
-        ) / arm / "arrays.npz"
+        benchmark_paths[f"teachobs_frozen_{arm}_manifest"] = (
+            Path("artifacts/private/external_datasets/teachobs/frozen_models")
+            / arm
+            / "manifest.json"
+        )
+        benchmark_paths[f"teachobs_frozen_{arm}_arrays"] = (
+            Path("artifacts/private/external_datasets/teachobs/frozen_models")
+            / arm
+            / "arrays.npz"
+        )
     benchmark_trigger_roles = (
         "teachobs_benchmark_result",
         "teachobs_benchmark_receipt",
@@ -441,6 +521,244 @@ def _teachobs_governance_binding(
     }
 
 
+def _canonical_json_sha256(value: Any) -> str:
+    try:
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise AcceptanceError("Task 2 evidence is not canonical JSON") from exc
+    return _sha256_bytes(payload)
+
+
+def _task_two_release_binding(root: Path) -> dict[str, Any] | None:
+    """Bind and sanity-check the complete public Task 2 evidence surface.
+
+    A fixture repository may contain no Task 2 files.  Once any Task 2 release
+    resource is present, however, the complete reviewed set is required.  This
+    prevents a partial dashboard, stale neural-v1 status, or detached aggregate
+    benchmark receipt from receiving a positive engineering acceptance.
+    """
+
+    root = root.resolve(strict=True)
+    resolved = {
+        role: root / relative for role, relative in TASK_TWO_RELEASE_FILES.items()
+    }
+    present = {role for role, path in resolved.items() if path.exists()}
+    if not present:
+        return None
+    missing = sorted(set(resolved) - present)
+    if missing:
+        raise AcceptanceError(
+            "Task 2 public evidence is partial; missing roles: " + ", ".join(missing)
+        )
+
+    payloads: dict[str, bytes] = {}
+    documents: dict[str, dict[str, Any]] = {}
+    for role, path in resolved.items():
+        payloads[role] = _require_regular_file(path, max_bytes=MAX_JSON_BYTES)
+        if path.suffix == ".json":
+            documents[role] = _load_json(path)
+
+    neural = documents["neural_v1_runtime_manifest"]
+    neural_gate = neural.get("materialization_gate")
+    neural_boundary = neural.get("claim_boundary")
+    if (
+        neural.get("schema") != "teaching_skill_miner.neural_v1_runtime_manifest.v1"
+        or neural.get("artifact_kind")
+        != "public_runtime_link_to_model_assisted_neural_v1"
+        or not isinstance(neural_gate, dict)
+        or not isinstance(neural_gate.get("passed"), bool)
+        or not isinstance(neural_boundary, dict)
+        or neural_boundary.get("neural_v1_passed_materialization_gate")
+        is not neural_gate["passed"]
+        or neural_boundary.get("recognition_accuracy_established") is not False
+        or neural_boundary.get("cross_course_generality_established") is not False
+        or neural_boundary.get("teaching_effectiveness_established") is not False
+    ):
+        raise AcceptanceError(
+            "neural-v1 runtime manifest overstates or omits its evidence gate"
+        )
+
+    library_v1 = documents["teacher_agent_skill_library_v1"]
+    library_v2 = documents["teacher_agent_skill_library_v2"]
+    library_v1_boundary = library_v1.get("claim_boundary")
+    library_v2_boundary = library_v2.get("claim_boundary")
+    derivation = library_v2.get("derivation")
+    skills = library_v2.get("skills")
+    if (
+        library_v1.get("schema")
+        != "teaching_skill_miner.teacher_agent_skill_library.v1"
+        or not isinstance(library_v1_boundary, dict)
+        or library_v1_boundary.get("real_learner_effectiveness_established")
+        is not False
+        or library_v2.get("schema")
+        != "teaching_skill_miner.teacher_agent_skill_library.v2"
+        or not isinstance(skills, list)
+        or not skills
+        or not isinstance(derivation, dict)
+        or derivation.get("source_artifact") != "data/neural_v1_runtime_manifest.json"
+        or not isinstance(library_v2_boundary, dict)
+        or library_v2_boundary.get("neural_v1_materialization_gate_passed")
+        is not neural_gate["passed"]
+        or library_v2_boundary.get("free_text_grading_accuracy_established")
+        is not False
+        or library_v2_boundary.get("real_learner_effectiveness_established")
+        is not False
+    ):
+        raise AcceptanceError(
+            "Task 2 v2 Skill Library is stale or overstates neural-v1 evidence"
+        )
+
+    demo_input = documents["teacher_agent_demo_input"]
+    evaluation_cases = documents["teacher_agent_evaluation_cases"]
+    evaluation_boundary = evaluation_cases.get("claim_boundary")
+    if (
+        demo_input.get("schema") != "teaching_skill_miner.teacher_agent_demo_input.v1"
+        or evaluation_cases.get("schema")
+        != "teaching_skill_miner.teacher_agent_evaluation_cases.v1"
+        or not isinstance(evaluation_boundary, dict)
+        or evaluation_boundary.get("fixtures_are_synthetic") is not True
+        or evaluation_boundary.get("real_students_involved") is not False
+        or evaluation_boundary.get("free_text_scoring_accuracy_established")
+        is not False
+        or evaluation_boundary.get("real_learning_effect_established") is not False
+    ):
+        raise AcceptanceError(
+            "Task 2 demo/evaluation fixtures cross their claim boundary"
+        )
+
+    benchmark = documents["teacher_agent_free_text_benchmark"]
+    benchmark_boundary = benchmark.get("claim_boundary")
+    benchmark_cases = benchmark.get("cases")
+    if (
+        benchmark.get("schema")
+        != "teaching_skill_miner.teacher_agent_free_text_benchmark.v1"
+        or not isinstance(benchmark_cases, list)
+        or len(benchmark_cases) < 24
+        or not isinstance(benchmark_boundary, dict)
+        or benchmark_boundary.get("source_type")
+        != "author_constructed_not_expert_validated"
+        or benchmark_boundary.get("expert_validated") is not False
+        or benchmark_boundary.get("real_students_involved") is not False
+        or benchmark_boundary.get("free_text_diagnostic_accuracy_established")
+        is not False
+        or benchmark_boundary.get("skill_routing_quality_established") is not False
+        or benchmark_boundary.get("real_learning_effect_established") is not False
+    ):
+        raise AcceptanceError(
+            "Task 2 free-text benchmark overstates development evidence"
+        )
+
+    receipt = documents["teacher_agent_free_text_benchmark_receipt"]
+    receipt_source = receipt.get("source_report")
+    receipt_inputs = receipt.get("input_fingerprints")
+    receipt_config = receipt.get("configuration")
+    receipt_privacy = receipt.get("privacy")
+    receipt_boundary = receipt.get("claim_boundary")
+    if (
+        receipt.get("schema")
+        != "teaching_skill_miner.teacher_agent_free_text_benchmark_receipt.v1"
+        or receipt.get("run_status") != "completed"
+        or not isinstance(receipt_source, dict)
+        or not isinstance(receipt_inputs, dict)
+        or receipt_inputs.get("benchmark_sha256") != _canonical_json_sha256(benchmark)
+        or receipt_inputs.get("skill_library_sha256")
+        != _canonical_json_sha256(library_v2)
+        or not isinstance(receipt_config, dict)
+        or receipt_config.get("provider") != "deepseek"
+        or receipt_config.get("model") != "deepseek-v4-flash"
+        or receipt_config.get("case_count") != len(benchmark_cases)
+        or not isinstance(receipt_privacy, dict)
+        or receipt_privacy.get("raw_case_text_included") is not False
+        or receipt_privacy.get("provider_response_body_included") is not False
+        or receipt_privacy.get("api_key_included") is not False
+        or receipt_privacy.get("only_aggregate_metrics_and_hashes") is not True
+        or not isinstance(receipt_boundary, dict)
+        or receipt_boundary.get("source_type")
+        != "author_constructed_not_expert_validated"
+        or receipt_boundary.get("expert_validated") is not False
+        or receipt_boundary.get("real_students_involved") is not False
+        or receipt_boundary.get("held_out_after_prompt_development") is not False
+        or receipt_boundary.get("free_text_diagnostic_accuracy_established")
+        is not False
+        or receipt_boundary.get("skill_routing_quality_established") is not False
+        or receipt_boundary.get("deployment_accuracy_established") is not False
+        or receipt_boundary.get("real_learning_effect_established") is not False
+    ):
+        raise AcceptanceError(
+            "Task 2 free-text benchmark receipt is stale or overclaimed"
+        )
+
+    report_filename = receipt_source.get("filename")
+    if (
+        not isinstance(report_filename, str)
+        or PurePosixPath(report_filename).name != report_filename
+        or not report_filename.endswith(".json")
+        or not isinstance(receipt_source.get("content_sha256"), str)
+        or SHA256_RE.fullmatch(receipt_source["content_sha256"]) is None
+        or not isinstance(receipt_source.get("run_fingerprint"), str)
+        or SHA256_RE.fullmatch(receipt_source["run_fingerprint"]) is None
+    ):
+        raise AcceptanceError(
+            "Task 2 benchmark receipt has an unsafe source-report pointer"
+        )
+
+    learning = documents["teacher_agent_learning_outcome_demo"]
+    if (
+        learning.get("schema")
+        != "teaching_skill_miner.teacher_agent_learning_observation.v1"
+        or learning.get("provenance") != "author_constructed_demo_not_real"
+    ):
+        raise AcceptanceError(
+            "Task 2 learning outcome demo is not explicitly synthetic"
+        )
+
+    for role, document in documents.items():
+        if role.endswith("_schema") and document.get("$schema") != (
+            "https://json-schema.org/draft/2020-12/schema"
+        ):
+            raise AcceptanceError(f"Task 2 public schema is malformed: {role}")
+
+    rows = [
+        {
+            "role": role,
+            "path": TASK_TWO_RELEASE_FILES[role].as_posix(),
+            "sha256": _sha256_bytes(payloads[role]),
+        }
+        for role in sorted(TASK_TWO_RELEASE_FILES)
+    ]
+    return {
+        "file_count": len(rows),
+        "files": rows,
+        "binding_sha256": _sha256_bytes(
+            json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ),
+        "evidence_summary": {
+            "neural_v1_materialization_gate_passed": neural_gate["passed"],
+            "runtime_skill_count": len(skills),
+            "free_text_benchmark_case_count": len(benchmark_cases),
+            "free_text_benchmark_provider": receipt_config["provider"],
+            "free_text_benchmark_model": receipt_config["model"],
+            "free_text_online_development_run_completed": True,
+            "learning_outcome_provenance": learning["provenance"],
+            "frontend_resource_count": 3,
+        },
+        "claim_boundaries": {
+            "benchmark_expert_validated": False,
+            "real_students_in_benchmark": False,
+            "free_text_diagnostic_accuracy_established": False,
+            "skill_routing_quality_established": False,
+            "deployment_accuracy_established": False,
+            "real_learner_effectiveness_established": False,
+        },
+    }
+
+
 def _recompute_teachobs_governance_binding(
     root: Path,
     recorded: Any,
@@ -528,7 +846,9 @@ def _validate_release_audit(
         raise AcceptanceError("release-audit receipt contains findings")
     audited_members = _audit_members(receipt)
     if audited_members != actual_members:
-        raise AcceptanceError("release-audit receipt is stale or bound to another target")
+        raise AcceptanceError(
+            "release-audit receipt is stale or bound to another target"
+        )
     total_size = sum(size for size, _ in actual_members.values())
     if receipt.get("member_count") != len(actual_members):
         raise AcceptanceError("release-audit member count does not match")
@@ -574,15 +894,22 @@ def _validate_allowlist(
 
 def _verification_scope(root: Path) -> dict[str, Any]:
     roots = (
+        root / "teaching_skill_miner",
         root / "scripts",
         root / "tests",
         root / "release",
         root / ".github" / "workflows",
         root / "data" / "demo",
+        root / "data" / "transcripts",
+        root / "configs",
+        root / "constraints",
         root / "docker",
+        root / "docs",
+        root / "schema",
     )
     suffixes = {
         ".Dockerfile",
+        ".html",
         ".json",
         ".md",
         ".mp4",
@@ -596,7 +923,29 @@ def _verification_scope(root: Path) -> dict[str, Any]:
         ".yml",
     }
     paths: list[Path] = []
-    for fixed in (root / "pyproject.toml",):
+    fixed_paths = (
+        root / "pyproject.toml",
+        root / "requirements.txt",
+        root / "requirements-dev.txt",
+        root / "README.md",
+        root / "CHANGELOG.md",
+        root / "LICENSE",
+        root / "PRIVACY.md",
+        root / "SECURITY.md",
+        root / "THIRD_PARTY_DATA.md",
+        root / "data" / "dataset_manifest.json",
+        root / "data" / "evaluation_cases.json",
+        root / "data" / "formal_caption_sources.json",
+        root / "data" / "teacher_agent_demo_input.json",
+        root / "data" / "teacher_agent_evaluation_cases.json",
+        root / "data" / "teacher_agent_skill_library.json",
+        root / "data" / "neural_v1_runtime_manifest.json",
+        root / "data" / "teacher_agent_free_text_benchmark.json",
+        root / "data" / "teacher_agent_free_text_benchmark_receipt.json",
+        root / "data" / "teacher_agent_learning_outcome_demo.json",
+        root / "data" / "teacher_agent_skill_library_v2.json",
+    )
+    for fixed in fixed_paths:
         if fixed.is_file() and not fixed.is_symlink():
             paths.append(fixed)
     for tree in roots:
@@ -704,7 +1053,9 @@ def _validate_exact_receipt(
     if receipt.get("wheel") != wheel_summary:
         raise AcceptanceError("exact-wheel receipt is bound to another wheel")
     if receipt.get("verification_scope") != scope:
-        raise AcceptanceError("exact-wheel receipt is stale for the current verification code")
+        raise AcceptanceError(
+            "exact-wheel receipt is stale for the current verification code"
+        )
     checks = receipt.get("checks")
     required_checks = {
         "source_release_audit_passed",
@@ -716,6 +1067,7 @@ def _validate_exact_receipt(
         "asr_hash_entrypoint_passed",
         "captioned_video_pipeline_passed",
         "recognition_install_and_entrypoints_passed",
+        "task_two_entrypoints_and_claim_boundaries_passed",
     }
     if not isinstance(checks, dict) or not required_checks.issubset(checks):
         raise AcceptanceError("exact-wheel receipt is missing required checks")
@@ -767,6 +1119,7 @@ def record_wheel(args: argparse.Namespace) -> dict[str, Any]:
             "asr_hash_entrypoint_passed": True,
             "captioned_video_pipeline_passed": True,
             "recognition_install_and_entrypoints_passed": True,
+            "task_two_entrypoints_and_claim_boundaries_passed": True,
         },
         "release_audit": release_audit,
         "allowlist": allowlist,
@@ -803,7 +1156,9 @@ def record_project(args: argparse.Namespace) -> dict[str, Any]:
         root / "artifacts/private/formal_captions/dataset_manifest.json"
     ).is_file()
     if formal_manifest_exists != args.formal_caption_audit_run:
-        raise AcceptanceError("formal-caption audit state does not match the current checkout")
+        raise AcceptanceError(
+            "formal-caption audit state does not match the current checkout"
+        )
     teachobs_private_inputs_exist = _teachobs_private_inputs_exist(root)
     if teachobs_private_inputs_exist != args.teachobs_private_receipt_audit_run:
         raise AcceptanceError(
@@ -820,12 +1175,12 @@ def record_project(args: argparse.Namespace) -> dict[str, Any]:
         human_receipt=getattr(args, "teachobs_human_receipt", None),
         lockbox_draft=getattr(args, "teachobs_lockbox_draft", None),
     )
+    task_two_evidence_binding = _task_two_release_binding(root)
     if (
         teachobs_private_inputs_exist
         and teachobs_governance_binding is None
         and (
-            root
-            / "artifacts/private/external_datasets/teachobs/"
+            root / "artifacts/private/external_datasets/teachobs/"
             "materialized_transcripts/manifest.json"
         ).is_file()
     ):
@@ -853,6 +1208,7 @@ def record_project(args: argparse.Namespace) -> dict[str, Any]:
             "byte_identical_double_build_passed": True,
             "exact_release_wheel_verification_passed": True,
             "generated_skill_schema_validation_passed": True,
+            "task_two_entrypoints_and_claim_boundaries_passed": True,
         },
         "conditional_checks": {
             "formal_caption_private_audit_run": args.formal_caption_audit_run,
@@ -874,6 +1230,8 @@ def record_project(args: argparse.Namespace) -> dict[str, Any]:
             "tracked_file_privacy_scan_passed": (
                 True if args.tracked_file_privacy_scan_run else None
             ),
+            "task_two_public_evidence_checked": (task_two_evidence_binding is not None),
+            "task_two_public_evidence_binding": task_two_evidence_binding,
         },
         "public_release_audit": public_audit,
         "environment": {
@@ -922,6 +1280,9 @@ def write_pending(args: argparse.Namespace) -> dict[str, Any]:
             "prospective_deployment_accuracy_established": False,
             "real_learner_effectiveness_established": False,
             "stable_cross_session_accuracy_0_9_established": False,
+            "teacher_agent_free_text_diagnostic_accuracy_established": False,
+            "teacher_agent_skill_routing_quality_established": False,
+            "teacher_agent_deployment_accuracy_established": False,
         },
     }
     _write_json_atomic(args.output, result)
@@ -945,10 +1306,14 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
     if project_receipt.get("wheel") != wheel_summary:
         raise AcceptanceError("project-verification receipt is bound to another wheel")
     if project_receipt.get("verification_scope") != scope:
-        raise AcceptanceError("project-verification receipt is stale for current verification code")
+        raise AcceptanceError(
+            "project-verification receipt is stale for current verification code"
+        )
     pytest_receipt = project_receipt.get("pytest")
     if not isinstance(pytest_receipt, dict) or pytest_receipt.get("passed") is not True:
-        raise AcceptanceError("project receipt does not contain a passing pytest result")
+        raise AcceptanceError(
+            "project receipt does not contain a passing pytest result"
+        )
     pytest_count_fields = (
         "testcase_count",
         "subtest_count",
@@ -984,6 +1349,7 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         "byte_identical_double_build_passed",
         "exact_release_wheel_verification_passed",
         "generated_skill_schema_validation_passed",
+        "task_two_entrypoints_and_claim_boundaries_passed",
     }
     if (
         not isinstance(checks, dict)
@@ -1036,16 +1402,16 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         ran = conditional_checks.get(ran_field)
         passed = conditional_checks.get(passed_field)
         if not isinstance(ran, bool) or passed is not (True if ran else None):
-            raise AcceptanceError(f"project conditional check is inconsistent: {ran_field}")
+            raise AcceptanceError(
+                f"project conditional check is inconsistent: {ran_field}"
+            )
     teachobs_audit_ran = conditional_checks["teachobs_private_receipt_audit_run"]
     if _teachobs_private_inputs_exist(root) is not teachobs_audit_ran:
         raise AcceptanceError(
             "TeachObs private receipt-audit availability changed after project verification"
         )
     current_teachobs_binding = (
-        _teachobs_private_receipt_binding(root)
-        if teachobs_audit_ran
-        else None
+        _teachobs_private_receipt_binding(root) if teachobs_audit_ran else None
     )
     if (
         conditional_checks.get("teachobs_private_receipt_binding")
@@ -1054,16 +1420,10 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         raise AcceptanceError(
             "TeachObs private receipt binding changed after project verification"
         )
-    governance_checked = conditional_checks.get(
-        "teachobs_governance_artifacts_checked"
-    )
-    recorded_governance_binding = conditional_checks.get(
-        "teachobs_governance_binding"
-    )
+    governance_checked = conditional_checks.get("teachobs_governance_artifacts_checked")
+    recorded_governance_binding = conditional_checks.get("teachobs_governance_binding")
     if not isinstance(governance_checked, bool):
-        raise AcceptanceError(
-            "project receipt has no TeachObs governance-check state"
-        )
+        raise AcceptanceError("project receipt has no TeachObs governance-check state")
     if governance_checked is not (recorded_governance_binding is not None):
         raise AcceptanceError(
             "TeachObs governance-check state and binding are inconsistent"
@@ -1075,11 +1435,25 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         raise AcceptanceError(
             "TeachObs governance binding changed after project verification"
         )
+    recorded_task_two_binding = conditional_checks.get(
+        "task_two_public_evidence_binding"
+    )
+    task_two_checked = conditional_checks.get("task_two_public_evidence_checked")
+    if not isinstance(task_two_checked, bool):
+        raise AcceptanceError("project receipt has no Task 2 evidence-check state")
+    if task_two_checked is not (recorded_task_two_binding is not None):
+        raise AcceptanceError(
+            "Task 2 evidence-check state and binding are inconsistent"
+        )
+    current_task_two_binding = _task_two_release_binding(root)
+    if current_task_two_binding != recorded_task_two_binding:
+        raise AcceptanceError(
+            "Task 2 public evidence binding changed after project verification"
+        )
     if (
         teachobs_audit_ran
         and (
-            root
-            / "artifacts/private/external_datasets/teachobs/"
+            root / "artifacts/private/external_datasets/teachobs/"
             "materialized_transcripts/manifest.json"
         ).is_file()
         and not governance_checked
@@ -1093,7 +1467,9 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
     ):
         raise AcceptanceError("tracked-file scan state is inconsistent across receipts")
     if repository_state["remote_github_actions_run_verified"] is not False:
-        raise AcceptanceError("this local runner cannot establish completed remote CI state")
+        raise AcceptanceError(
+            "this local runner cannot establish completed remote CI state"
+        )
     result = {
         "schema_version": ACCEPTANCE_SCHEMA,
         "release_version": wheel_summary["version"],
@@ -1134,12 +1510,16 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
                 _require_regular_file(args.exact_wheel_receipt)
             ),
         },
+        "task_two_evidence": current_task_two_binding,
         "research_claim_boundaries": {
             "independent_human_review_complete": False,
             "confirmatory_multimodal_gain_established": False,
             "prospective_deployment_accuracy_established": False,
             "real_learner_effectiveness_established": False,
             "stable_cross_session_accuracy_0_9_established": False,
+            "teacher_agent_free_text_diagnostic_accuracy_established": False,
+            "teacher_agent_skill_routing_quality_established": False,
+            "teacher_agent_deployment_accuracy_established": False,
             "note": (
                 "Release engineering checks do not establish annotation validity, "
                 "confirmatory multimodal gain, deployment accuracy, or learner effects."

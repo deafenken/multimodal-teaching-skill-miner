@@ -14,6 +14,10 @@ With explicit `--acknowledge-source-terms`, `tsm fetch-full-videos` downloads th
 
 The raw videos, caption text, extracted frames, OCR text, and embeddings are not bundled in the wheel and are not candidates for public redistribution. `artifacts/public/full_video_validation_receipt.json` contains only content-free validation metadata such as aggregate counts, local post-download hashes, durations, and stream counts. Those local SHA-256 values detect later mutation of the downloaded files; because the source index does not pin publisher-provided media hashes, they do not independently authenticate the publisher's original bytes.
 
+`tsm dashboard-real` may replay an authorized local copy together with its local captions and frozen per-sample predictions. OCR can remain a private input to the frozen visual arms, but its text is not displayed by the current viewer. This is a private, same-device research display only. The viewer does not change the upstream license, create redistribution rights, or permit publishing the media or derivatives to GitHub, a wheel, a hosted page, or a public artifact directory.
+
+The same rule applies to the MIT OCW Skill view. It may locally display a sanitized projection of a Full Skill and short evidence excerpts from the authorized local research artifacts, but it does not grant redistribution rights for the original media, complete captions, raw Skill JSON, frames, OCR text or event payloads. Only the generic data-free viewer assets may enter the wheel.
+
 MIT OCW course content and linked media retain the upstream CC BY-NC-SA terms, required attribution, non-commercial/share-alike conditions, and any third-party-material exceptions shown by the source. The repository's own license does not replace or broaden those terms. Users must review the specific course and lecture pages before reuse or redistribution.
 
 ## OpenAI CLIP model
@@ -35,6 +39,8 @@ DIPSER contains RGB-derived pose data, wearable sensor data, expert labels, and 
 The project imports the annotation repository at commit `96c251ae09e79edd06a3a9bbaaa8b8f7fe99a15c`. Its released annotation assets are marked CC BY 4.0 and contain 30 lessons, 5,158 15-second scenes, and 39 consensus teaching-behavior labels. The source paper reports seven independent coders, but the release does not include their individual coding files, so this project cannot independently recompute inter-rater reliability. The release's coding-scheme entries contain no non-empty definitions; users must not infer missing operational definitions from the label names alone.
 
 Source classroom videos are linked separately and retain their original rights, consent/privacy conditions, and platform terms. They are downloaded only after explicit `--acknowledge-source-terms`, kept under `artifacts/private/external_datasets/teachobs/`, and excluded from the wheel and public receipts together with frames, captions, OCR, embeddings, URLs, lesson identifiers, and scene-level labels. Local SHA-256 values establish post-download integrity bindings, not publisher authenticity or redistribution permission.
+
+If those private TeachObs artifacts are selected for `tsm dashboard-real`, the same exclusion applies to every item visible in the local page, including complete media, caption/ASR text, frames, ground-truth labels and transcript-only / +audio / +visual / full per-scene predictions. It also applies to non-displayed private inputs such as OCR text and embeddings. Local loopback delivery is not a public release and is not evidence that downstream redistribution is licensed.
 
 ## MM-TBA
 

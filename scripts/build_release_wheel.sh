@@ -37,6 +37,14 @@ for relative_path in \
   data/dataset_manifest.json \
   data/evaluation_cases.json \
   data/formal_caption_sources.json \
+  data/neural_v1_runtime_manifest.json \
+  data/teacher_agent_demo_input.json \
+  data/teacher_agent_evaluation_cases.json \
+  data/teacher_agent_free_text_benchmark.json \
+  data/teacher_agent_free_text_benchmark_receipt.json \
+  data/teacher_agent_learning_outcome_demo.json \
+  data/teacher_agent_skill_library.json \
+  data/teacher_agent_skill_library_v2.json \
   data/transcripts/linear_algebra_l01.json \
   data/transcripts/linear_algebra_l02.json \
   data/transcripts/linear_algebra_l03.json \
@@ -47,7 +55,13 @@ for relative_path in \
   data/transcripts/python_l03.json \
   data/transcripts/python_l04.json \
   data/transcripts/python_l05.json \
-  teaching_skill_miner/web/index.html
+  teaching_skill_miner/web/index.html \
+  teaching_skill_miner/web/private_demo.html \
+  teaching_skill_miner/web/private_skill_demo.css \
+  teaching_skill_miner/web/private_skill_demo.js \
+  teaching_skill_miner/web/teacher_agent_demo.css \
+  teaching_skill_miner/web/teacher_agent_demo.html \
+  teaching_skill_miner/web/teacher_agent_demo.js
 do
   copy_release_file "$relative_path"
 done

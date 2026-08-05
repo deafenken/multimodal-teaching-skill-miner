@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_live_session.schema.json",
+  "title": "DeepSeek-backed real-time Teaching Agent session",
+  "type": "object",
+  "required": [
+    "schema", "artifact_kind", "status", "policy", "goal", "student_profile",
+    "skill_library", "skill_library_fingerprint", "round", "student_state",
+    "current_action", "history", "control", "claim_boundary", "goal_plan",
+    "agent_runtime", "integrity"
+  ],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.teacher_agent_session.v1"},
+    "artifact_kind": {"const": "real_time_deepseek_teaching_agent_session"},
+    "status": {"enum": ["active", "succeeded", "terminated_unable"]},
+    "policy": {"const": "adaptive_skill_library"},
+    "fixed_skill_id": {"type": "null"},
+    "goal": {"type": "object"},
+    "student_profile": {
+      "type": "object",
+      "required": ["adaptive_observations", "adaptive_summary"],
+      "properties": {
+        "adaptive_observations": {"$ref": "#/$defs/adaptiveObservations"},
+        "adaptive_summary": {"$ref": "#/$defs/adaptiveSummary"}
+      }
+    },
+    "skill_library": {"type": "object"},
+    "skill_library_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "round": {"type": "integer", "minimum": 0},
+    "student_state": {
+      "type": "object",
+      "required": ["knowledge_mastery", "misconceptions", "understanding_signal", "next_focus", "assessment_basis", "interaction_statistics", "assessment_confidence", "assessment_evidence"],
+      "properties": {
+        "knowledge_mastery": {
+          "type": "object",
+          "required": ["prerequisite", "conceptual", "procedural", "transfer"],
+          "properties": {
+            "prerequisite": {"type": "number", "minimum": 0, "maximum": 1},
+            "conceptual": {"type": "number", "minimum": 0, "maximum": 1},
+            "procedural": {"type": "number", "minimum": 0, "maximum": 1},
+            "transfer": {"type": "number", "minimum": 0, "maximum": 1}
+          },
+          "additionalProperties": false
+        },
+        "misconceptions": {"type": "array", "items": {"type": "object"}},
+        "understanding_signal": {"type": "object"},
+        "next_focus": {"type": "object"},
+        "assessment_basis": {"type": "string", "minLength": 1},
+        "assessment_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "assessment_evidence": {
+          "type": "object",
+          "required": ["excerpt", "reason", "source", "needs_human_review"],
+          "properties": {
+            "excerpt": {"type": "string"},
+            "reason": {"type": "string", "minLength": 1},
+            "source": {"type": "string", "minLength": 1},
+            "needs_human_review": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        },
+        "interaction_statistics": {
+          "type": "object",
+          "required": ["attempt_count", "correct_count", "partial_count", "misconception_count", "confused_count", "no_response_count", "rolling_correct_rate", "average_response_length", "engagement_level", "response_quality"],
+          "properties": {
+            "attempt_count": {"type": "integer", "minimum": 0},
+            "correct_count": {"type": "integer", "minimum": 0},
+            "partial_count": {"type": "integer", "minimum": 0},
+            "misconception_count": {"type": "integer", "minimum": 0},
+            "confused_count": {"type": "integer", "minimum": 0},
+            "no_response_count": {"type": "integer", "minimum": 0},
+            "rolling_correct_rate": {"type": "number", "minimum": 0, "maximum": 1},
+            "average_response_length": {"type": "number", "minimum": 0},
+            "engagement_level": {"enum": ["high", "medium", "low", "unknown"]},
+            "response_quality": {"enum": ["complete", "partial", "minimal", "off_topic", "empty"]}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "current_action": {"type": "object"},
+    "history": {"type": "array", "items": {"type": "object"}},
+    "control": {"type": "object"},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["free_text_answer_processing_enabled", "free_text_answer_grading_established", "structured_signal_source", "student_identity_required", "simulated_evaluation_is_real_learning_effect", "real_learning_effectiveness_established", "deployment_quality_established", "student_text_may_be_sent_to_configured_api", "media_sent_to_model"],
+      "properties": {
+        "free_text_answer_processing_enabled": {"const": true},
+        "free_text_answer_grading_established": {"const": false},
+        "structured_signal_source": {"const": "deepseek_assessor_or_rule_fallback"},
+        "student_identity_required": {"const": false},
+        "simulated_evaluation_is_real_learning_effect": {"const": false},
+        "real_learning_effectiveness_established": {"const": false},
+        "deployment_quality_established": {"const": false},
+        "student_text_may_be_sent_to_configured_api": {"const": true},
+        "media_sent_to_model": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "goal_plan": {
+      "type": "object",
+      "required": ["schema", "goal", "intermediate_objectives", "active_step", "progress", "claim_boundary"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_agent_goal_plan.v1"},
+        "goal": {"type": "object"},
+        "intermediate_objectives": {"type": "array", "minItems": 4, "items": {"type": "object"}},
+        "active_step": {"type": ["string", "null"]},
+        "status": {"enum": ["active", "completed"]},
+        "progress": {"type": "object"},
+        "claim_boundary": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "agent_runtime": {
+      "type": "object",
+      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "fallback_count", "model_call_count", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.deepseek_teacher_runtime.v1"},
+        "mode": {"const": "deepseek_live"},
+        "provider": {"const": "deepseek"},
+        "model": {"const": "deepseek-v4-flash"},
+        "prompt_version": {"type": "string", "minLength": 1},
+        "fallback_to_rules": {"type": "boolean"},
+        "fallback_count": {"type": "integer", "minimum": 0},
+        "model_call_count": {"type": "integer", "minimum": 0},
+        "last_model_trace": {"type": ["object", "null"]},
+        "last_error": {"type": ["string", "null"]},
+        "remote_student_data_opt_in": {"const": true},
+        "api_key_exposed": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "initial_model_plan": {"type": "object"},
+    "integrity": {
+      "type": "object",
+      "required": ["algorithm", "content_sha256"],
+      "properties": {
+        "algorithm": {"const": "sha256_canonical_json_without_integrity"},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "adaptiveObservations": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "required": ["round", "source", "status", "candidate", "evidence"],
+        "properties": {
+          "round": {"type": "integer", "minimum": 1},
+          "source": {"const": "deepseek_v4_flash_validated_diagnosis"},
+          "status": {"const": "candidate_unconfirmed"},
+          "candidate": {
+            "type": "object",
+            "required": ["response_quality", "engagement_level", "misconception_tag", "next_focus"],
+            "properties": {
+              "response_quality": {"enum": ["complete", "partial", "minimal", "off_topic", "empty"]},
+              "engagement_level": {"enum": ["high", "medium", "low", "unknown"]},
+              "misconception_tag": {"type": ["string", "null"], "maxLength": 120},
+              "next_focus": {"enum": ["prerequisite", "conceptual", "procedural", "transfer"]}
+            },
+            "additionalProperties": false
+          },
+          "evidence": {
+            "type": "object",
+            "required": ["excerpt", "confidence", "grounding", "needs_human_review", "review_reasons", "privacy_status"],
+            "properties": {
+              "excerpt": {"type": "string", "maxLength": 240},
+              "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+              "grounding": {"enum": ["verified_current_response_substring", "empty_response_no_excerpt"]},
+              "needs_human_review": {"type": "boolean"},
+              "review_reasons": {"type": "array", "uniqueItems": true, "items": {"enum": ["low_confidence", "model_requested_review"]}},
+              "privacy_status": {"const": "redacted_before_candidate_storage"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "adaptiveSummary": {
+      "type": "object",
+      "required": ["schema", "status", "source", "observation_limit", "total_observation_count", "retained_observation_count", "latest_round", "latest_response_quality", "latest_engagement_level", "candidate_misconception_tags", "latest_next_focus", "needs_human_review", "teacher_provided_fields_overwritten"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.adaptive_student_profile_summary.v1"},
+        "status": {"const": "candidate_unconfirmed"},
+        "source": {"const": "validated_deepseek_diagnoses_only"},
+        "observation_limit": {"const": 12},
+        "total_observation_count": {"type": "integer", "minimum": 0},
+        "retained_observation_count": {"type": "integer", "minimum": 0, "maximum": 12},
+        "latest_round": {"type": ["integer", "null"], "minimum": 1},
+        "latest_response_quality": {"enum": ["complete", "partial", "minimal", "off_topic", "empty", null]},
+        "latest_engagement_level": {"enum": ["high", "medium", "low", "unknown", null]},
+        "candidate_misconception_tags": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "maxLength": 120}},
+        "latest_next_focus": {"enum": ["prerequisite", "conceptual", "procedural", "transfer", null]},
+        "needs_human_review": {"type": "boolean"},
+        "teacher_provided_fields_overwritten": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

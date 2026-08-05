@@ -37,6 +37,23 @@ sh -n scripts/*.sh
 "$python_command" -m teaching_skill_miner visual-semantic-dataset --help >/dev/null
 "$python_command" -m teaching_skill_miner visual-semantic-apply --help >/dev/null
 "$python_command" -m teaching_skill_miner dashboard --check >/dev/null
+"$python_command" -m teaching_skill_miner teacher-agent-dashboard --check >/dev/null
+"$python_command" -m teaching_skill_miner teacher-agent-start --help >/dev/null
+"$python_command" -m teaching_skill_miner teacher-agent-step --help >/dev/null
+"$python_command" -m teaching_skill_miner teacher-agent-benchmark --help >/dev/null
+"$python_command" -m teaching_skill_miner teacher-agent-outcome-evaluate --help >/dev/null
+"$python_command" -m teaching_skill_miner teacher-agent-evaluate \
+  --output "$verification_tmp/teacher-agent-evaluation.json" >/dev/null
+"$python_command" -m teaching_skill_miner teacher-agent-benchmark \
+  --output "$verification_tmp/teacher-agent-benchmark-offline.json" >/dev/null
+"$python_command" -m teaching_skill_miner teacher-agent-outcome-evaluate \
+  --output "$verification_tmp/teacher-agent-learning-report.json" >/dev/null
+"$python_command" -c \
+  'import json,sys; benchmark=json.load(open(sys.argv[1], encoding="utf-8")); outcome=json.load(open(sys.argv[2], encoding="utf-8")); assert benchmark["run_status"] == "baseline_only"; assert benchmark["claim_boundary"]["free_text_diagnostic_accuracy_established"] is False; assert benchmark["privacy"]["api_key_persisted_or_logged"] is False; assert outcome["provenance"] == "author_constructed_demo_not_real"; assert outcome["claim_boundary"]["real_learner_effectiveness_established"] is False' \
+  "$verification_tmp/teacher-agent-benchmark-offline.json" \
+  "$verification_tmp/teacher-agent-learning-report.json"
+"$python_command" -m teaching_skill_miner teacher-agent-demo \
+  --output-dir "$verification_tmp/teacher-agent-demo" >/dev/null
 for source_tool in \
   scripts/download_full_videos.py \
   scripts/run_full_multimodal_dataset.py \

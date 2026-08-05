@@ -1,0 +1,9 @@
+{
+  "schema": "teaching_skill_miner.teacher_agent_learning_observation.v1",
+  "case_id": "dynamic_programming_state_transfer_demo",
+  "provenance": "author_constructed_demo_not_real",
+  "pretest": {"earned": 2, "possible": 5},
+  "posttest": {"earned": 4, "possible": 5},
+  "transfer_test": {"earned": 2, "possible": 3},
+  "delayed_test": null
+}

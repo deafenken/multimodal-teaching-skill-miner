@@ -59,13 +59,29 @@ exclude = ["teaching_skill_miner.__pycache__*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-"teaching_skill_miner.web" = ["index.html"]
+"teaching_skill_miner.web" = [
+  "index.html",
+  "private_demo.html",
+  "private_skill_demo.css",
+  "private_skill_demo.js",
+  "teacher_agent_demo.html",
+  "teacher_agent_demo.css",
+  "teacher_agent_demo.js",
+]
 
 [tool.setuptools.data-files]
 "share/teaching-skill-miner/data" = [
   "data/dataset_manifest.json",
   "data/evaluation_cases.json",
   "data/formal_caption_sources.json",
+  "data/neural_v1_runtime_manifest.json",
+  "data/teacher_agent_demo_input.json",
+  "data/teacher_agent_evaluation_cases.json",
+  "data/teacher_agent_free_text_benchmark.json",
+  "data/teacher_agent_free_text_benchmark_receipt.json",
+  "data/teacher_agent_learning_outcome_demo.json",
+  "data/teacher_agent_skill_library.json",
+  "data/teacher_agent_skill_library_v2.json",
 ]
 "share/teaching-skill-miner/data/transcripts" = [
   "data/transcripts/linear_algebra_l01.json",
@@ -88,10 +104,23 @@ namespaces = false
   "schema/freeze_registration_attestation.schema.json",
   "schema/freeze_registration_request.schema.json",
   "schema/frozen_recognition_model.schema.json",
+  "schema/general_teaching_skill.schema.json",
   "schema/multimodal_event.schema.json",
+  "schema/neural_v1_runtime_manifest.schema.json",
   "schema/raw_feature_extractor_config.schema.json",
   "schema/strict_feature_bundle.schema.json",
   "schema/strict_recognition_manifest.schema.json",
+  "schema/teacher_agent_evaluation_cases.schema.json",
+  "schema/teacher_agent_evaluation_report.schema.json",
+  "schema/teacher_agent_free_text_benchmark.schema.json",
+  "schema/teacher_agent_free_text_benchmark_receipt.schema.json",
+  "schema/teacher_agent_free_text_benchmark_report.schema.json",
+  "schema/teacher_agent_live_session.schema.json",
+  "schema/teacher_agent_learning_observation.schema.json",
+  "schema/teacher_agent_learning_report.schema.json",
+  "schema/teacher_agent_session.schema.json",
+  "schema/teacher_agent_skill_library.schema.json",
+  "schema/teacher_agent_skill_library_v2.schema.json",
   "schema/teaching_skill.schema.json",
   "schema/teachobs_lockbox_preregistration.schema.json",
 ]
