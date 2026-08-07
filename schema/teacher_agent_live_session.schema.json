@@ -7,7 +7,7 @@
     "schema", "artifact_kind", "status", "policy", "goal", "student_profile",
     "skill_library", "skill_library_fingerprint", "round", "student_state",
     "current_action", "history", "control", "claim_boundary", "goal_plan",
-    "agent_runtime", "context_memory", "integrity"
+    "teaching_memory", "agent_runtime", "context_memory", "integrity"
   ],
   "properties": {
     "schema": {"const": "teaching_skill_miner.teacher_agent_session.v1"},
@@ -117,9 +117,10 @@
       },
       "additionalProperties": false
     },
+    "teaching_memory": {"$ref": "#/$defs/teachingMemory"},
     "agent_runtime": {
       "type": "object",
-      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "fallback_count", "model_call_count", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "input_modalities", "raw_image_model_support", "local_visual_evidence_policy", "last_context_trace"],
+      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "action_only_repair_enabled", "state_first_route_adjudication_enabled", "fallback_count", "model_call_count", "action_repair_call_count", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "input_modalities", "raw_image_model_support", "local_visual_evidence_policy", "last_context_trace"],
       "properties": {
         "schema": {"const": "teaching_skill_miner.deepseek_teacher_runtime.v1"},
         "mode": {"const": "deepseek_live"},
@@ -127,13 +128,16 @@
         "model": {"const": "deepseek-v4-flash"},
         "prompt_version": {"type": "string", "minLength": 1},
         "fallback_to_rules": {"type": "boolean"},
+        "action_only_repair_enabled": {"type": "boolean"},
+        "state_first_route_adjudication_enabled": {"type": "boolean"},
         "fallback_count": {"type": "integer", "minimum": 0},
         "model_call_count": {"type": "integer", "minimum": 0},
+        "action_repair_call_count": {"type": "integer", "minimum": 0},
         "last_model_trace": {"type": ["object", "null"]},
         "last_error": {"type": ["string", "null"]},
         "remote_student_data_opt_in": {"const": true},
         "api_key_exposed": {"const": false},
-        "context_policy": {"const": "layered_bounded_evidence_linked_v1"},
+        "context_policy": {"const": "layered_bounded_evidence_linked_v2_continuity_recall"},
         "input_modalities": {
           "const": ["text", "image_via_local_ocr"]
         },
@@ -169,6 +173,33 @@
     }
   },
   "$defs": {
+    "teachingMemory": {
+      "type": "object",
+      "required": ["schema", "history_version", "compaction_generation", "fixed_context_fingerprint", "last_observed_round", "preferences", "open_questions", "commitments", "referents", "claim_boundary"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teaching_memory.v1"},
+        "history_version": {"type": "integer", "minimum": 0},
+        "compaction_generation": {"type": "integer", "minimum": 0},
+        "fixed_context_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "last_observed_round": {"type": "integer", "minimum": 0},
+        "preferences": {"type": "array", "maxItems": 12, "items": {"$ref": "#/$defs/memoryItem"}},
+        "open_questions": {"type": "array", "maxItems": 12, "items": {"$ref": "#/$defs/memoryItem"}},
+        "commitments": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/memoryItem"}},
+        "referents": {"type": "array", "maxItems": 8, "items": {"$ref": "#/$defs/memoryItem"}},
+        "claim_boundary": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "memoryItem": {
+      "type": "object",
+      "required": ["memory_id", "evidence_refs"],
+      "properties": {
+        "memory_id": {"type": "string", "minLength": 1},
+        "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "answer_evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": true
+    },
     "layeredContext": {
       "type": "object",
       "required": ["schema", "snapshot", "fixed_context", "current_plan", "working_memory", "semantic_summary", "knowledge_state", "candidate_long_term_memory", "evidence_ledger", "retrieval", "privacy", "budget", "claim_boundary"],
@@ -211,6 +242,24 @@
             "signal_source_counts": {"type": "object"},
             "focus_checkpoints": {"type": "array", "maxItems": 4, "items": {"type": "object"}},
             "teaching_checkpoints": {"type": "array", "maxItems": 6, "items": {"type": "object"}},
+            "teaching_memory": {
+              "type": "object",
+              "required": ["schema", "history_version", "compaction_generation", "fixed_context_fingerprint", "active_preferences", "unresolved_questions", "pending_teacher_commitments", "active_referents", "source", "narrative_inference_added", "model_may_mutate"],
+              "properties": {
+                "schema": {"const": "teaching_skill_miner.teaching_memory_projection.v1"},
+                "history_version": {"type": "integer", "minimum": 0},
+                "compaction_generation": {"type": "integer", "minimum": 0},
+                "fixed_context_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                "active_preferences": {"type": "array", "maxItems": 6, "items": {"type": "object"}},
+                "unresolved_questions": {"type": "array", "maxItems": 6, "items": {"type": "object"}},
+                "pending_teacher_commitments": {"type": "array", "maxItems": 4, "items": {"type": "object"}},
+                "active_referents": {"type": "array", "maxItems": 4, "items": {"type": "object"}},
+                "source": {"const": "deterministic_evidence_linked_rollout_projection"},
+                "narrative_inference_added": {"const": false},
+                "model_may_mutate": {"const": false}
+              },
+              "additionalProperties": false
+            },
             "compression_method": {"const": "deterministic_aggregate_and_extractive_checkpoints_no_model_generation"},
             "source": {"const": "omitted_local_session_history"},
             "narrative_inference_added": {"const": false}

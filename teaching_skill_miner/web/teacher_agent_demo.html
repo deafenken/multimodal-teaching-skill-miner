@@ -38,7 +38,7 @@
             <span id="neuralBadge" class="system-badge provisional"><i></i><strong>Skill</strong><span id="neuralState">PROVISIONAL</span></span>
           </summary>
           <div class="runtime-popover">
-            <section><span>模型层</span><strong id="providerHeadline">等待 DeepSeek 状态</strong><p id="providerDetail">DeepSeek 负责语义诊断与 Skill 提议；最终话语由服务端 Skill Runtime 按契约生成。</p></section>
+            <section><span>模型层</span><strong id="providerHeadline">等待 DeepSeek 状态</strong><p id="providerDetail">DeepSeek 负责语义诊断、Skill 提议和候选教师话语；服务端逐项校验，未通过时才修复或回退。</p></section>
             <section><span>Skill 来源</span><strong id="neuralHeadline">neural-v1 provisional gate</strong><p id="neuralDetail">门槛未通过前，不把候选 Skill 称为正式 neural-v1。</p></section>
           </div>
         </details>
@@ -76,7 +76,7 @@
           <section class="profile-picker" aria-labelledby="profilePickerTitle">
             <div class="profile-picker-head">
               <div><span class="section-kicker">学生画像</span><h2 id="profilePickerTitle">选择本次学习者</h2></div>
-              <small>切换后新建独立会话</small>
+              <small id="profileSwitchHint">切换后新建独立会话</small>
             </div>
             <div id="profileCards" class="profile-cards" role="radiogroup" aria-label="选择学生初始画像">
               <button class="profile-card selected" type="button" role="radio" aria-checked="true" tabindex="0" data-profile-id="xiaoyu">
@@ -97,6 +97,8 @@
             </div>
             <p class="synthetic-note">头像由 AI 合成，仅用于区分演示画像，不对应真实学生，也不参与能力判断。</p>
           </section>
+
+          <p id="replacementDraftNotice" class="replacement-draft-notice" role="status" hidden>当前教学会话仍完整保留；确认设置并开始后，才会切换到新的学生会话。</p>
 
           <details class="setup-group" open>
             <summary><span>基本任务</span><small>必填</small></summary>
@@ -141,6 +143,20 @@
               <label class="field"><span>直观例子</span><textarea id="exampleInput" rows="2" maxlength="500"></textarea></label>
               <label class="field"><span>过程练习</span><textarea id="practiceInput" rows="2" maxlength="500"></textarea></label>
               <label class="field"><span>迁移任务</span><textarea id="transferInput" rows="2" maxlength="500"></textarea></label>
+            </div>
+          </details>
+
+          <details class="setup-group knowledge-spec-group">
+            <summary><span>答案依据与评分标准</span><small id="knowledgeSpecStatus">未提供</small></summary>
+            <div class="setup-group-body">
+              <p class="field-guidance">这是 Agent 判断“学生说得对不对”的教师依据。每行写一条；不填写时，系统会明确降低把握，而不会把模型常识假装成标准答案。</p>
+              <label class="field"><span>知识点顺序</span><textarea id="knowledgeComponentsInput" rows="3" maxlength="1200" placeholder="例如：状态定义&#10;状态转移&#10;边界条件"></textarea><small>按先学后学排列，每行一个。</small></label>
+              <label class="field"><span>正确结论 / 定义</span><textarea id="canonicalClaimsInput" rows="4" maxlength="3200" placeholder="例如：状态定义::dp[i] 表示到达第 i 级的走法数"></textarea><small>用于知识正确性检查；需要绑定当前知识点时，使用“知识点::陈述”，否则只作为模型参考。</small></label>
+              <label class="field"><span>本题得分点</span><textarea id="rubricCriteriaInput" rows="4" maxlength="2600" placeholder="例如：状态定义::说明 i 和 dp[i] 分别代表什么"></textarea><small>可用“知识点::得分点”绑定到当前动作。</small></label>
+              <div class="knowledge-spec-split">
+                <label class="field"><span>可接受的等价方法</span><textarea id="acceptedAlternativesInput" rows="3" maxlength="1800" placeholder="例如：带缓存递归与自底向上表格等价"></textarea></label>
+                <label class="field"><span>常见错误</span><textarea id="misconceptionCatalogInput" rows="3" maxlength="1800" placeholder="例如：只考虑 dp[i-1]，漏掉 dp[i-2]"></textarea></label>
+              </div>
             </div>
           </details>
 
@@ -193,7 +209,7 @@
             <article class="teacher-card current-message">
               <div class="message-avatar" aria-hidden="true">T</div>
               <div class="message-content">
-                <header><span>老师 · 当前步骤</span><b id="actionType">—</b></header>
+                <header><span>老师 · 当前步骤</span><b id="actionType">—</b><strong id="currentActionOrigin" class="action-origin-chip" data-origin="unknown">来源待确认</strong></header>
                 <blockquote id="teacherMessage">—</blockquote>
                 <details class="teacher-audit-hint"><summary>查看本轮判断标准（教师 / 答辩）</summary><div class="expected"><span>老师在观察什么</span><p id="expectedSignal">—</p></div></details>
               </div>
@@ -218,6 +234,12 @@
               <figcaption><strong id="attachmentName">答案图片</strong><span id="attachmentStatus">等待本机识别</span><small id="attachmentEvidencePreview">发送时提取 OCR，原图不会交给 DeepSeek。</small></figcaption>
               <button id="removeAttachmentButton" type="button" aria-label="移除答案图片">×</button>
             </figure>
+            <section id="attachmentConfirmation" class="attachment-confirmation" aria-live="polite" hidden>
+              <strong>请核对 OCR 文字</strong>
+              <p id="attachmentConfirmationText">—</p>
+              <small>确认表示“图片中的文字就是上面这段”；如果不一致，请直接在下方输入框写出正确答案。</small>
+              <button id="confirmAttachmentTextButton" type="button">确认识别文字</button>
+            </section>
             <label class="visually-hidden" for="learnerResponse">输入你的回答</label>
             <textarea id="learnerResponse" rows="3" maxlength="2000" placeholder="用自己的话回答老师，或直接添加答案照片……"></textarea>
             <label id="fallbackSignalField" class="fallback-signal" hidden>
@@ -227,7 +249,7 @@
             </label>
             <div class="composer-footer">
               <div><span>Enter 换行 · ⌘/Ctrl + Enter 发送</span><button id="commandHintButton" class="text-button" type="button" aria-expanded="false" aria-controls="commandHints">教学控制</button></div>
-              <button id="stepButton" class="send-button" type="submit"><span>发送</span><span aria-hidden="true">↑</span></button>
+              <div class="composer-actions"><button id="cancelTurnButton" class="cancel-turn-button" type="button" hidden>停止生成</button><button id="stepButton" class="send-button" type="submit"><span>发送</span><span aria-hidden="true">↑</span></button></div>
             </div>
             <div id="commandHints" class="command-hints" hidden>
               <button type="button" data-command="/auto">恢复自动</button>
@@ -290,6 +312,10 @@
               <article class="decision-card">
                 <div class="decision-topline"><div><span>当前主 Skill</span><strong id="selectedSkillName">—</strong></div><span id="selectedSkillRole" class="role-pill">—</span></div>
                 <code id="selectedSkillId">—</code>
+                <div class="action-provenance-board">
+                  <div><span>教师话语来源</span><strong id="actionProvenanceLabel" class="action-origin-chip" data-origin="unknown">等待动作</strong></div>
+                  <p id="actionProvenanceDetail">开始会话后，明确显示本轮话语是模型原样生成、契约修复后生成，还是确定性安全回退。</p>
+                </div>
                 <div class="support-block"><span>搭配使用</span><div id="supportingSkills" class="skill-chips"><span>暂无</span></div></div>
                 <div class="reason-block"><span>Skill 选择依据 · 为什么此刻选择 / 切换</span><p id="selectionReason">—</p></div>
               </article>
@@ -333,6 +359,20 @@
               </div>
               <p id="adaptiveProfileNotice">有效 DeepSeek 回合后生成；教师输入保持原值。</p>
               <small id="adaptiveProfileRound">尚无候选观察</small>
+            </div>
+          </details>
+
+          <details class="inspector-section teaching-memory-section">
+            <summary><span>长期教学记忆</span><small id="teachingMemoryStatus">V0 · 0 项</small></summary>
+            <div class="inspector-section-body teaching-memory-board">
+              <p class="teaching-memory-intro">只保存能指向学生或教师原话的连续性事实，不让模型编写“看似合理”的学生故事。</p>
+              <div class="teaching-memory-grid">
+                <section><header><span>学习偏好</span><b id="memoryPreferenceCount">0</b></header><ol id="memoryPreferences"><li>尚无明确偏好。</li></ol></section>
+                <section><header><span>未解决问题</span><b id="memoryQuestionCount">0</b></header><ol id="memoryQuestions"><li>尚无待解决问题。</li></ol></section>
+                <section><header><span>教师承诺</span><b id="memoryCommitmentCount">0</b></header><ol id="memoryCommitments"><li>尚无待兑现承诺。</li></ol></section>
+                <section><header><span>当前指代</span><b id="memoryReferentCount">0</b></header><ol id="memoryReferents"><li>尚无跨轮指代。</li></ol></section>
+              </div>
+              <small id="teachingMemoryBoundary">每项都需保留证据指针；这些记忆帮助保持对话连续，不充当学科标准答案。</small>
             </div>
           </details>
 

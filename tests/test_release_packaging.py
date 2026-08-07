@@ -216,6 +216,8 @@ class ReleasePackagingTests(unittest.TestCase):
             project_root / "scripts/verify_wheel_allowlist.py"
         ).read_text(encoding="utf-8")
         self.assertIn("include-package-data = false", pyproject)
+        dev_dependencies = pyproject.split("dev = [", 1)[1].split("]\n", 1)[0]
+        self.assertIn('"Pillow>=10,<13"', dev_dependencies)
         self.assertNotIn('"data/transcripts/*.json"', pyproject)
         self.assertNotIn("data/transcripts/*.json", build_script)
         self.assertNotIn('"schema/*.json"', pyproject)

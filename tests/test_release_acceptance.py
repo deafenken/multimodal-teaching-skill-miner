@@ -236,10 +236,24 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         self.assertTrue(
             current["evidence_summary"]["free_text_online_development_run_completed"]
         )
+        self.assertEqual(
+            current["evidence_summary"]["multiturn_benchmark_episode_count"], 20
+        )
+        self.assertEqual(
+            current["evidence_summary"]["multiturn_benchmark_learner_turn_count"], 65
+        )
+        self.assertEqual(
+            current["evidence_summary"]["multiturn_benchmark_profile_replacement_count"],
+            1,
+        )
+        self.assertFalse(
+            current["evidence_summary"]["multiturn_benchmark_online_run_completed"]
+        )
         self.assertFalse(
             current["evidence_summary"]["neural_v1_materialization_gate_passed"]
         )
         self.assertFalse(current["claim_boundaries"]["deployment_accuracy_established"])
+        self.assertFalse(current["claim_boundaries"]["full_live_session_quality_established"])
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -259,6 +273,20 @@ class ReleaseAcceptanceTests(unittest.TestCase):
             receipt["claim_boundary"]["deployment_accuracy_established"] = True
             self._write_json(receipt_path, receipt)
             with self.assertRaisesRegex(AcceptanceError, "stale or overclaimed"):
+                _task_two_release_binding(root)
+
+            shutil.copyfile(
+                project
+                / TASK_TWO_RELEASE_FILES["teacher_agent_multiturn_benchmark"],
+                root / TASK_TWO_RELEASE_FILES["teacher_agent_multiturn_benchmark"],
+            )
+            multiturn_path = (
+                root / TASK_TWO_RELEASE_FILES["teacher_agent_multiturn_benchmark"]
+            )
+            multiturn = json.loads(multiturn_path.read_text(encoding="utf-8"))
+            multiturn["claim_boundary"]["deployment_accuracy_established"] = True
+            self._write_json(multiturn_path, multiturn)
+            with self.assertRaisesRegex(AcceptanceError, "multi-turn benchmark"):
                 _task_two_release_binding(root)
 
             shutil.copyfile(

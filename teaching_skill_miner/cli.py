@@ -565,12 +565,15 @@ def command_teacher_agent_dashboard(args: argparse.Namespace) -> int:
         client=client,
         live_options=LiveAgentOptions(
             fallback_to_rules=not args.no_rule_fallback,
+            action_only_repair_enabled=True,
+            state_first_route_adjudication_enabled=True,
         ),
         neural_v1_manifest_path=resolve_resource_path(args.neural_v1_manifest),
         learning_outcome_path=resolve_resource_path(args.learning_outcome),
         free_text_benchmark_receipt_path=resolve_resource_path(
             args.free_text_benchmark_receipt
         ),
+        store_path=args.session_store,
     )
 
 
@@ -2790,6 +2793,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="fail the turn instead of using the deterministic safety fallback",
     )
     teacher_dashboard_parser.add_argument("--no-browser", action="store_true")
+    teacher_dashboard_parser.add_argument(
+        "--session-store",
+        help=(
+            "opt in to cold resume by writing local learner/session state to "
+            "this append-only JSONL file"
+        ),
+    )
     teacher_dashboard_parser.add_argument("--check", action="store_true")
     teacher_dashboard_parser.set_defaults(func=command_teacher_agent_dashboard)
 

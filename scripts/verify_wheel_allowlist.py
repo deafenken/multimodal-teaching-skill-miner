@@ -35,6 +35,7 @@ PUBLIC_DATA_FILES = (
     "teacher_agent_free_text_benchmark.json",
     "teacher_agent_free_text_benchmark_receipt.json",
     "teacher_agent_learning_outcome_demo.json",
+    "teacher_agent_multiturn_benchmark_v1.json",
     "teacher_agent_skill_library.json",
     "teacher_agent_skill_library_v2.json",
 )

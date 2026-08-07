@@ -32,6 +32,8 @@ ADAPTIVE_PROFILE_SCHEMA = "teaching_skill_miner.adaptive_student_profile_summary
 ADAPTIVE_OBSERVATION_LIMIT = 12
 ADAPTIVE_OBSERVATION_SOURCE = "deepseek_v4_flash_validated_diagnosis"
 ADAPTIVE_OBSERVATION_STATUS = "candidate_unconfirmed"
+KNOWLEDGE_SPEC_SCHEMA = "teaching_skill_miner.teacher_goal_knowledge_spec.v1"
+KNOWLEDGE_SPEC_MAX_ITEMS = 24
 PRIMARY_ROLES = {
     "diagnostic",
     "context",
@@ -92,6 +94,381 @@ def _string_list(value: Any, *, field: str, allow_empty: bool = False) -> list[s
     if len(result) != len(set(result)):
         raise TeacherAgentError(f"{field} must not contain duplicates")
     return result
+
+
+def _optional_string_list(
+    value: Any,
+    *,
+    field: str,
+    maximum_items: int = KNOWLEDGE_SPEC_MAX_ITEMS,
+) -> list[str]:
+    """Validate an optional bounded string list without inventing content."""
+
+    if value is None:
+        return []
+    result = _string_list(value, field=field, allow_empty=True)
+    if len(result) > maximum_items:
+        raise TeacherAgentError(
+            f"{field} must contain at most {maximum_items} items"
+        )
+    return result
+
+
+def _strict_boolean(value: Any, *, field: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise TeacherAgentError(f"{field} must be a boolean")
+    return value
+
+
+def _bounded_identifier(value: Any, *, field: str, fallback: str) -> str:
+    identifier = str(value or fallback).strip()
+    if not identifier or len(identifier) > 120:
+        raise TeacherAgentError(f"{field} must be a non-empty identifier <= 120 chars")
+    return identifier
+
+
+def _normalize_knowledge_spec(
+    value: Any,
+    *,
+    knowledge_components: list[str],
+) -> dict[str, Any]:
+    """Normalize teacher-authored domain truth and criterion-level grading aids.
+
+    The structure is deliberately optional.  When it is absent the runtime says
+    so explicitly instead of pretending that model memory is an authoritative
+    answer key.  When present, every item retains teacher/import provenance; the
+    system still does not claim that the material has been independently
+    verified.
+    """
+
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise TeacherAgentError("goal.knowledge_spec must be an object")
+
+    def raw_items(field: str) -> list[Any]:
+        raw = value.get(field, [])
+        if not isinstance(raw, list):
+            raise TeacherAgentError(f"goal.knowledge_spec.{field} must be a list")
+        if len(raw) > KNOWLEDGE_SPEC_MAX_ITEMS:
+            raise TeacherAgentError(
+                f"goal.knowledge_spec.{field} must contain at most "
+                f"{KNOWLEDGE_SPEC_MAX_ITEMS} items"
+            )
+        return raw
+
+    def ensure_unique(rows: list[dict[str, Any]], key: str, field: str) -> None:
+        identifiers = [str(row[key]) for row in rows]
+        if len(identifiers) != len(set(identifiers)):
+            raise TeacherAgentError(
+                f"goal.knowledge_spec.{field} identifiers must be unique"
+            )
+
+    canonical_claims: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items("canonical_claims")):
+        if isinstance(item, str):
+            item = {"statement": item}
+        if not isinstance(item, Mapping):
+            raise TeacherAgentError(
+                f"goal.knowledge_spec.canonical_claims[{index}] must be an object"
+            )
+        components = _optional_string_list(
+            item.get("knowledge_components", []),
+            field=(
+                "goal.knowledge_spec.canonical_claims"
+                f"[{index}].knowledge_components"
+            ),
+            maximum_items=12,
+        )
+        unknown = set(components) - set(knowledge_components)
+        if unknown:
+            raise TeacherAgentError(
+                "goal.knowledge_spec.canonical_claims"
+                f"[{index}] references unknown knowledge components: {sorted(unknown)}"
+            )
+        canonical_claims.append(
+            {
+                "claim_id": _bounded_identifier(
+                    item.get("claim_id"),
+                    field=f"goal.knowledge_spec.canonical_claims[{index}].claim_id",
+                    fallback=f"claim_{index + 1:02d}",
+                ),
+                "statement": _nonempty_string(
+                    item.get("statement", item.get("claim")),
+                    field=f"goal.knowledge_spec.canonical_claims[{index}].statement",
+                )[:1200],
+                "knowledge_components": components,
+                "required": _strict_boolean(
+                    item.get("required"),
+                    field=f"goal.knowledge_spec.canonical_claims[{index}].required",
+                    default=True,
+                ),
+                "source_ids": _optional_string_list(
+                    item.get("source_ids", []),
+                    field=f"goal.knowledge_spec.canonical_claims[{index}].source_ids",
+                    maximum_items=8,
+                ),
+            }
+        )
+    ensure_unique(canonical_claims, "claim_id", "canonical_claims")
+
+    rubric_criteria: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items("rubric_criteria")):
+        if isinstance(item, str):
+            item = {"description": item}
+        if not isinstance(item, Mapping):
+            raise TeacherAgentError(
+                f"goal.knowledge_spec.rubric_criteria[{index}] must be an object"
+            )
+        component = str(item.get("knowledge_component", "")).strip()
+        if component and component not in knowledge_components:
+            raise TeacherAgentError(
+                "goal.knowledge_spec.rubric_criteria"
+                f"[{index}] references unknown knowledge_component: {component}"
+            )
+        rubric_criteria.append(
+            {
+                "criterion_id": _bounded_identifier(
+                    item.get("criterion_id"),
+                    field=f"goal.knowledge_spec.rubric_criteria[{index}].criterion_id",
+                    fallback=f"criterion_{index + 1:02d}",
+                ),
+                "description": _nonempty_string(
+                    item.get("description", item.get("criterion")),
+                    field=f"goal.knowledge_spec.rubric_criteria[{index}].description",
+                )[:800],
+                "knowledge_component": component or None,
+                "required": _strict_boolean(
+                    item.get("required"),
+                    field=f"goal.knowledge_spec.rubric_criteria[{index}].required",
+                    default=True,
+                ),
+                "acceptable_evidence": _optional_string_list(
+                    item.get("acceptable_evidence", []),
+                    field=(
+                        "goal.knowledge_spec.rubric_criteria"
+                        f"[{index}].acceptable_evidence"
+                    ),
+                    maximum_items=12,
+                ),
+            }
+        )
+    ensure_unique(rubric_criteria, "criterion_id", "rubric_criteria")
+
+    accepted_alternatives: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items("accepted_alternatives")):
+        if isinstance(item, str):
+            item = {"description": item}
+        if not isinstance(item, Mapping):
+            raise TeacherAgentError(
+                f"goal.knowledge_spec.accepted_alternatives[{index}] must be an object"
+            )
+        accepted_alternatives.append(
+            {
+                "alternative_id": _bounded_identifier(
+                    item.get("alternative_id"),
+                    field=(
+                        "goal.knowledge_spec.accepted_alternatives"
+                        f"[{index}].alternative_id"
+                    ),
+                    fallback=f"alternative_{index + 1:02d}",
+                ),
+                "description": _nonempty_string(
+                    item.get("description", item.get("alternative")),
+                    field=(
+                        "goal.knowledge_spec.accepted_alternatives"
+                        f"[{index}].description"
+                    ),
+                )[:800],
+                "equivalent_claim_ids": _optional_string_list(
+                    item.get("equivalent_claim_ids", []),
+                    field=(
+                        "goal.knowledge_spec.accepted_alternatives"
+                        f"[{index}].equivalent_claim_ids"
+                    ),
+                    maximum_items=12,
+                ),
+                "conditions": _optional_string_list(
+                    item.get("conditions", []),
+                    field=(
+                        "goal.knowledge_spec.accepted_alternatives"
+                        f"[{index}].conditions"
+                    ),
+                    maximum_items=8,
+                ),
+            }
+        )
+    ensure_unique(
+        accepted_alternatives, "alternative_id", "accepted_alternatives"
+    )
+
+    reference_steps: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items("reference_steps")):
+        if isinstance(item, str):
+            item = {"description": item}
+        if not isinstance(item, Mapping):
+            raise TeacherAgentError(
+                f"goal.knowledge_spec.reference_steps[{index}] must be an object"
+            )
+        components = _optional_string_list(
+            item.get("knowledge_components", []),
+            field=(
+                f"goal.knowledge_spec.reference_steps[{index}].knowledge_components"
+            ),
+            maximum_items=12,
+        )
+        unknown = set(components) - set(knowledge_components)
+        if unknown:
+            raise TeacherAgentError(
+                "goal.knowledge_spec.reference_steps"
+                f"[{index}] references unknown knowledge components: {sorted(unknown)}"
+            )
+        reference_steps.append(
+            {
+                "step_id": _bounded_identifier(
+                    item.get("step_id"),
+                    field=f"goal.knowledge_spec.reference_steps[{index}].step_id",
+                    fallback=f"reference_step_{index + 1:02d}",
+                ),
+                "description": _nonempty_string(
+                    item.get("description", item.get("step")),
+                    field=f"goal.knowledge_spec.reference_steps[{index}].description",
+                )[:800],
+                "knowledge_components": components,
+                "depends_on": _optional_string_list(
+                    item.get("depends_on", []),
+                    field=f"goal.knowledge_spec.reference_steps[{index}].depends_on",
+                    maximum_items=12,
+                ),
+            }
+        )
+    ensure_unique(reference_steps, "step_id", "reference_steps")
+
+    misconception_catalog: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items("misconception_catalog")):
+        if isinstance(item, str):
+            item = {"description": item}
+        if not isinstance(item, Mapping):
+            raise TeacherAgentError(
+                f"goal.knowledge_spec.misconception_catalog[{index}] must be an object"
+            )
+        misconception_catalog.append(
+            {
+                "tag": _bounded_identifier(
+                    item.get("tag"),
+                    field=f"goal.knowledge_spec.misconception_catalog[{index}].tag",
+                    fallback=f"misconception_{index + 1:02d}",
+                ),
+                "description": _nonempty_string(
+                    item.get("description"),
+                    field=(
+                        "goal.knowledge_spec.misconception_catalog"
+                        f"[{index}].description"
+                    ),
+                )[:800],
+                "contradicts_claim_ids": _optional_string_list(
+                    item.get("contradicts_claim_ids", []),
+                    field=(
+                        "goal.knowledge_spec.misconception_catalog"
+                        f"[{index}].contradicts_claim_ids"
+                    ),
+                    maximum_items=12,
+                ),
+                "corrective_principle": str(
+                    item.get("corrective_principle", "")
+                ).strip()[:800],
+            }
+        )
+    ensure_unique(misconception_catalog, "tag", "misconception_catalog")
+
+    sources: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_items("sources")):
+        if isinstance(item, str):
+            item = {"title": item, "citation": item}
+        if not isinstance(item, Mapping):
+            raise TeacherAgentError(
+                f"goal.knowledge_spec.sources[{index}] must be an object"
+            )
+        sources.append(
+            {
+                "source_id": _bounded_identifier(
+                    item.get("source_id"),
+                    field=f"goal.knowledge_spec.sources[{index}].source_id",
+                    fallback=f"source_{index + 1:02d}",
+                ),
+                "title": _nonempty_string(
+                    item.get("title", item.get("citation")),
+                    field=f"goal.knowledge_spec.sources[{index}].title",
+                )[:500],
+                "citation": _nonempty_string(
+                    item.get("citation", item.get("title")),
+                    field=f"goal.knowledge_spec.sources[{index}].citation",
+                )[:1000],
+                "kind": str(item.get("kind", "teacher_material")).strip()[:80]
+                or "teacher_material",
+            }
+        )
+    ensure_unique(sources, "source_id", "sources")
+
+    claim_ids = {item["claim_id"] for item in canonical_claims}
+    source_ids = {item["source_id"] for item in sources}
+    step_ids = {item["step_id"] for item in reference_steps}
+    for row in canonical_claims:
+        unknown = set(row["source_ids"]) - source_ids
+        if unknown:
+            raise TeacherAgentError(
+                f"canonical claim {row['claim_id']} references unknown sources: "
+                f"{sorted(unknown)}"
+            )
+    for row in accepted_alternatives:
+        unknown = set(row["equivalent_claim_ids"]) - claim_ids
+        if unknown:
+            raise TeacherAgentError(
+                f"accepted alternative {row['alternative_id']} references unknown "
+                f"claims: {sorted(unknown)}"
+            )
+    for row in misconception_catalog:
+        unknown = set(row["contradicts_claim_ids"]) - claim_ids
+        if unknown:
+            raise TeacherAgentError(
+                f"misconception {row['tag']} references unknown claims: {sorted(unknown)}"
+            )
+    for row in reference_steps:
+        unknown = set(row["depends_on"]) - step_ids
+        if unknown:
+            raise TeacherAgentError(
+                f"reference step {row['step_id']} references unknown steps: "
+                f"{sorted(unknown)}"
+            )
+
+    provided = any(
+        (
+            canonical_claims,
+            rubric_criteria,
+            accepted_alternatives,
+            reference_steps,
+            misconception_catalog,
+            sources,
+        )
+    )
+    return {
+        "schema": KNOWLEDGE_SPEC_SCHEMA,
+        "status": "teacher_provided" if provided else "not_provided",
+        "canonical_claims": canonical_claims,
+        "rubric_criteria": rubric_criteria,
+        "accepted_alternatives": accepted_alternatives,
+        "reference_steps": reference_steps,
+        "misconception_catalog": misconception_catalog,
+        "sources": sources,
+        "claim_boundary": {
+            "authoritative_for_runtime_grading": provided,
+            "teacher_authored_or_imported": provided,
+            "independently_verified_by_system": False,
+            "model_memory_is_authoritative_when_absent": False,
+        },
+    }
 
 
 def validate_skill_library(library: Mapping[str, Any]) -> None:
@@ -253,10 +630,15 @@ def _normalized_goal(goal: Mapping[str, Any]) -> dict[str, Any]:
         )
         if len(knowledge_components) > 12:
             raise TeacherAgentError("goal.knowledge_components must contain at most 12 items")
+    knowledge_spec = _normalize_knowledge_spec(
+        goal.get("knowledge_spec"),
+        knowledge_components=knowledge_components,
+    )
     return {
         "concept": concept,
         "objective": objective,
         "knowledge_components": knowledge_components,
+        "knowledge_spec": knowledge_spec,
         "success_thresholds": thresholds,
         "max_rounds": max_rounds,
         "materials": safe_materials,
@@ -694,6 +1076,8 @@ def _validate_adaptive_student_profile(
         "deepseek_v4_flash",
         "deepseek_v4_flash_constrained_by_deterministic_contract",
         "active_question_contract_exact_match",
+        "teacher_knowledge_spec_exact_match",
+        "teacher_goal_knowledge_component_bounded_match",
     }
     for index, observation in enumerate(observations):
         if not isinstance(observation, Mapping) or set(observation) != {
@@ -941,11 +1325,25 @@ def validate_session(session: Mapping[str, Any]) -> None:
             LAYERED_CONTEXT_SCHEMA,
             validate_layered_context,
         )
+        from .teacher_agent_memory import (  # noqa: PLC0415
+            validate_teaching_memory_checkpoint,
+        )
 
         try:
             validate_layered_context(session.get("context_memory", {}))
         except (TypeError, ValueError) as exc:
             raise TeacherAgentError("live session context_memory is invalid") from exc
+        try:
+            memory = session.get("teaching_memory", {})
+            validate_teaching_memory_checkpoint(
+                memory,
+                goal=session["goal"],
+                profile=profile,
+                history=session.get("history", []),
+                expected_round=session.get("round", -1),
+            )
+        except (TypeError, ValueError) as exc:
+            raise TeacherAgentError("live session teaching_memory is invalid") from exc
         runtime = session.get("agent_runtime", {})
         trace = runtime.get("last_context_trace") if isinstance(runtime, Mapping) else None
         if (
@@ -1096,6 +1494,8 @@ def _apply_student_signal(
     misconception_tag: str | None,
     confidence: float,
     resolve_all_on_correction: bool,
+    answer_alignment: str | None = None,
+    needs_human_review: bool = False,
 ) -> None:
     action = session["current_action"]
     focus = action["primary_skill"]["focus_dimension"]
@@ -1107,7 +1507,20 @@ def _apply_student_signal(
         "confused": 0.0,
         "no_response": 0.0,
     }
-    delta = increments[signal] * confidence
+    # A non-empty answer is not automatically evidence for the active
+    # question.  Live mode supplies the final alignment after the server-side
+    # contract gate; related/off-topic/ambiguous answers and any response that
+    # still requires human review must not increase mastery.  The optional
+    # arguments preserve the legacy deterministic API for callers that only
+    # provide a structured signal.
+    alignment_allows_gain = answer_alignment is None or answer_alignment in {
+        "aligned",
+        "partially_aligned",
+    }
+    if needs_human_review or not alignment_allows_gain:
+        delta = 0.0
+    else:
+        delta = increments[signal] * confidence
     state["knowledge_mastery"][focus] = round(
         min(1.0, float(state["knowledge_mastery"][focus]) + delta), 3
     )
@@ -1156,6 +1569,8 @@ def advance_teacher_agent_session(
     signal_confidence: float = 1.0,
     resolve_all_on_correction: bool = True,
     resolved_misconception_tags: list[str] | None = None,
+    answer_alignment: str | None = None,
+    needs_human_review: bool = False,
 ) -> dict[str, Any]:
     """Consume one response and emit exactly one subsequent action or termination."""
 
@@ -1165,6 +1580,18 @@ def advance_teacher_agent_session(
         raise TeacherAgentError("cannot advance a terminal session")
     if signal not in SIGNALS:
         raise TeacherAgentError(f"signal must be one of {sorted(SIGNALS)}")
+    if answer_alignment is not None and answer_alignment not in {
+        "not_applicable",
+        "aligned",
+        "partially_aligned",
+        "related_but_not_answer",
+        "contradicted",
+        "ambiguous",
+        "no_response",
+    }:
+        raise TeacherAgentError("answer_alignment is invalid")
+    if not isinstance(needs_human_review, bool):
+        raise TeacherAgentError("needs_human_review must be a boolean")
     confidence = _finite_probability(signal_confidence, field="signal_confidence")
     response = str(learner_response).strip()
     action_before = deepcopy(current["current_action"])
@@ -1176,6 +1603,8 @@ def advance_teacher_agent_session(
         misconception_tag=misconception_tag,
         confidence=confidence,
         resolve_all_on_correction=resolve_all_on_correction,
+        answer_alignment=answer_alignment,
+        needs_human_review=needs_human_review,
     )
     resolved_tags = resolved_misconception_tags or []
     if (

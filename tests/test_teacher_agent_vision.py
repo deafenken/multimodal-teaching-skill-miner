@@ -1,21 +1,39 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
+from PIL import Image, ImageDraw
+
 from teaching_skill_miner import teacher_agent_vision as vision
 from teaching_skill_miner.teacher_agent_vision import (
     LocalVisualEvidenceError,
+    align_ocr_text_to_answer_references,
+    assess_typed_visual_consistency,
     compose_visual_evidence_text,
     extract_local_visual_evidence,
 )
 
 
 _SYNTHETIC_PNG = b"\x89PNG\r\n\x1a\nsynthetic-no-personal-data"
+
+
+def _printed_formula_png() -> bytes:
+    image = Image.new("RGB", (1_600, 320), "white")
+    ImageDraw.Draw(image).text(
+        (120, 110),
+        "dp[i] = dp[i-1] + dp[i-2]",
+        fill="black",
+        stroke_width=1,
+    )
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class TeacherAgentVisionTests(unittest.TestCase):
@@ -46,6 +64,64 @@ class TeacherAgentVisionTests(unittest.TestCase):
         self.assertIn("[LOCAL_VISUAL_EVIDENCE 1]", composed)
         self.assertIn("confidence=0.91", composed)
         self.assertIn("f[i] = min(f[j] + 1)", composed)
+
+    def test_typed_and_visual_conflict_is_explicit_and_never_silently_merged(
+        self,
+    ) -> None:
+        evidence = [
+            {
+                "recognized_text": "x+1",
+                "status": "recognized",
+                "confidence": 0.97,
+                "transcription_confidence": 0.96,
+                "ocr_transcription_corroborated": True,
+                "needs_student_confirmation": False,
+            }
+        ]
+
+        consistency = assess_typed_visual_consistency("x-1", evidence)
+        composed = compose_visual_evidence_text("x-1", evidence)
+
+        self.assertEqual(consistency["relation"], "possible_conflict")
+        self.assertTrue(consistency["needs_student_confirmation"])
+        self.assertIn("[TYPED_VISUAL_CONSISTENCY]", composed)
+        self.assertIn("不得把两者合并成一个答案", composed)
+
+    def test_identical_typed_and_visual_answers_are_not_flagged_as_conflict(
+        self,
+    ) -> None:
+        evidence = [
+            {
+                "recognized_text": "dp[i] = dp[i-1] + dp[i-2]",
+                "status": "recognized",
+                "needs_student_confirmation": False,
+            }
+        ]
+
+        consistency = assess_typed_visual_consistency(
+            "答案是：dp[i]=dp[i-1]+dp[i-2]",
+            evidence,
+        )
+
+        self.assertEqual(consistency["relation"], "exact_agreement")
+        self.assertFalse(consistency["possible_conflict"])
+
+    def test_one_conflicting_attachment_cannot_be_hidden_by_one_matching_image(
+        self,
+    ) -> None:
+        evidence = [
+            {
+                "recognized_text": text,
+                "status": "recognized",
+                "needs_student_confirmation": False,
+            }
+            for text in ("x+1", "x-1")
+        ]
+
+        consistency = assess_typed_visual_consistency("x+1", evidence)
+
+        self.assertEqual(consistency["relation"], "possible_conflict")
+        self.assertTrue(consistency["needs_student_confirmation"])
 
     def test_apple_vision_is_primary_and_raw_image_is_temporary(self) -> None:
         observed: dict[str, Path] = {}
@@ -111,6 +187,132 @@ class TeacherAgentVisionTests(unittest.TestCase):
         self.assertEqual(result["status"], "recognized")
         self.assertEqual(result["recognized_text"], "状态转移")
 
+    def test_clear_printed_formula_is_corroborated_across_local_ocr_routes(
+        self,
+    ) -> None:
+        formula = "dp[i] = dp[i-1] + dp[i-2]"
+
+        def fake_tesseract(
+            _executable: str,
+            _image_path: Path,
+            *,
+            page_segmentation_mode: int,
+        ) -> tuple[str, float]:
+            return formula, 0.94 if page_segmentation_mode != 11 else 0.92
+
+        with (
+            patch.object(
+                vision, "_apple_vision_command", return_value="/usr/bin/clang"
+            ),
+            patch.object(vision, "_tesseract_command", return_value="tesseract"),
+            patch.object(
+                vision,
+                "_run_apple_vision",
+                return_value=(formula, 0.98),
+            ),
+            patch.object(
+                vision,
+                "_run_tesseract",
+                side_effect=fake_tesseract,
+            ) as tesseract,
+        ):
+            result = extract_local_visual_evidence(
+                _printed_formula_png(),
+                "image/png",
+            )
+
+        self.assertGreaterEqual(tesseract.call_count, 4)
+        self.assertEqual(result["status"], "recognized")
+        self.assertEqual(result["recognized_text"], formula)
+        self.assertTrue(result["formula_like_text_detected"])
+        self.assertTrue(result["ocr_transcription_corroborated"])
+        self.assertTrue(result["formula_transcription_established"])
+        self.assertFalse(result["formula_accuracy_established"])
+        self.assertFalse(result["needs_student_confirmation"])
+        self.assertGreaterEqual(result["ocr_independent_engine_count"], 2)
+        self.assertGreaterEqual(result["ocr_preprocessing_count"], 2)
+        self.assertEqual(result["content_style_assessment"], "not_classified")
+        self.assertFalse(result["remote_media_sent"])
+
+    def test_low_confidence_handwritten_like_formula_abstains(self) -> None:
+        weak_candidates = iter(
+            [
+                ("x+?", 0.43),
+                ("x+7", 0.38),
+                ("", 0.0),
+                ("x + l", 0.41),
+                ("", 0.0),
+                ("x+1", 0.45),
+            ]
+        )
+        with (
+            patch.object(
+                vision, "_apple_vision_command", return_value="/usr/bin/clang"
+            ),
+            patch.object(vision, "_tesseract_command", return_value="tesseract"),
+            patch.object(
+                vision,
+                "_run_apple_vision",
+                return_value=("x+?", 0.42),
+            ),
+            patch.object(
+                vision,
+                "_run_tesseract",
+                side_effect=lambda *_args, **_kwargs: next(weak_candidates),
+            ),
+        ):
+            result = extract_local_visual_evidence(
+                _printed_formula_png(),
+                "image/png",
+            )
+
+        self.assertIn(
+            result["status"],
+            {"low_confidence", "conflicting_recognition"},
+        )
+        self.assertFalse(result["formula_transcription_established"])
+        self.assertFalse(result["handwriting_recognition_established"])
+        self.assertTrue(result["needs_student_confirmation"])
+
+    def test_high_confidence_independent_engine_conflict_forces_confirmation(
+        self,
+    ) -> None:
+        tesseract_candidates = iter(
+            [
+                ("x+1", 0.96),
+                ("x+1", 0.96),
+                ("x+1", 0.96),
+                ("", 0.0),
+                ("", 0.0),
+                ("", 0.0),
+            ]
+        )
+        with (
+            patch.object(
+                vision, "_apple_vision_command", return_value="/usr/bin/clang"
+            ),
+            patch.object(vision, "_tesseract_command", return_value="tesseract"),
+            patch.object(
+                vision,
+                "_run_apple_vision",
+                return_value=("x-1", 0.99),
+            ),
+            patch.object(
+                vision,
+                "_run_tesseract",
+                side_effect=lambda *_args, **_kwargs: next(tesseract_candidates),
+            ),
+        ):
+            result = extract_local_visual_evidence(
+                _printed_formula_png(),
+                "image/png",
+            )
+
+        self.assertEqual(result["status"], "conflicting_recognition")
+        self.assertTrue(result["ocr_material_disagreement"])
+        self.assertFalse(result["formula_transcription_established"])
+        self.assertTrue(result["needs_student_confirmation"])
+
     def test_formula_like_ocr_always_requires_student_confirmation(self) -> None:
         with (
             patch.object(
@@ -163,6 +365,166 @@ class TeacherAgentVisionTests(unittest.TestCase):
             self.assertTrue(result["formula_like_text_detected"])
             self.assertFalse(result["formula_accuracy_established"])
             self.assertTrue(result["needs_student_confirmation"])
+
+    def test_image_only_formula_can_match_teacher_question_contract_exactly(
+        self,
+    ) -> None:
+        alignment = align_ocr_text_to_answer_references(
+            "dp[i] = dp[i-1] + dp[i-2]",
+            {
+                "answer_type": "worked_step",
+                "target_concepts": ["dp[i]=dp[i-1]+dp[i-2]"],
+                "accepted_aliases": [],
+                "success_criteria": ["写出状态转移式"],
+            },
+        )
+
+        self.assertEqual(alignment["alignment"], "exact_contract_match")
+        self.assertEqual(
+            alignment["matched_source"],
+            "question_contract.target_concepts",
+        )
+        self.assertTrue(alignment["deterministic_correctness_established"])
+        self.assertTrue(alignment["requires_reliable_transcription"])
+
+    def test_related_open_target_is_not_promoted_to_deterministically_correct(
+        self,
+    ) -> None:
+        alignment = align_ocr_text_to_answer_references(
+            "状态转移",
+            {
+                "answer_type": "explanation",
+                "target_concepts": ["状态转移"],
+                "accepted_aliases": [],
+                "success_criteria": ["解释两个来源为何相加"],
+            },
+        )
+
+        self.assertEqual(alignment["alignment"], "exact_contract_match")
+        self.assertFalse(alignment["deterministic_correctness_established"])
+
+    def test_rubric_fragment_matches_but_does_not_alone_establish_correctness(
+        self,
+    ) -> None:
+        alignment = align_ocr_text_to_answer_references(
+            "dp[0]=1 和 dp[1]=1",
+            {
+                "answer_type": "open",
+                "target_concepts": ["边界条件"],
+                "accepted_aliases": [],
+                "success_criteria": ["给出正确边界"],
+            },
+            {
+                "rubric_criteria": [
+                    {
+                        "criterion_id": "boundary",
+                        "knowledge_component": "边界条件",
+                        "acceptable_evidence": ["dp[0]=1 和 dp[1]=1"],
+                    }
+                ]
+            },
+            ["边界条件"],
+        )
+
+        self.assertEqual(
+            alignment["alignment"],
+            "exact_teacher_reference_match",
+        )
+        self.assertEqual(
+            alignment["matched_source"],
+            "knowledge_spec.rubric_criteria.boundary",
+        )
+        self.assertFalse(alignment["deterministic_correctness_established"])
+
+    def test_exact_teacher_canonical_claim_can_ground_image_only_answer(self) -> None:
+        claim = "采用 dp[0]=1、dp[1]=1 的约定后，从小到大计算后续状态。"
+        alignment = align_ocr_text_to_answer_references(
+            claim,
+            {
+                "answer_type": "open",
+                "target_concepts": ["边界条件"],
+                "accepted_aliases": [],
+                "success_criteria": ["给出边界与计算顺序"],
+            },
+            {
+                "canonical_claims": [
+                    {
+                        "claim_id": "boundary_claim",
+                        "statement": claim,
+                        "knowledge_components": ["边界条件"],
+                    }
+                ]
+            },
+            ["边界条件"],
+        )
+
+        self.assertEqual(
+            alignment["alignment"],
+            "exact_teacher_reference_match",
+        )
+        self.assertEqual(
+            alignment["matched_source"],
+            "knowledge_spec.canonical_claims.boundary_claim",
+        )
+        self.assertTrue(alignment["deterministic_correctness_established"])
+
+    def test_teacher_claim_from_another_knowledge_component_cannot_ground_answer(
+        self,
+    ) -> None:
+        claim = "状态转移是 dp[i]=dp[i-1]+dp[i-2]。"
+        alignment = align_ocr_text_to_answer_references(
+            claim,
+            {
+                "answer_type": "open",
+                "target_concepts": ["边界条件"],
+                "accepted_aliases": [],
+                "success_criteria": ["给出边界与计算顺序"],
+            },
+            {
+                "canonical_claims": [
+                    {
+                        "claim_id": "transition_claim",
+                        "statement": claim,
+                        "knowledge_components": ["状态转移"],
+                    }
+                ]
+            },
+            ["边界条件"],
+        )
+
+        self.assertEqual(alignment["alignment"], "not_established")
+        self.assertFalse(alignment["deterministic_correctness_established"])
+
+    def test_unscoped_teacher_claim_cannot_ground_answer(self) -> None:
+        claim = "采用 dp[0]=1、dp[1]=1 的约定后，从小到大计算后续状态。"
+        alignment = align_ocr_text_to_answer_references(
+            claim,
+            {"answer_type": "open", "target_concepts": ["边界条件"]},
+            {"canonical_claims": [{"claim_id": "unscoped", "statement": claim}]},
+            ["边界条件"],
+        )
+
+        self.assertEqual(alignment["alignment"], "not_established")
+        self.assertFalse(alignment["deterministic_correctness_established"])
+
+    def test_multiline_ocr_with_unrelated_line_does_not_exact_match_claim(self) -> None:
+        claim = "采用 dp[0]=1、dp[1]=1 的约定后，从小到大计算后续状态。"
+        alignment = align_ocr_text_to_answer_references(
+            "与本问无关的状态转移说明。\n" + claim,
+            {"answer_type": "open", "target_concepts": ["边界条件"]},
+            {
+                "canonical_claims": [
+                    {
+                        "claim_id": "boundary_claim",
+                        "statement": claim,
+                        "knowledge_components": ["边界条件"],
+                    }
+                ]
+            },
+            ["边界条件"],
+        )
+
+        self.assertEqual(alignment["alignment"], "not_established")
 
     def test_tesseract_candidate_selection_is_confidence_first(self) -> None:
         high_confidence_answer = "缓存"

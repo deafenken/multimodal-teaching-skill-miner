@@ -46,6 +46,11 @@ sh -n scripts/*.sh
   --output "$verification_tmp/teacher-agent-evaluation.json" >/dev/null
 "$python_command" -m teaching_skill_miner teacher-agent-benchmark \
   --output "$verification_tmp/teacher-agent-benchmark-offline.json" >/dev/null
+"$python_command" scripts/run_teacher_agent_multiturn_benchmark.py \
+  --validate-only >"$verification_tmp/teacher-agent-multiturn-validation.json"
+"$python_command" -c \
+  'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); assert value["validated"] is True; assert value["episode_count"] == 20; assert value["gold_sent_to_model"] is False; assert value["schema"] == "teaching_skill_miner.teacher_agent_multiturn_benchmark.v1"' \
+  "$verification_tmp/teacher-agent-multiturn-validation.json"
 "$python_command" -m teaching_skill_miner teacher-agent-outcome-evaluate \
   --output "$verification_tmp/teacher-agent-learning-report.json" >/dev/null
 "$python_command" -c \

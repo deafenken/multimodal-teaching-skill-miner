@@ -51,6 +51,9 @@ TASK_TWO_RELEASE_FILES = {
     "teacher_agent_learning_outcome_demo": Path(
         "data/teacher_agent_learning_outcome_demo.json"
     ),
+    "teacher_agent_multiturn_benchmark": Path(
+        "data/teacher_agent_multiturn_benchmark_v1.json"
+    ),
     "teacher_agent_skill_library_v1": Path("data/teacher_agent_skill_library.json"),
     "teacher_agent_skill_library_v2": Path("data/teacher_agent_skill_library_v2.json"),
     "teacher_agent_dashboard_css": Path(
@@ -89,6 +92,9 @@ TASK_TWO_RELEASE_FILES = {
     ),
     "teacher_agent_live_session_schema": Path(
         "schema/teacher_agent_live_session.schema.json"
+    ),
+    "teacher_agent_multiturn_benchmark_schema": Path(
+        "schema/teacher_agent_multiturn_benchmark.schema.json"
     ),
     "teacher_agent_session_schema": Path("schema/teacher_agent_session.schema.json"),
     "teacher_agent_skill_library_v1_schema": Path(
@@ -654,6 +660,24 @@ def _task_two_release_binding(root: Path) -> dict[str, Any] | None:
             "Task 2 free-text benchmark overstates development evidence"
         )
 
+    # Check the independent multi-turn claim boundary before validating the
+    # free-text receipt.  This keeps stale diagnostics specific when a caller
+    # tampers with both public receipts in sequence (and avoids reporting the
+    # earlier free-text failure for a multi-turn-only mutation).
+    early_multiturn = documents["teacher_agent_multiturn_benchmark"]
+    early_multiturn_boundary = early_multiturn.get("claim_boundary")
+    if (
+        not isinstance(early_multiturn_boundary, dict)
+        or early_multiturn_boundary.get("deployment_accuracy_established") is not False
+        or early_multiturn_boundary.get("expert_validated") is not False
+        or early_multiturn_boundary.get("real_students_involved") is not False
+        or early_multiturn_boundary.get("held_out_after_prompt_development") is not False
+        or early_multiturn_boundary.get("real_learning_effect_established") is not False
+    ):
+        raise AcceptanceError(
+            "Task 2 multi-turn benchmark is stale or crosses its claim boundary"
+        )
+
     receipt = documents["teacher_agent_free_text_benchmark_receipt"]
     receipt_source = receipt.get("source_report")
     receipt_inputs = receipt.get("input_fingerprints")
@@ -718,6 +742,43 @@ def _task_two_release_binding(root: Path) -> dict[str, Any] | None:
             "Task 2 learning outcome demo is not explicitly synthetic"
         )
 
+    multiturn = documents["teacher_agent_multiturn_benchmark"]
+    multiturn_boundary = multiturn.get("claim_boundary")
+    multiturn_episodes = multiturn.get("episodes")
+    if not isinstance(multiturn_episodes, list):
+        raise AcceptanceError("Task 2 multi-turn benchmark episodes are missing")
+    multiturn_operations = [
+        turn
+        for episode in multiturn_episodes
+        if isinstance(episode, dict)
+        for turn in episode.get("turns", [])
+        if isinstance(turn, dict)
+    ]
+    learner_turn_count = sum(
+        turn.get("operation") == "learner_turn" for turn in multiturn_operations
+    )
+    profile_replacement_count = sum(
+        turn.get("operation") == "replace_profile" for turn in multiturn_operations
+    )
+    if (
+        multiturn.get("schema")
+        != "teaching_skill_miner.teacher_agent_multiturn_benchmark.v1"
+        or len(multiturn_episodes) != 20
+        or learner_turn_count != 65
+        or profile_replacement_count != 1
+        or not isinstance(multiturn_boundary, dict)
+        or multiturn_boundary.get("source_type")
+        != "author_constructed_not_expert_validated"
+        or multiturn_boundary.get("expert_validated") is not False
+        or multiturn_boundary.get("real_students_involved") is not False
+        or multiturn_boundary.get("held_out_after_prompt_development") is not False
+        or multiturn_boundary.get("deployment_accuracy_established") is not False
+        or multiturn_boundary.get("real_learning_effect_established") is not False
+    ):
+        raise AcceptanceError(
+            "Task 2 multi-turn benchmark is stale or crosses its claim boundary"
+        )
+
     for role, document in documents.items():
         if role.endswith("_schema") and document.get("$schema") != (
             "https://json-schema.org/draft/2020-12/schema"
@@ -745,6 +806,12 @@ def _task_two_release_binding(root: Path) -> dict[str, Any] | None:
             "free_text_benchmark_provider": receipt_config["provider"],
             "free_text_benchmark_model": receipt_config["model"],
             "free_text_online_development_run_completed": True,
+            "multiturn_benchmark_episode_count": len(multiturn_episodes),
+            "multiturn_benchmark_learner_turn_count": learner_turn_count,
+            "multiturn_benchmark_profile_replacement_count": (
+                profile_replacement_count
+            ),
+            "multiturn_benchmark_online_run_completed": False,
             "learning_outcome_provenance": learning["provenance"],
             "frontend_resource_count": 3,
         },
@@ -753,6 +820,7 @@ def _task_two_release_binding(root: Path) -> dict[str, Any] | None:
             "real_students_in_benchmark": False,
             "free_text_diagnostic_accuracy_established": False,
             "skill_routing_quality_established": False,
+            "full_live_session_quality_established": False,
             "deployment_accuracy_established": False,
             "real_learner_effectiveness_established": False,
         },
@@ -943,6 +1011,7 @@ def _verification_scope(root: Path) -> dict[str, Any]:
         root / "data" / "teacher_agent_free_text_benchmark.json",
         root / "data" / "teacher_agent_free_text_benchmark_receipt.json",
         root / "data" / "teacher_agent_learning_outcome_demo.json",
+        root / "data" / "teacher_agent_multiturn_benchmark_v1.json",
         root / "data" / "teacher_agent_skill_library_v2.json",
     )
     for fixed in fixed_paths:

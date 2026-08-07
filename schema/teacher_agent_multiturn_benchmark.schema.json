@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_multiturn_benchmark.schema.json",
+  "title": "Teacher Agent adversarial multi-turn development benchmark",
+  "type": "object",
+  "required": [
+    "schema",
+    "description",
+    "benchmark_version",
+    "goals",
+    "student_profiles",
+    "visual_evidence_catalog",
+    "episodes",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema": {
+      "const": "teaching_skill_miner.teacher_agent_multiturn_benchmark.v1"
+    },
+    "description": {"type": "string", "minLength": 1},
+    "benchmark_version": {"const": "1.0"},
+    "goals": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/goal"}
+    },
+    "student_profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/studentProfile"}
+    },
+    "visual_evidence_catalog": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/visualEvidence"}
+    },
+    "episodes": {
+      "type": "array",
+      "minItems": 16,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/episode"}
+    },
+    "claim_boundary": {"$ref": "#/$defs/claimBoundary"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "minLength": 2,
+      "maxLength": 96
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "probability": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "stringList": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"type": "string", "minLength": 1, "maxLength": 500}
+    },
+    "termGroups": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 12,
+        "items": {"type": "string", "minLength": 1, "maxLength": 160}
+      }
+    },
+    "mastery": {
+      "type": "object",
+      "required": ["prerequisite", "conceptual", "procedural", "transfer"],
+      "properties": {
+        "prerequisite": {"$ref": "#/$defs/probability"},
+        "conceptual": {"$ref": "#/$defs/probability"},
+        "procedural": {"$ref": "#/$defs/probability"},
+        "transfer": {"$ref": "#/$defs/probability"}
+      },
+      "additionalProperties": false
+    },
+    "goal": {
+      "type": "object",
+      "required": [
+        "concept",
+        "objective",
+        "success_thresholds",
+        "max_rounds",
+        "materials"
+      ],
+      "properties": {
+        "concept": {"type": "string", "minLength": 1, "maxLength": 240},
+        "objective": {"type": "string", "minLength": 1, "maxLength": 800},
+        "success_thresholds": {"$ref": "#/$defs/mastery"},
+        "max_rounds": {"type": "integer", "minimum": 2, "maximum": 50},
+        "materials": {
+          "type": "object",
+          "required": ["example", "practice", "transfer_task"],
+          "properties": {
+            "example": {"type": "string", "minLength": 1, "maxLength": 1200},
+            "practice": {"type": "string", "minLength": 1, "maxLength": 1200},
+            "transfer_task": {"type": "string", "minLength": 1, "maxLength": 1200}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "studentProfile": {
+      "type": "object",
+      "required": [
+        "profile_ref",
+        "learner_level",
+        "preferences",
+        "accessibility_needs",
+        "initial_mastery",
+        "known_misconceptions",
+        "background_history",
+        "conversation_history",
+        "contains_direct_identity"
+      ],
+      "properties": {
+        "profile_ref": {"$ref": "#/$defs/id"},
+        "learner_level": {"type": "string", "minLength": 1, "maxLength": 80},
+        "preferences": {"$ref": "#/$defs/stringList"},
+        "accessibility_needs": {"$ref": "#/$defs/stringList"},
+        "initial_mastery": {"$ref": "#/$defs/mastery"},
+        "known_misconceptions": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {"$ref": "#/$defs/knownMisconception"}
+        },
+        "background_history": {"$ref": "#/$defs/stringList"},
+        "conversation_history": {
+          "type": "array",
+          "maxItems": 24,
+          "items": {"type": "object"}
+        },
+        "contains_direct_identity": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "knownMisconception": {
+      "type": "object",
+      "required": ["tag", "description", "confidence"],
+      "properties": {
+        "tag": {"$ref": "#/$defs/id"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 800},
+        "confidence": {"$ref": "#/$defs/probability"}
+      },
+      "additionalProperties": false
+    },
+    "visualEvidence": {
+      "type": "object",
+      "required": [
+        "schema",
+        "source_modality",
+        "source_kind",
+        "display_name",
+        "mime_type",
+        "byte_size",
+        "content_sha256",
+        "engine",
+        "status",
+        "recognized_text",
+        "confidence",
+        "confidence_semantics",
+        "formula_like_text_detected",
+        "formula_accuracy_established",
+        "extractor_fallback_used",
+        "needs_student_confirmation",
+        "raw_media_retained",
+        "remote_media_sent",
+        "remote_representation"
+      ],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.local_visual_evidence.v1"},
+        "source_modality": {"const": "image"},
+        "source_kind": {"const": "learner_answer_attachment"},
+        "display_name": {"type": "string", "minLength": 1, "maxLength": 160},
+        "mime_type": {"enum": ["image/png", "image/jpeg", "image/webp"]},
+        "byte_size": {"type": "integer", "minimum": 1},
+        "content_sha256": {"$ref": "#/$defs/sha256"},
+        "engine": {"type": "string", "minLength": 1, "maxLength": 160},
+        "status": {"enum": ["recognized", "no_text", "unavailable"]},
+        "recognized_text": {"type": "string", "maxLength": 4000},
+        "confidence": {"$ref": "#/$defs/probability"},
+        "confidence_semantics": {"type": "string", "minLength": 1, "maxLength": 240},
+        "formula_like_text_detected": {"type": "boolean"},
+        "formula_accuracy_established": {"const": false},
+        "extractor_fallback_used": {"type": "boolean"},
+        "needs_student_confirmation": {"type": "boolean"},
+        "raw_media_retained": {"const": false},
+        "remote_media_sent": {"const": false},
+        "remote_representation": {"const": "bounded_redacted_ocr_text_only"}
+      },
+      "additionalProperties": false
+    },
+    "signal": {
+      "enum": ["correct", "partial", "misconception", "confused", "no_response"]
+    },
+    "primarySkill": {
+      "enum": [
+        "skill_diagnostic_questioning",
+        "skill_contextual_problem_setup",
+        "skill_concrete_example_bridge",
+        "skill_concept_mapping",
+        "skill_stepwise_scaffolding",
+        "skill_socratic_understanding_check",
+        "skill_misconception_contrast",
+        "skill_practice_feedback",
+        "skill_retrieval_review",
+        "skill_self_explanation",
+        "skill_transfer_check",
+        "skill_learner_summary",
+        "skill_engagement_recovery"
+      ]
+    },
+    "gold": {
+      "type": "object",
+      "required": [
+        "acceptable_signals",
+        "allowed_primary_skill_ids",
+        "must_address_term_groups",
+        "recall_term_groups",
+        "forbidden_output_terms",
+        "direct_answer_terms",
+        "profile_leakage_terms",
+        "requires_visual_abstention",
+        "expected_switch",
+        "should_stop",
+        "critical",
+        "must_not_repeat_previous"
+      ],
+      "properties": {
+        "acceptable_signals": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/signal"}
+        },
+        "allowed_primary_skill_ids": {
+          "type": "array",
+          "maxItems": 13,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/primarySkill"}
+        },
+        "must_address_term_groups": {"$ref": "#/$defs/termGroups"},
+        "recall_term_groups": {"$ref": "#/$defs/termGroups"},
+        "forbidden_output_terms": {"$ref": "#/$defs/stringList"},
+        "direct_answer_terms": {"$ref": "#/$defs/stringList"},
+        "profile_leakage_terms": {"$ref": "#/$defs/stringList"},
+        "requires_visual_abstention": {"type": "boolean"},
+        "expected_switch": {"type": ["boolean", "null"]},
+        "should_stop": {"type": "boolean"},
+        "critical": {"type": "boolean"},
+        "must_not_repeat_previous": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "learnerTurn": {
+      "type": "object",
+      "required": ["turn_id", "operation", "learner_input", "gold"],
+      "properties": {
+        "turn_id": {"$ref": "#/$defs/id"},
+        "operation": {"const": "learner_turn"},
+        "learner_input": {
+          "type": "object",
+          "required": ["text", "visual_evidence_refs"],
+          "properties": {
+            "text": {"type": "string", "maxLength": 2000},
+            "visual_evidence_refs": {
+              "type": "array",
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {"$ref": "#/$defs/id"}
+            }
+          },
+          "additionalProperties": false
+        },
+        "gold": {"$ref": "#/$defs/gold"}
+      },
+      "additionalProperties": false
+    },
+    "replaceProfile": {
+      "type": "object",
+      "required": ["turn_id", "operation", "profile_ref"],
+      "properties": {
+        "turn_id": {"$ref": "#/$defs/id"},
+        "operation": {"const": "replace_profile"},
+        "profile_ref": {"$ref": "#/$defs/id"}
+      },
+      "additionalProperties": false
+    },
+    "episode": {
+      "type": "object",
+      "required": [
+        "episode_id",
+        "category",
+        "goal_ref",
+        "student_profile_ref",
+        "turns"
+      ],
+      "properties": {
+        "episode_id": {"$ref": "#/$defs/id"},
+        "category": {"$ref": "#/$defs/id"},
+        "goal_ref": {"$ref": "#/$defs/id"},
+        "student_profile_ref": {"$ref": "#/$defs/id"},
+        "turns": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 16,
+          "items": {
+            "oneOf": [
+              {"$ref": "#/$defs/learnerTurn"},
+              {"$ref": "#/$defs/replaceProfile"}
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "claimBoundary": {
+      "type": "object",
+      "required": [
+        "source_type",
+        "expert_validated",
+        "real_students_involved",
+        "held_out_after_prompt_development",
+        "deployment_accuracy_established",
+        "real_learning_effect_established",
+        "intended_use",
+        "prohibited_claim"
+      ],
+      "properties": {
+        "source_type": {"const": "author_constructed_not_expert_validated"},
+        "expert_validated": {"const": false},
+        "real_students_involved": {"const": false},
+        "held_out_after_prompt_development": {"const": false},
+        "deployment_accuracy_established": {"const": false},
+        "real_learning_effect_established": {"const": false},
+        "intended_use": {"type": "string", "minLength": 1},
+        "prohibited_claim": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  }
+}

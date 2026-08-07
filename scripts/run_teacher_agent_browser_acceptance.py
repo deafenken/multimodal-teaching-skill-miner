@@ -50,11 +50,12 @@ _MASTERY_BARS = {
 _PROFILE_B_CUSTOM_MASTERY_FIELD = "conceptual"
 _PROFILE_B_CUSTOM_MASTERY_PERCENT = 65
 _PROFILE_B_CUSTOM_MASTERY_VALUE = _PROFILE_B_CUSTOM_MASTERY_PERCENT / 100.0
-_IMAGE_ANSWER_TEXT = (
-    "Recursion is a prerequisite concept.\n"
-    "Fibonacci contains repeated smaller subproblems.\n"
-    "Dynamic programming stores and reuses each state result."
+_IMAGE_CANONICAL_CLAIM = "Dynamic programming stores and reuses each state result."
+_IMAGE_CLAIM_SCOPE = (
+    "递归分解,状态定义,状态转移,边界与计算顺序,迁移判定"
 )
+_IMAGE_SCOPED_CLAIM_INPUT = f"{_IMAGE_CLAIM_SCOPE}::{_IMAGE_CANONICAL_CLAIM}"
+_IMAGE_ANSWER_TEXT = _IMAGE_CANONICAL_CLAIM
 
 
 class _AcceptanceFailure(RuntimeError):
@@ -253,6 +254,111 @@ def _page_has_no_horizontal_overflow(page: Any) -> bool:
     )
 
 
+def _image_turn_contract_checks(session: Mapping[str, Any]) -> dict[str, bool]:
+    """Return aggregate checks for the committed semantic image-only turn.
+
+    The browser label alone is insufficient: in deterministic demo mode an
+    operator can manually select ``correct``.  These checks instead inspect the
+    authoritative Session response and require a validated DeepSeek plan whose
+    final diagnosis is bound to the active question or teacher knowledge
+    contract.
+    """
+
+    history = session.get("history", [])
+    latest = history[-1] if isinstance(history, list) and history else {}
+    if not isinstance(latest, Mapping):
+        latest = {}
+    assessment = latest.get("deepseek_assessment", {})
+    if not isinstance(assessment, Mapping):
+        assessment = {}
+    evidence = latest.get("multimodal_evidence", [])
+    if not isinstance(evidence, list):
+        evidence = []
+    runtime = session.get("agent_runtime", {})
+    if not isinstance(runtime, Mapping):
+        runtime = {}
+    trace = latest.get("model_trace", runtime.get("last_model_trace", {}))
+    if not isinstance(trace, Mapping):
+        trace = {}
+    context_trace = runtime.get("last_context_trace", {})
+    if not isinstance(context_trace, Mapping):
+        context_trace = {}
+    setup_snapshot = session.get("setup_snapshot", {})
+    if not isinstance(setup_snapshot, Mapping):
+        setup_snapshot = {}
+    setup_goal = setup_snapshot.get("goal", {})
+    if not isinstance(setup_goal, Mapping):
+        setup_goal = {}
+    knowledge_spec = setup_goal.get("knowledge_spec", {})
+    if not isinstance(knowledge_spec, Mapping):
+        knowledge_spec = {}
+
+    claim = _IMAGE_CANONICAL_CLAIM.casefold().strip()
+    matching_evidence = [
+        item
+        for item in evidence
+        if isinstance(item, Mapping)
+        and claim
+        in {
+            line.casefold().strip()
+            for line in str(item.get("recognized_text", "")).splitlines()
+            if line.strip()
+        }
+    ]
+    trusted_matching_evidence = [
+        item
+        for item in matching_evidence
+        if item.get("source_modality") == "image"
+        and item.get("status") == "recognized"
+        and item.get("needs_student_confirmation") is False
+    ]
+    contract_sources = {
+        "active_question_contract_exact_match",
+        "teacher_knowledge_spec_exact_match",
+    }
+    configured_claims = knowledge_spec.get("canonical_claims", [])
+    teacher_claim_committed = bool(
+        isinstance(configured_claims, list)
+        and any(
+            isinstance(item, Mapping)
+            and str(item.get("statement", "")).strip() == _IMAGE_CANONICAL_CLAIM
+            and bool(item.get("knowledge_components"))
+            for item in configured_claims
+        )
+    )
+
+    return {
+        "image_teacher_claim_committed": teacher_claim_committed,
+        "image_only_learner_text_empty": latest.get("learner_text") == "",
+        "image_ocr_canonical_claim_recognized": bool(trusted_matching_evidence),
+        "image_evidence_privacy_preserved": bool(trusted_matching_evidence)
+        and all(
+            item.get("raw_media_retained") is False
+            and item.get("remote_media_sent") is False
+            for item in trusted_matching_evidence
+        ),
+        "image_assessment_signal_correct": assessment.get("signal") == "correct",
+        "image_assessment_answer_aligned": (
+            assessment.get("answer_alignment") == "aligned"
+        ),
+        "image_assessment_contract_bound": (
+            assessment.get("assessment_source") in contract_sources
+            and assessment.get("evidence_binding_source")
+            in {
+                "server_question_contract_exact_match",
+                "teacher_knowledge_spec_exact_match",
+            }
+        ),
+        "image_turn_used_validated_model_plan": (
+            context_trace.get("request_outcome") == "validated_model_plan"
+            and trace.get("provider") == "deepseek"
+            and trace.get("http_status") == 200
+            and trace.get("fallback_used") is not True
+            and not latest.get("model_error")
+        ),
+    }
+
+
 def _advance_active_session_outside_ui(page: Any, *, timeout_ms: int) -> bool:
     """Advance the authoritative Session without updating this tab's UI state."""
 
@@ -353,9 +459,7 @@ def _receipt(
             ),
             "viewports_checked": len(telemetry.overflow_by_viewport),
             "console_errors": telemetry.console_errors,
-            "expected_stale_console_errors": (
-                telemetry.expected_stale_console_errors
-            ),
+            "expected_stale_console_errors": (telemetry.expected_stale_console_errors),
             "expected_stale_replacement_rejections": (
                 telemetry.expected_stale_replacement_rejections
             ),
@@ -446,6 +550,31 @@ def _exercise_browser(
         stage="profile_a_start",
         code="default_goal_not_materialized",
     )
+    _require(
+        page.locator("#fallbackSignalField").is_hidden(),
+        stage="profile_a_start",
+        code="semantic_image_acceptance_requires_deepseek_backend",
+    )
+    if page.locator("#canonicalClaimsInput").is_hidden():
+        _perform(
+            lambda: page.locator(
+                "details:has(#canonicalClaimsInput) > summary"
+            ).click(),
+            stage="profile_a_start",
+            code="teacher_knowledge_contract_open_failed",
+        )
+    _perform(
+        lambda: page.locator("#canonicalClaimsInput").fill(_IMAGE_SCOPED_CLAIM_INPUT),
+        stage="profile_a_start",
+        code="teacher_knowledge_contract_input_failed",
+    )
+    _require(
+        page.locator("#canonicalClaimsInput").input_value()
+        == _IMAGE_SCOPED_CLAIM_INPUT,
+        stage="profile_a_start",
+        code="teacher_knowledge_contract_not_materialized",
+    )
+    checks["image_teacher_claim_configured_in_form"] = True
     _perform(
         lambda: page.locator("#remoteConsent").check(),
         stage="profile_a_start",
@@ -464,16 +593,23 @@ def _exercise_browser(
             const student = document.querySelector('#conversationStudentName');
             const round = document.querySelector('#roundCounter');
             const historyCount = document.querySelector('#historyCount');
+            const teacher = document.querySelector('#teacherMessage');
+            const announcer = document.querySelector('#newMessageAnnouncer');
+            const teacherText = teacher?.textContent.trim() || '';
             return Boolean(active && !active.hidden && setup && setup.hidden
                 && student && student.textContent.includes(name)
                 && round && round.textContent.trim() === roundText
-                && historyCount && historyCount.textContent.trim() === '0 轮');
+                && historyCount && historyCount.textContent.trim() === '0 轮'
+                && teacherText
+                && announcer?.textContent.trim()
+                    === `老师的新问题：${teacherText}`);
         }""",
         arg={"name": "小雨", "roundText": "R0"},
         stage="profile_a_start",
         code="profile_a_session_not_started",
         timeout_ms=timeout_ms,
     )
+    checks["profile_a_live_announcer_synced"] = True
     profile_a_rendered = _perform(
         lambda: _rendered_mastery(page),
         stage="profile_a_start",
@@ -523,12 +659,6 @@ def _exercise_browser(
         code="image_only_answer_not_staged",
         timeout_ms=timeout_ms,
     )
-    if page.locator("#fallbackSignalField").is_visible():
-        _perform(
-            lambda: page.locator("#fallbackSignalInput").select_option("correct"),
-            stage="profile_a_image_turn",
-            code="fallback_signal_selection_failed",
-        )
     _perform(
         lambda: page.locator("#stepButton").click(),
         stage="profile_a_image_turn",
@@ -567,7 +697,7 @@ def _exercise_browser(
         code="local_ocr_no_text_recognized",
     )
     _require(
-        "recursion" in visual_summary_text.casefold(),
+        _IMAGE_CANONICAL_CLAIM.casefold() in visual_summary_text.casefold(),
         stage="profile_a_image_turn",
         code="local_ocr_expected_text_missing",
     )
@@ -580,6 +710,42 @@ def _exercise_browser(
         page.locator("#assessmentLabel").text_content() == "理解正确",
         stage="profile_a_image_turn",
         code="profile_a_image_answer_not_recognized",
+    )
+    authoritative_session = _perform(
+        lambda: page.evaluate(
+            """async () => {
+                const sessionId = sessionStorage.getItem(
+                    'teachlab_opaque_session_handle_v2'
+                );
+                if (!sessionId) return null;
+                const response = await fetch(
+                    new URL('api/session', window.location.href).href,
+                    {
+                        method: 'POST',
+                        cache: 'no-store',
+                        credentials: 'same-origin',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({session_id: sessionId})
+                    }
+                );
+                if (!response.ok) return null;
+                return await response.json();
+            }"""
+        ),
+        stage="profile_a_image_turn",
+        code="authoritative_image_turn_session_unreadable",
+    )
+    _require(
+        isinstance(authoritative_session, Mapping),
+        stage="profile_a_image_turn",
+        code="authoritative_image_turn_session_missing",
+    )
+    semantic_image_checks = _image_turn_contract_checks(authoritative_session)
+    checks.update(semantic_image_checks)
+    _require(
+        all(semantic_image_checks.values()),
+        stage="profile_a_image_turn",
+        code="image_turn_not_semantically_contract_validated",
     )
     _require(
         telemetry.attachment_requests >= 1
@@ -965,10 +1131,16 @@ def _exercise_browser(
             const student = document.querySelector('#conversationStudentName');
             const round = document.querySelector('#roundCounter');
             const historyCount = document.querySelector('#historyCount');
+            const teacher = document.querySelector('#teacherMessage');
+            const announcer = document.querySelector('#newMessageAnnouncer');
+            const teacherText = teacher?.textContent.trim() || '';
             return Boolean(active && !active.hidden && setup && setup.hidden
                 && student && student.textContent.includes(name)
                 && round && round.textContent.trim() === roundText
-                && historyCount && historyCount.textContent.trim() === '0 轮');
+                && historyCount && historyCount.textContent.trim() === '0 轮'
+                && teacherText
+                && announcer?.textContent.trim()
+                    === `老师的新问题：${teacherText}`);
         }""",
         arg={"name": "子墨", "roundText": "R0"},
         stage="profile_b_replace",
@@ -976,6 +1148,7 @@ def _exercise_browser(
         timeout_ms=timeout_ms,
     )
     checks["profile_b_replacement_started"] = True
+    checks["profile_b_live_announcer_rebound"] = True
     profile_b_rendered = _perform(
         lambda: _rendered_mastery(page),
         stage="profile_b_replace",
@@ -1097,14 +1270,21 @@ def _exercise_browser(
         """() => {
             const round = document.querySelector('#roundCounter');
             const historyCount = document.querySelector('#historyCount');
+            const teacher = document.querySelector('#teacherMessage');
+            const announcer = document.querySelector('#newMessageAnnouncer');
+            const teacherText = teacher?.textContent.trim() || '';
             return Boolean(round && round.textContent.trim() === 'R1'
-                && historyCount && historyCount.textContent.trim() === '1 轮');
+                && historyCount && historyCount.textContent.trim() === '1 轮'
+                && teacherText
+                && announcer?.textContent.trim()
+                    === `老师的新问题：${teacherText}`);
         }""",
         stage="profile_b_turn",
         code="profile_b_turn_not_committed_after_replacement",
         timeout_ms=timeout_ms,
     )
     checks["profile_b_turn_committed_after_replacement"] = True
+    checks["profile_b_turn_live_announcer_synced"] = True
 
     _perform(
         lambda: page.reload(wait_until="domcontentloaded", timeout=timeout_ms),
@@ -1119,10 +1299,16 @@ def _exercise_browser(
             const student = document.querySelector('#conversationStudentName');
             const round = document.querySelector('#roundCounter');
             const historyCount = document.querySelector('#historyCount');
+            const teacher = document.querySelector('#teacherMessage');
+            const announcer = document.querySelector('#newMessageAnnouncer');
+            const teacherText = teacher?.textContent.trim() || '';
             return Boolean(active && !active.hidden && setup && setup.hidden
                 && student && student.textContent.includes(name)
                 && round && round.textContent.trim() === roundText
-                && historyCount && historyCount.textContent.trim() === '1 轮');
+                && historyCount && historyCount.textContent.trim() === '1 轮'
+                && teacherText
+                && announcer?.textContent.trim()
+                    === `老师的新问题：${teacherText}`);
         }""",
         arg={"name": "子墨", "roundText": "R1"},
         stage="refresh_resume",
@@ -1130,6 +1316,7 @@ def _exercise_browser(
         timeout_ms=timeout_ms,
     )
     checks["refresh_resumed_profile_b"] = True
+    checks["refresh_live_announcer_rehydrated"] = True
     refreshed_handle = _perform(
         lambda: page.evaluate(
             """() => sessionStorage.getItem(
@@ -1145,6 +1332,43 @@ def _exercise_browser(
         code="refresh_changed_opaque_session_handle",
     )
     checks["refresh_preserved_opaque_session_handle"] = True
+    if manual_supported:
+        _perform(
+            lambda: page.locator("#learnerResponse").fill("/auto"),
+            stage="auto_command",
+            code="auto_command_input_failed",
+        )
+        _perform(
+            lambda: page.locator("#stepButton").click(),
+            stage="auto_command",
+            code="auto_command_submit_failed",
+        )
+        _wait_for_js(
+            page,
+            """() => {
+                const teacher = document.querySelector('#teacherMessage');
+                const announcer = document.querySelector('#newMessageAnnouncer');
+                const teacherText = teacher?.textContent.trim() || '';
+                return document.querySelector('#learnerResponse')?.value === ''
+                    && document.querySelector('#autoModeButton')
+                        ?.getAttribute('aria-pressed') === 'true'
+                    && teacherText
+                    && announcer?.textContent.trim()
+                        === `老师的新问题：${teacherText}`;
+            }""",
+            stage="auto_command",
+            code="auto_command_ui_state_not_synchronized",
+            timeout_ms=timeout_ms,
+        )
+        checks["auto_command_cleared_composer"] = True
+        checks["auto_command_live_announcer_synced"] = True
+    else:
+        optional_checks["auto_command_cleared_composer"] = (
+            "skipped_provider_unavailable"
+        )
+        optional_checks["auto_command_live_announcer_synced"] = (
+            "skipped_provider_unavailable"
+        )
     _perform(
         lambda: page.locator("#presetButton").click(),
         stage="refresh_resume",
@@ -1198,6 +1422,61 @@ def _exercise_browser(
         code="resumed_profile_text_not_rehydrated",
     )
     checks["refresh_profile_text_rehydrated"] = True
+
+    _perform(
+        lambda: page.locator("#presetButton").click(),
+        stage="refresh_resume",
+        code="resumed_setup_close_failed",
+    )
+    _wait_for_js(
+        page,
+        "() => document.querySelector('#setupForm')?.hidden === true",
+        stage="refresh_resume",
+        code="resumed_setup_did_not_close",
+        timeout_ms=timeout_ms,
+    )
+    if manual_supported:
+        _perform(
+            lambda: page.locator("#learnerResponse").fill("/stop"),
+            stage="stop_command",
+            code="stop_command_input_failed",
+        )
+        _perform(
+            lambda: page.locator("#stepButton").click(),
+            stage="stop_command",
+            code="stop_command_submit_failed",
+        )
+        _wait_for_js(
+            page,
+            """() => {
+                const active = document.querySelector('#activeSession');
+                const turnForm = document.querySelector('#turnForm');
+                const actionType = document.querySelector('#actionType');
+                const announcer = document.querySelector('#newMessageAnnouncer');
+                return Boolean(active && !active.hidden
+                    && turnForm?.hidden
+                    && actionType?.textContent.toLowerCase().includes('stop')
+                    && document.querySelector('#learnerResponse')?.value === ''
+                    && announcer?.textContent.trim()
+                        === '本次教学会话已经结束。');
+            }""",
+            stage="stop_command",
+            code="stop_command_ui_state_not_synchronized",
+            timeout_ms=timeout_ms,
+        )
+        checks["stop_command_terminal_state_rendered"] = True
+        checks["stop_command_cleared_composer"] = True
+        checks["stop_command_live_announcer_synced"] = True
+    else:
+        optional_checks["stop_command_terminal_state_rendered"] = (
+            "skipped_provider_unavailable"
+        )
+        optional_checks["stop_command_cleared_composer"] = (
+            "skipped_provider_unavailable"
+        )
+        optional_checks["stop_command_live_announcer_synced"] = (
+            "skipped_provider_unavailable"
+        )
 
     _perform(
         lambda: page.locator("#evaluationViewButton").click(),
@@ -1327,7 +1606,9 @@ def _exercise_browser(
                 timeout_ms=timeout_ms,
             )
             _perform(
-                lambda: page.locator("#drawerBackdrop").click(position={"x": 4, "y": 4}),
+                lambda: page.locator("#drawerBackdrop").click(
+                    position={"x": 4, "y": 4}
+                ),
                 stage="responsive_accessibility",
                 code="inspector_drawer_backdrop_close_failed",
             )
@@ -1637,22 +1918,18 @@ def run_browser_acceptance(
                             )
                         profile = payload.get("student_profile")
                         profile_roundtrip_valid = bool(
-                                isinstance(profile, Mapping)
-                                and isinstance(profile.get("preferences"), list)
-                                and bool(profile.get("preferences"))
-                                and isinstance(
-                                    profile.get("known_misconceptions"), list
-                                )
-                                and bool(profile.get("known_misconceptions"))
-                                and isinstance(profile.get("background_history"), list)
-                                and bool(profile.get("background_history"))
-                                and isinstance(
-                                    profile.get("conversation_history"), list
-                                )
-                                and isinstance(profile.get("accessibility_needs"), list)
-                                and isinstance(
-                                    profile.get("contains_direct_identity"), bool
-                                )
+                            isinstance(profile, Mapping)
+                            and isinstance(profile.get("preferences"), list)
+                            and bool(profile.get("preferences"))
+                            and isinstance(profile.get("known_misconceptions"), list)
+                            and bool(profile.get("known_misconceptions"))
+                            and isinstance(profile.get("background_history"), list)
+                            and bool(profile.get("background_history"))
+                            and isinstance(profile.get("conversation_history"), list)
+                            and isinstance(profile.get("accessibility_needs"), list)
+                            and isinstance(
+                                profile.get("contains_direct_identity"), bool
+                            )
                         )
                         telemetry.replacement_request_had_profile_roundtrip_fields = (
                             profile_roundtrip_valid

@@ -1,5 +1,7 @@
 # 题目二现场答辩讲稿
 
+边界提醒：学生“确认识别文字”只确认转写，确认不等于答案正确。
+
 这份讲稿按“学习工作台 → 实验 / 评估”两个视图的顺序写，正常语速约 4 分钟。不要背术语；每说一个结论，就把鼠标指向页面上对应的字段。
 
 ## 演示前准备
@@ -18,7 +20,13 @@
 
 接着用一句话说清技术方案：
 
-> 我们用 DeepSeek V4 Flash 理解学生回答并提议 Skill，用确定性控制器守住状态、路由和停止边界，再由服务端 Skill Runtime 按最终 Skill 契约生成本轮教学话语。这样既保留语义理解能力，也不会让模型原始话语绕过 Skill 或随意改状态。
+> 我们用 DeepSeek V4 Flash 理解学生回答、提议 Skill 并生成当前动作候选，用确定性控制器守住状态、路由和停止边界。安全话语只有通过最终 Skill、单动作、问题契约和防答案泄露门禁才会展示，否则由本地确定性 materializer 接管；页面会直接显示动作来源。
+
+> 生产页面还打开了 state-first 路由：模型先提候选，控制器按掌握短板、误解、参与度、无进展次数和 Skill 契约确定优先层，模型只在同层作 tie-break。页面忙碌时的“停止生成”只取消当前回合并保留 Session；显式 `/stop` 才结束整个 Session，`transport_cancellation_supported=false` 表示远程请求本身仍可能完成。
+
+> 这一版 live prompt 是 V14（`teaching_agent_assess_route_act_v14_state_first_route_adjudication`）。action-only repair 只修当前动作；请求统计按 `completed_committed_turns_only`，且 `transport_cancellation_supported=false`。这些是工程边界，不是把开发集分数说成部署准确率。
+
+本答辩指南以 V14 state-first 契约为准；代码和审计字段使用 `action_only_repair`、`continuity_recall` 与 `cancel_turn` 的固定名称，便于现场复核。
 
 ## 0:30—1:05：01 目标与画像
 
@@ -40,7 +48,7 @@
 
 再指向 `decision origin` 或运行状态：
 
-> 这里要同时看 decision origin 和诊断来源。`DEEPSEEK ASSESSMENT` 表示模型原判通过契约；`DEEPSEEK + CONTRACT GUARD` 表示模型判断被确定性约束修正；`ACTIVE CONTRACT EXACT MATCH` 表示当前短答案精确命中服务端问题契约；`SAFETY FALLBACK SIGNAL` 才是 API 或校验失败后的规则回退。后三种不能笼统冒充未经修正的模型原判，fallback 更不是自由文本识别结果。
+> 这里要同时看 decision origin、诊断来源和动作来源。`DEEPSEEK ASSESSMENT` 表示模型原判通过契约；`DEEPSEEK + CONTRACT GUARD` 表示模型判断被确定性约束修正；`ACTIVE CONTRACT EXACT MATCH` 和 `TEACHER KNOWLEDGE SPEC EXACT MATCH` 分别表示本问契约或教师知识规格精确命中；`SAFETY FALLBACK SIGNAL` 才是 API 或校验失败后的规则回退。动作来源若是 `DEEPSEEK SAFE GENERATIVE`，说明模型话语通过全部动作门禁；若是 `DETERMINISTIC MATERIALIZER`，说明本地执行器接管。诊断来源和动作来源不能混为一谈。
 
 ## 1:40—2:45：连续三轮互动，展示 Skill 动态切换
 
@@ -48,7 +56,7 @@
 
 如需先展示图片输入，可把文字框留空，点击“添加答案图片”上传准备好的印刷文字图，再提交：
 
-> 这里不是把照片直接发给 DeepSeek。原图只在本机临时处理；macOS 优先用 Apple Vision，本机不可用或识别失败时回退到 Tesseract，其他平台使用 Tesseract。远程模型只看到长度受限并经过常见直接标识符模式替换的 OCR 文字、状态和置信度。页面会显示 OCR 摘要以及是否需要学生确认。这个演示只说明高对比度印刷文字链路可运行，不代表手写或公式识别准确率已经建立；公式样文本无论引擎置信度多高都要让学生核对。
+> 这里不是把照片直接发给 DeepSeek。原图只在本机临时处理；系统可组合 Apple Vision 与原图、灰度增强、二值图上的多条 Tesseract 路由。远程模型只看到长度受限并经过常见直接标识符模式替换的 OCR 文字、状态和置信度。多路线一致可以建立“公式转写可靠”，但 `formula_accuracy_established` 仍是 false；只有精确命中当前问题契约或教师知识规格才可确定性判对。低置信、路线冲突、键入/OCR 冲突或未获佐证的公式仍要求学生确认。这个演示不代表手写、公式 OCR 或判分部署准确率已经建立。
 
 第一条，先给出一个有用的前置信号：
 
@@ -98,6 +106,10 @@
 
 > 第一层评估检查单轮自由文本诊断和路由。28 个作者构造案例覆盖四个学科和七类回答，最新在线开发运行的信号 Accuracy 是 0.892857，Macro-F1 是 0.875325，允许主 Skill 命中率是 0.750000，切换 F1 是 0.787879。它使用与 live question-contract 共享的 v3 诊断 taxonomy 和语义量表，但 benchmark prompt 不是完整 live Session prompt，所以不能把这组数字说成多轮 Session 质量；它也不是独立锁箱或真实学生准确率。
 
+再指向多轮 benchmark 说明：
+
+> 我们还构造了 20 个多轮 episode，其中有 65 个学生回答回合和 1 次画像替换操作，专门压长期记忆、图片证据、知识纠错、Skill 切换、画像隔离和终止恢复。gold 不会发给模型；但它仍是作者构造、未经专家复核、未锁箱的开发集。当前只展示评估管线和覆盖范围，不编造尚未完成的在线数值，也不把它说成部署准确率。
+
 再指向自适应 Agent 与固定单 Skill表：
 
 > 第二层是四条结构化轨迹的机制回归。自适应 Agent 的允许决策匹配率是 0.916667，终止匹配率是 1；固定基线整段只用逐步支架。这里的模拟增益差是 16.9165，只说明状态机按 fixture 工作，不能说学生成绩提高了 16.9 分。
@@ -140,7 +152,9 @@
 
 ### 4.2 你们真的做了上下文吗？
 
-> 做了，而且不是简单拼接聊天记录。每轮只有一个受预算约束的六层上下文：目标与教师画像、当前计划、近期相关回合、较早历史检查点、掌握与误解状态、未确认候选记忆；本轮回答只出现一次，所有关键状态都有来源指针。多知识点目标只标当前动作真正涉及的知识点，默认最多保留 6 个相关回合、总计 14000 字符；超长会话会逐层裁剪，旧内容被压缩但不会由模型编造摘要。
+> 做了，而且不是简单拼接聊天记录。每轮只有一个受预算约束的六层上下文：目标与教师画像、当前计划、近期相关回合、较早历史检查点与可 replay 的 `teaching_memory`、掌握与误解状态、未确认候选记忆；本轮回答只出现一次，所有关键状态都有来源指针。`teaching_memory` 只保存显式偏好、未解决问题、教师承诺和“第二种”等指代对象，不由模型编写叙事摘要。默认最多保留 10 个相关回合、总计 14000 字符；超长会话会逐层裁剪。
+
+> 对“第二种呢”“回到第 1 轮”“按约定继续”等显式提示，服务端会生成有证据指针的 `continuity_recall`；找到证据才接续，找不到就明确请学生重述。action-only repair 只拿到有界的 continuity constraints，不会另写一份历史。
 
 ### 4.3 自由填写的既往上下文会不会伪造学生状态？
 
@@ -172,7 +186,7 @@
 
 ### 9.1 能可靠识别手写稿和数学公式吗？
 
-> 不能这样声称。当前印刷文字链路可以演示，手写、复杂版面和公式的部署准确率没有独立 gold set；OCR 引擎置信度也不是公式正确率。系统检测到公式样文本时会强制要求学生核对关键式子，低置信或无文字时也会请求补充，而不是猜图。
+> 不能这样声称。当前印刷文字链路可以演示，手写、复杂版面和公式的部署准确率没有独立 gold set；OCR 引擎置信度也不是公式正确率。低置信、无文字、路线冲突或未佐证的公式样文本会要求学生确认转写；确认转写不等于答案正确，只有后续精确命中当前问题契约或教师知识规格才可能判定，系统不会猜图。
 
 ### 10. 如何证明 Agent 比普通聊天好？
 
@@ -200,8 +214,12 @@
 
 ### 16. 为什么说画像切换和重试是 Codex 风格可靠性，而不是复制 Codex？
 
-> 我们只借鉴 thread/turn identity、预期轮次核验、陈旧异步结果隔离和 running/cold resume 思路。请求 body 指纹与有界响应缓存、画像 prepare-then-commit、16 槽注册表、分层教学上下文和问题契约都是本项目实现。每个 Session 独立加锁，step/command 同时绑定轮次、问题、上下文版本和画像版本；没有复制 Codex 的 UI、Shell、Git、沙箱或多 Agent 能力。
+> 我们只借鉴官方 Codex 固定提交 `15ea598c6e7e0914a7ae8c881ac05dacea2f7902` 的 thread/turn identity、预期轮次核验、陈旧异步结果隔离、追加式事件和 cold-resume 可靠性模式。当前网页、请求协议、教学上下文和状态机是本项目原创实现，没有复制 Codex 的 UI、Shell、Git、沙箱或多 Agent 能力。默认会话仍在内存；只有显式 `--session-store` 才写本机 hash-chained JSONL，并用 started/committed/aborted、runtime policy 和 Skill 子集门禁冷恢复。
 
 ### 17. 你们做了浏览器 E2E 吗？
 
 > 做了真实 Chrome E2E，不再只靠静态解析或 HTTP 冒烟。runner 会在内存中生成一张高对比度印刷文字 PNG，以输入框留空的 image-only 方式检查图片上传、本机 OCR、附件与当前回合绑定、正确回答显示和原图未发送；随后再完成画像 A→B 事务切换、掌握状态与 opaque handle 隔离、旧手动 Skill 不继承、刷新恢复、画像表单回填与评估页，并检查 390/768/1440 三种宽度、控制台、页面错误和失败请求。边界也要说清：这是合成印刷文字的 Chrome 工程验收，不代表手写/公式准确率、Firefox/Safari、屏幕阅读器、真实学生部署或学习效果已经验证。
+
+### 18. “停止生成”和 `/stop` 有什么区别？
+
+> 忙碌时按钮调用 `cancel_turn`，只让当前生成回合失效，Session 仍可继续；迟到响应被 commit fence 丢弃，不会追加历史或轮次。DeepSeek HTTP 请求没有传输层取消，可能仍在后台完成并计费。`/stop` 是教师主动终止整个 Session，状态变为 terminal，二者不能混说。

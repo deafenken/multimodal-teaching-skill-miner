@@ -22,6 +22,7 @@ schema/teacher_agent_free_text_benchmark_report.schema.json
 schema/teacher_agent_learning_observation.schema.json
 schema/teacher_agent_learning_report.schema.json
 schema/teacher_agent_live_session.schema.json
+schema/teacher_agent_multiturn_benchmark.schema.json
 schema/teacher_agent_session.schema.json
 schema/teacher_agent_skill_library.schema.json
 schema/teacher_agent_skill_library_v2.schema.json

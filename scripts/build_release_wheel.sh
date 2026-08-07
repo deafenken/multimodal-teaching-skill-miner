@@ -43,6 +43,7 @@ for relative_path in \
   data/teacher_agent_free_text_benchmark.json \
   data/teacher_agent_free_text_benchmark_receipt.json \
   data/teacher_agent_learning_outcome_demo.json \
+  data/teacher_agent_multiturn_benchmark_v1.json \
   data/teacher_agent_skill_library.json \
   data/teacher_agent_skill_library_v2.json \
   data/transcripts/linear_algebra_l01.json \

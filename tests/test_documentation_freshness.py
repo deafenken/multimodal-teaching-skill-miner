@@ -11,6 +11,7 @@ from teaching_skill_miner.teacher_agent import (
     ADAPTIVE_OBSERVATION_LIMIT,
     ADAPTIVE_OBSERVATION_STATUS,
 )
+from teaching_skill_miner.teacher_agent_live import LIVE_PROMPT_VERSION
 
 
 class DocumentationFreshnessTests(unittest.TestCase):
@@ -167,6 +168,85 @@ class DocumentationFreshnessTests(unittest.TestCase):
         acceptance = documents["docs/teacher_agent_acceptance_matrix.md"]
         self.assertIn("`teacher_provided_fields_overwritten=false`", acceptance)
         self.assertIn("fallback 后候选数不增加", acceptance)
+
+    def test_task_two_docs_match_current_resume_visual_and_multiturn_boundaries(
+        self,
+    ) -> None:
+        readme = self._read("README.md")
+        task_two_readme = readme.split(
+            "### 题目二：实时自适应教学 Agent", 1
+        )[1].split("### 本机双成果真实演示", 1)[0]
+        task_two = self._read("docs/teacher_agent_task2.md")
+        acceptance = self._read("docs/teacher_agent_acceptance_matrix.md")
+        defense = self._read("docs/teacher_agent_defense_guide.md")
+
+        for label, text in {
+            "README task two": task_two_readme,
+            "task two design": task_two,
+            "acceptance matrix": acceptance,
+            "defense guide": defense,
+        }.items():
+            with self.subTest(document=label):
+                self.assertIn("20", text)
+                self.assertIn("65", text)
+                self.assertIn("1 次画像替换操作", text)
+                self.assertIn("未经专家复核", text)
+                self.assertIn("formula_accuracy_established", text)
+                self.assertIn("--session-store", text)
+
+        for text in (task_two_readme, task_two, acceptance):
+            self.assertIn("formula_transcription_established", text)
+
+        for text in (task_two_readme, task_two, defense):
+            self.assertIn("15ea598c6e7e0914a7ae8c881ac05dacea2f7902", text)
+
+        for text in (task_two_readme, task_two, acceptance):
+            self.assertIn("runtime_policy_contract", text)
+            self.assertIn("turn_started", text)
+            self.assertIn("turn_committed", text)
+            self.assertIn("turn_aborted", text)
+            self.assertIn("deepseek_safe_generative", text)
+            self.assertIn("deterministic_materializer", text)
+
+        self.assertIn("10 个相关回合", task_two_readme)
+        self.assertIn("默认最多 10 个相关回合", acceptance)
+        self.assertNotIn("公式样或低于共享数值阈值的 OCR 固定要求", task_two)
+
+    def test_task_two_docs_match_v14_routing_continuity_accounting_and_stop_edges(
+        self,
+    ) -> None:
+        readme = self._read("README.md")
+        task_two = self._read("docs/teacher_agent_task2.md")
+        acceptance = self._read("docs/teacher_agent_acceptance_matrix.md")
+        defense = self._read("docs/teacher_agent_defense_guide.md")
+        project_status = self._read("docs/project_status.md")
+        changelog = self._read("CHANGELOG.md")
+        documents = {
+            "README.md": readme,
+            "docs/teacher_agent_task2.md": task_two,
+            "docs/teacher_agent_acceptance_matrix.md": acceptance,
+            "docs/teacher_agent_defense_guide.md": defense,
+            "docs/project_status.md": project_status,
+            "CHANGELOG.md": changelog,
+        }
+        self.assertEqual(
+            LIVE_PROMPT_VERSION,
+            "teaching_agent_assess_route_act_v14_state_first_route_adjudication",
+        )
+        for relative, text in documents.items():
+            with self.subTest(document=relative):
+                self.assertIn("V14", text)
+                self.assertNotIn("V12", text)
+                self.assertNotIn("v12", text)
+                self.assertIn("state-first", text)
+                self.assertIn("continuity_recall", text)
+                self.assertIn("action_only_repair", text)
+                self.assertIn("completed_committed_turns_only", text)
+                self.assertIn("cancel_turn", text)
+                self.assertIn("transport_cancellation_supported", text)
+        for text in (readme, task_two, acceptance, defense):
+            self.assertIn("确认不等于答案正确", text)
+        self.assertIn(LIVE_PROMPT_VERSION, acceptance)
 
 
 if __name__ == "__main__":

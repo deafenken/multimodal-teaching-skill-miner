@@ -12,8 +12,10 @@ from PIL import Image
 
 from scripts.run_teacher_agent_browser_acceptance import (
     RECEIPT_SCHEMA,
+    _IMAGE_CANONICAL_CLAIM,
     _Telemetry,
     _image_answer_png,
+    _image_turn_contract_checks,
     _receipt,
     _request_within_capability,
     _validated_base_url,
@@ -160,7 +162,7 @@ class TeacherAgentBrowserAcceptanceTests(unittest.TestCase):
             "session_id",
             "profile_ref",
             "learner_response",
-            "Recursion is a prerequisite concept.",
+            "Dynamic programming stores and reuses each state result.",
             "OCR：Recursion",
             "synthetic console error detail",
         ):
@@ -188,6 +190,107 @@ class TeacherAgentBrowserAcceptanceTests(unittest.TestCase):
             self.assertGreaterEqual(image.width, 1200)
             self.assertGreaterEqual(image.height, 200)
 
+    def test_image_turn_contract_requires_model_and_exact_evidence_binding(
+        self,
+    ) -> None:
+        session = {
+            "setup_snapshot": {
+                "goal": {
+                    "knowledge_spec": {
+                        "canonical_claims": [
+                            {
+                                "claim_id": "workbench_claim_01",
+                                "statement": _IMAGE_CANONICAL_CLAIM,
+                                "knowledge_components": ["状态定义"],
+                            }
+                        ]
+                    }
+                }
+            },
+            "history": [
+                {
+                    "learner_text": "",
+                    "deepseek_assessment": {
+                        "signal": "correct",
+                        "answer_alignment": "aligned",
+                        "assessment_source": ("teacher_knowledge_spec_exact_match"),
+                        "evidence_binding_source": (
+                            "teacher_knowledge_spec_exact_match"
+                        ),
+                    },
+                    "multimodal_evidence": [
+                        {
+                            "source_modality": "image",
+                            "status": "recognized",
+                            "recognized_text": (
+                                "A supporting observation.\n" + _IMAGE_CANONICAL_CLAIM
+                            ),
+                            "needs_student_confirmation": False,
+                            "raw_media_retained": False,
+                            "remote_media_sent": False,
+                        }
+                    ],
+                    "model_trace": {
+                        "provider": "deepseek",
+                        "http_status": 200,
+                    },
+                }
+            ],
+            "agent_runtime": {
+                "last_context_trace": {"request_outcome": "validated_model_plan"}
+            },
+        }
+
+        self.assertTrue(all(_image_turn_contract_checks(session).values()))
+
+    def test_manual_correct_fallback_cannot_pass_image_semantic_contract(
+        self,
+    ) -> None:
+        fallback_session = {
+            "setup_snapshot": {
+                "goal": {
+                    "knowledge_spec": {
+                        "canonical_claims": [{"statement": _IMAGE_CANONICAL_CLAIM}]
+                    }
+                }
+            },
+            "history": [
+                {
+                    "learner_text": "",
+                    "structured_signal": {
+                        "label": "correct",
+                        "source": "teacher_provided_demo_label",
+                    },
+                    "multimodal_evidence": [
+                        {
+                            "source_modality": "image",
+                            "status": "recognized",
+                            "recognized_text": _IMAGE_CANONICAL_CLAIM,
+                            "needs_student_confirmation": False,
+                            "raw_media_retained": False,
+                            "remote_media_sent": False,
+                        }
+                    ],
+                    "model_error": "provider unavailable",
+                    "model_trace": {
+                        "provider": "deterministic",
+                        "fallback_used": True,
+                    },
+                }
+            ],
+            "agent_runtime": {
+                "last_context_trace": {
+                    "request_outcome": "deterministic_safety_fallback"
+                }
+            },
+        }
+
+        checks = _image_turn_contract_checks(fallback_session)
+        self.assertFalse(checks["image_assessment_signal_correct"])
+        self.assertFalse(checks["image_assessment_contract_bound"])
+        self.assertFalse(checks["image_turn_used_validated_model_plan"])
+        self.assertFalse(all(checks.values()))
+
     def test_source_contains_real_browser_lifecycle_and_no_artifact_capture(
         self,
     ) -> None:
@@ -212,6 +315,15 @@ class TeacherAgentBrowserAcceptanceTests(unittest.TestCase):
             "replacement_request_had_custom_mastery",
             'checks["profile_b_mastery_ring_updated_live"]',
             'checks["profile_b_custom_mastery_materialized"]',
+            'checks["profile_a_live_announcer_synced"]',
+            'checks["profile_b_live_announcer_rebound"]',
+            'checks["profile_b_turn_live_announcer_synced"]',
+            'checks["refresh_live_announcer_rehydrated"]',
+            'checks["auto_command_cleared_composer"]',
+            'checks["auto_command_live_announcer_synced"]',
+            'checks["stop_command_terminal_state_rendered"]',
+            'checks["stop_command_cleared_composer"]',
+            'checks["stop_command_live_announcer_synced"]',
             'checks["profile_a_image_only_turn_committed"]',
             'checks["profile_a_image_attachment_uploaded"]',
             'checks["profile_a_image_step_bound"]',
@@ -234,15 +346,21 @@ class TeacherAgentBrowserAcceptanceTests(unittest.TestCase):
             "取消草稿不应成为活动目标",
             '"replace_expected_profile_revision"',
             '"#answerImageInput"',
+            "document.querySelector('#newMessageAnnouncer')",
             "set_input_files(",
             '"api/attachment"',
             '"attachment_ids"',
-            "Recursion is a prerequisite concept.",
+            "Dynamic programming stores and reuses each state result.",
+            "image_turn_not_semantically_contract_validated",
+            "image_assessment_signal_correct",
+            "image_assessment_contract_bound",
+            "image_turn_used_validated_model_plan",
+            "teacher_knowledge_spec_exact_match",
             "local_ocr_unavailable",
             "原图未发送",
-            'responsive_sidebar_modal_',
-            'responsive_inspector_modal_',
-            'responsive_desktop_inert_cleared_',
+            "responsive_sidebar_modal_",
+            "responsive_inspector_modal_",
+            "responsive_desktop_inert_cleared_",
             "sidebar_drawer_modal_contract_failed",
             "inspector_drawer_modal_contract_failed",
             "desktop_drawer_inert_not_cleared",
@@ -257,6 +375,7 @@ class TeacherAgentBrowserAcceptanceTests(unittest.TestCase):
             "print(base_url",
             "print(safe_base_url",
             "str(exc)",
+            'select_option("correct")',
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotIn(forbidden, source)

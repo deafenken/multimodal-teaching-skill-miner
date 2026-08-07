@@ -8,7 +8,9 @@ from html.parser import HTMLParser
 import http.client
 import io
 import json
+from pathlib import Path
 import threading
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
@@ -268,6 +270,28 @@ class _RecordingVisionExtractor:
             "remote_media_sent": False,
             "remote_representation": "bounded_redacted_ocr_text_only",
         }
+
+
+class _ConfirmationRequiredVisionExtractor(_RecordingVisionExtractor):
+    """Synthetic OCR whose text is useful only after the student checks it."""
+
+    def __call__(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+        *,
+        display_name: str,
+    ) -> dict[str, object]:
+        evidence = super().__call__(
+            image_bytes,
+            mime_type,
+            display_name=display_name,
+        )
+        evidence["recognized_text"] = "疑似识别文字，需要学生核对。"
+        evidence["confidence"] = 0.43
+        evidence["formula_like_text_detected"] = True
+        evidence["needs_student_confirmation"] = True
+        return evidence
 
 
 class TeacherAgentDashboardTests(unittest.TestCase):
@@ -649,7 +673,15 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(started["setup_snapshot"]["goal"], goal)
+        self.assertEqual(started["setup_snapshot"]["goal"], started["goal"])
+        self.assertEqual(
+            started["setup_snapshot"]["goal"]["knowledge_components"],
+            goal["knowledge_components"],
+        )
+        self.assertEqual(
+            started["setup_snapshot"]["goal"]["knowledge_spec"]["status"],
+            "teacher_provided",
+        )
         self.assertEqual(
             started["setup_snapshot"]["student_profile"],
             {
@@ -890,7 +922,9 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         with self.assertRaisesRegex(TeacherAgentDashboardError, "no longer available"):
             snapshot.resume({"session_id": original["session_id"]})
 
-    def test_replacement_waits_for_inflight_step_then_commits_after_it(self) -> None:
+    def test_replacement_preempts_inflight_step_and_late_response_cannot_commit(
+        self,
+    ) -> None:
         client = _BlockingCallLiveClient(block_call=2)
         snapshot = build_teacher_agent_dashboard_snapshot(
             self.v2_library_path,
@@ -952,8 +986,13 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         replacement_thread = threading.Thread(target=run_replacement)
         replacement_thread.start()
         self.assertTrue(replacement_attempted.wait(timeout=2))
-        self.assertFalse(replacement_done.wait(timeout=0.05))
-        self.assertEqual(snapshot.session_id, original["session_id"])
+        self.assertTrue(replacement_done.wait(timeout=2))
+        self.assertEqual(len(replacement_results), 1)
+        replacement = replacement_results[0]
+        self.assertNotEqual(replacement["session_id"], original["session_id"])
+        self.assertEqual(snapshot.session_id, replacement["session_id"])
+        self.assertNotIn(original["session_id"], snapshot.sessions)
+        self.assertTrue(step_thread.is_alive())
 
         client.release_blocked_call.set()
         step_thread.join(timeout=5)
@@ -963,16 +1002,304 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertFalse(replacement_thread.is_alive())
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], TeacherAgentDashboardError)
-        self.assertIn("replace_expected_round", str(errors[0]))
-        self.assertEqual(len(step_results), 1)
-        self.assertEqual(step_results[0]["rounds_completed"], 1)
-        self.assertEqual(replacement_results, [])
-        self.assertEqual(set(snapshot.sessions), {original["session_id"]})
+        self.assertIn("cancelled before commit", str(errors[0]))
+        self.assertEqual(step_results, [])
+        self.assertEqual(set(snapshot.sessions), {replacement["session_id"]})
         self.assertEqual(
-            snapshot.resume({"session_id": original["session_id"]}),
-            step_results[0],
+            snapshot.resume({"session_id": replacement["session_id"]}),
+            replacement,
         )
+        self.assertEqual(client.chat_json_call_count, 3)
+
+    def test_active_turn_rejects_duplicate_and_competing_step_without_extra_call(
+        self,
+    ) -> None:
+        client = _BlockingCallLiveClient(block_call=2)
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.v2_library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "active-turn-start",
+                "remote_processing_acknowledged": True,
+            }
+        )
+        body = {
+            "session_id": started["session_id"],
+            "expected_round": 0,
+            "expected_question_id": started["expected_question_id"],
+            "expected_context_version": started["context_version"],
+            "profile_revision": started["profile_summary"]["profile_revision"],
+            "idempotency_key": "active-turn-one",
+            "learner_response": "我先提交这一条回答。",
+        }
+        first_results: list[dict[str, object]] = []
+        first_errors: list[BaseException] = []
+
+        def run_first() -> None:
+            try:
+                first_results.append(snapshot.step(body))
+            except BaseException as exc:  # pragma: no cover - asserted below
+                first_errors.append(exc)
+
+        first_thread = threading.Thread(target=run_first)
+        first_thread.start()
+        self.assertTrue(client.blocked_call_entered.wait(timeout=2))
+
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError, "idempotent turn is still running"
+        ):
+            snapshot.step(body)
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError, "another turn is already running"
+        ):
+            snapshot.step(
+                {
+                    **body,
+                    "idempotency_key": "active-turn-two",
+                    "learner_response": "竞争提交不应调用模型。",
+                }
+            )
         self.assertEqual(client.chat_json_call_count, 2)
+
+        client.release_blocked_call.set()
+        first_thread.join(timeout=5)
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(first_errors)
+        self.assertEqual(len(first_results), 1)
+        self.assertEqual(snapshot.step(body), first_results[0])
+        self.assertEqual(client.chat_json_call_count, 2)
+
+    def test_stop_preempts_inflight_step_and_fences_late_model_response(self) -> None:
+        client = _BlockingCallLiveClient(block_call=2)
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.v2_library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "stop-preempt-start",
+                "remote_processing_acknowledged": True,
+            }
+        )
+        step_body = {
+            "session_id": started["session_id"],
+            "expected_round": 0,
+            "expected_question_id": started["expected_question_id"],
+            "expected_context_version": started["context_version"],
+            "profile_revision": started["profile_summary"]["profile_revision"],
+            "idempotency_key": "stop-preempt-turn",
+            "learner_response": "这条模型响应会晚到。",
+        }
+        step_results: list[dict[str, object]] = []
+        step_errors: list[BaseException] = []
+
+        def run_step() -> None:
+            try:
+                step_results.append(snapshot.step(step_body))
+            except BaseException as exc:  # pragma: no cover - asserted below
+                step_errors.append(exc)
+
+        step_thread = threading.Thread(target=run_step)
+        step_thread.start()
+        self.assertTrue(client.blocked_call_entered.wait(timeout=2))
+        running = snapshot.resume({"session_id": started["session_id"]})
+        self.assertTrue(running["turn_runtime"]["active"])
+
+        stopped = snapshot.command(
+            {
+                "session_id": started["session_id"],
+                "command": "stop",
+                "command_idempotency_key": "stop-preempt-command",
+                "expected_round": 0,
+                "expected_question_id": started["expected_question_id"],
+                "expected_context_version": started["context_version"],
+                "profile_revision": started["profile_summary"]["profile_revision"],
+            }
+        )
+        self.assertNotEqual(stopped["status"], "active")
+        self.assertEqual(stopped["rounds_completed"], 0)
+        self.assertTrue(stopped["turn_runtime"]["cancellation_requested"])
+        self.assertEqual(
+            stopped["turn_runtime"]["cancel_reason"], "teacher_requested_stop"
+        )
+        self.assertTrue(step_thread.is_alive())
+
+        client.release_blocked_call.set()
+        step_thread.join(timeout=5)
+        self.assertFalse(step_thread.is_alive())
+        self.assertEqual(step_results, [])
+        self.assertEqual(len(step_errors), 1)
+        self.assertIsInstance(step_errors[0], TeacherAgentDashboardError)
+        self.assertIn("cancelled before commit", str(step_errors[0]))
+
+        resumed = snapshot.resume({"session_id": started["session_id"]})
+        self.assertEqual(resumed["rounds_completed"], 0)
+        self.assertEqual(resumed["history"], [])
+        self.assertFalse(resumed["turn_runtime"]["active"])
+        self.assertEqual(client.chat_json_call_count, 2)
+
+    def test_cancel_turn_preempts_inflight_step_but_keeps_session_active(self) -> None:
+        client = _BlockingCallLiveClient(block_call=2)
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.v2_library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "cancel-turn-start",
+                "remote_processing_acknowledged": True,
+            }
+        )
+        step_body = {
+            "session_id": started["session_id"],
+            "expected_round": 0,
+            "expected_question_id": started["expected_question_id"],
+            "expected_context_version": started["context_version"],
+            "profile_revision": started["profile_summary"]["profile_revision"],
+            "idempotency_key": "cancel-turn-step",
+            "learner_response": "这条响应必须被取消而不是结束会话。",
+        }
+        errors: list[BaseException] = []
+
+        def run_step() -> None:
+            try:
+                snapshot.step(step_body)
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        step_thread = threading.Thread(target=run_step)
+        step_thread.start()
+        self.assertTrue(client.blocked_call_entered.wait(timeout=2))
+        cancelled = snapshot.command(
+            {
+                "session_id": started["session_id"],
+                "command": "cancel_turn",
+                "command_idempotency_key": "cancel-turn-command",
+                "expected_round": 0,
+                "expected_question_id": started["expected_question_id"],
+                "expected_context_version": started["context_version"],
+                "profile_revision": started["profile_summary"]["profile_revision"],
+            }
+        )
+        self.assertEqual(cancelled["status"], "active")
+        self.assertEqual(cancelled["rounds_completed"], 0)
+        self.assertTrue(cancelled["turn_runtime"]["cancellation_requested"])
+        self.assertEqual(
+            cancelled["turn_runtime"]["cancel_reason"],
+            "teacher_requested_turn_cancel",
+        )
+
+        client.release_blocked_call.set()
+        step_thread.join(timeout=5)
+        self.assertFalse(step_thread.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIn("cancelled before commit", str(errors[0]))
+
+        resumed = snapshot.resume({"session_id": started["session_id"]})
+        self.assertEqual(resumed["status"], "active")
+        self.assertEqual(resumed["rounds_completed"], 0)
+        self.assertEqual(resumed["history"], [])
+        self.assertFalse(resumed["turn_runtime"]["active"])
+
+    def test_preempted_turn_persists_one_aborted_terminal_event(self) -> None:
+        with TemporaryDirectory() as directory:
+            client = _BlockingCallLiveClient(block_call=2)
+            store_path = Path(directory) / "active-turn-preemption.jsonl"
+            snapshot = build_teacher_agent_dashboard_snapshot(
+                self.v2_library_path,
+                self.input_path,
+                self.cases_path,
+                client=client,
+                store_path=store_path,
+            )
+            started = snapshot.start(
+                {
+                    "goal": snapshot.demo_input["goal"],
+                    "student_profile": snapshot.demo_input["student_profile"],
+                    "start_idempotency_key": "stored-preempt-start",
+                    "remote_processing_acknowledged": True,
+                }
+            )
+            step_body = {
+                "session_id": started["session_id"],
+                "expected_round": 0,
+                "expected_question_id": started["expected_question_id"],
+                "expected_context_version": started["context_version"],
+                "profile_revision": started["profile_summary"]["profile_revision"],
+                "idempotency_key": "stored-preempt-turn",
+                "learner_response": "这条响应必须被终止事件封口。",
+            }
+            errors: list[BaseException] = []
+
+            def run_step() -> None:
+                try:
+                    snapshot.step(step_body)
+                except BaseException as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            step_thread = threading.Thread(target=run_step)
+            step_thread.start()
+            self.assertTrue(client.blocked_call_entered.wait(timeout=2))
+            active = snapshot.resume({"session_id": started["session_id"]})
+            turn_id = active["turn_runtime"]["turn_id"]
+            snapshot.command(
+                {
+                    "session_id": started["session_id"],
+                    "command": "stop",
+                    "command_idempotency_key": "stored-preempt-stop",
+                    "expected_round": 0,
+                    "expected_question_id": started["expected_question_id"],
+                    "expected_context_version": started["context_version"],
+                    "profile_revision": started["profile_summary"][
+                        "profile_revision"
+                    ],
+                }
+            )
+            client.release_blocked_call.set()
+            step_thread.join(timeout=5)
+            self.assertFalse(step_thread.is_alive())
+            self.assertEqual(len(errors), 1)
+
+            turn_events = [
+                event
+                for event in snapshot.store.events
+                if event.get("turn_id") == turn_id
+            ]
+            self.assertEqual(
+                [event["event_type"] for event in turn_events],
+                ["turn_started", "turn_aborted"],
+            )
+            self.assertEqual(
+                turn_events[-1]["data"]["reason"], "teacher_requested_stop"
+            )
+            self.assertFalse(
+                any(event["event_type"] == "turn_committed" for event in turn_events)
+            )
+
+            restarted = build_teacher_agent_dashboard_snapshot(
+                self.v2_library_path,
+                self.input_path,
+                self.cases_path,
+                client=client,
+                store_path=store_path,
+            )
+            recovered = restarted.resume({"session_id": started["session_id"]})
+            self.assertEqual(recovered["rounds_completed"], 0)
+            self.assertFalse(recovered["turn_runtime"]["active"])
 
     def test_step_waiting_behind_replacement_is_rejected_without_model_call(
         self,
@@ -1038,7 +1365,11 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         step_thread = threading.Thread(target=run_step)
         step_thread.start()
         self.assertTrue(step_attempted.wait(timeout=2))
-        self.assertFalse(step_done.wait(timeout=0.05))
+        self.assertTrue(step_done.wait(timeout=2))
+        self.assertEqual(len(step_errors), 1)
+        self.assertIsInstance(step_errors[0], TeacherAgentDashboardError)
+        self.assertIn("replacement is in progress", str(step_errors[0]))
+        self.assertEqual(client.chat_json_call_count, 2)
 
         client.release_blocked_call.set()
         replacement_thread.join(timeout=5)
@@ -1049,8 +1380,6 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertFalse(replacement_errors)
         self.assertEqual(len(replacement_results), 1)
         self.assertEqual(len(step_errors), 1)
-        self.assertIsInstance(step_errors[0], TeacherAgentDashboardError)
-        self.assertIn("no longer available", str(step_errors[0]))
         replacement = replacement_results[0]
         self.assertEqual(set(snapshot.sessions), {replacement["session_id"]})
         self.assertEqual(
@@ -1412,6 +1741,159 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             )
         self.assertEqual(record.session["round"], 1)
 
+    def test_confirmation_required_ocr_cannot_consume_a_turn_without_student_input(
+        self,
+    ) -> None:
+        extractor = _ConfirmationRequiredVisionExtractor()
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            vision_extractor=extractor,
+        )
+        started = self._start_offline(
+            snapshot,
+            start_key="confirmation-gate-start-001",
+            profile_revision="confirmation-gate-profile-v1",
+        )
+        uploaded = snapshot.upload_attachment(
+            self._attachment_body(started, key="confirmation-gate-upload-001")
+        )
+        attachment_id = uploaded["attachment"]["attachment_id"]
+        self.assertTrue(uploaded["attachment"]["needs_student_confirmation"])
+        body = {
+            "session_id": started["session_id"],
+            "expected_round": started["rounds_completed"],
+            "expected_question_id": started["expected_question_id"],
+            "expected_context_version": uploaded["context_version"],
+            "profile_revision": "confirmation-gate-profile-v1",
+            "idempotency_key": "confirmation-gate-step-001",
+            "learner_response": "",
+            "attachment_ids": [attachment_id],
+            "signal": "partial",
+        }
+        with self.assertRaisesRegex(TeacherAgentDashboardError, "needs student confirmation"):
+            snapshot.step(body)
+        record = snapshot.sessions[started["session_id"]]
+        self.assertEqual(record.session["round"], 0)
+        self.assertFalse(record.attachments[attachment_id]["consumed"])
+        self.assertIsNone(record.active_turn_id)
+
+        confirmed = snapshot.step(
+            {
+                **body,
+                "confirmed_attachment_ids": [attachment_id],
+            }
+        )
+        self.assertEqual(confirmed["rounds_completed"], 1)
+        self.assertTrue(record.attachments[attachment_id]["consumed"])
+        stored_evidence = record.session["history"][-1]["multimodal_evidence"][0]
+        self.assertTrue(stored_evidence["student_confirmed_recognized_text"])
+        self.assertFalse(stored_evidence["needs_student_confirmation"])
+        self.assertFalse(
+            stored_evidence["student_confirmation_establishes_answer_correctness"]
+        )
+
+        correction_snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            vision_extractor=_ConfirmationRequiredVisionExtractor(),
+        )
+        correction_started = self._start_offline(
+            correction_snapshot,
+            start_key="confirmation-gate-correction-start-002",
+        )
+        correction_upload = correction_snapshot.upload_attachment(
+            self._attachment_body(
+                correction_started,
+                key="confirmation-gate-correction-upload-002",
+            )
+        )
+        correction = correction_snapshot.step(
+            {
+                "session_id": correction_started["session_id"],
+                "expected_round": correction_started["rounds_completed"],
+                "expected_question_id": correction_started["expected_question_id"],
+                "expected_context_version": correction_upload["context_version"],
+                "profile_revision": correction_started["profile_summary"][
+                    "profile_revision"
+                ],
+                "idempotency_key": "confirmation-gate-correction-step-002",
+                "learner_response": "图片里的正确答案是：状态与输入共同决定下一状态。",
+                "attachment_ids": [correction_upload["attachment"]["attachment_id"]],
+                "signal": "partial",
+            }
+        )
+        self.assertEqual(correction["rounds_completed"], 1)
+        self.assertEqual(
+            correction["history"][-1]["learner_text"],
+            "图片里的正确答案是：状态与输入共同决定下一状态。",
+        )
+
+    def test_failed_replacement_preserves_an_inflight_turn_until_it_commits(self) -> None:
+        client = _BlockingCallLiveClient(block_call=2)
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.v2_library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "preserve-active-turn-start-001",
+                "remote_processing_acknowledged": True,
+            }
+        )
+        step_body = {
+            "session_id": started["session_id"],
+            "expected_round": started["rounds_completed"],
+            "expected_question_id": started["expected_question_id"],
+            "expected_context_version": started["context_version"],
+            "profile_revision": started["profile_summary"]["profile_revision"],
+            "idempotency_key": "preserve-active-turn-step-001",
+            "learner_response": "这条回答应该在失败的画像切换后继续完成。",
+        }
+        step_results: list[dict[str, object]] = []
+        step_errors: list[BaseException] = []
+
+        def run_step() -> None:
+            try:
+                step_results.append(snapshot.step(step_body))
+            except BaseException as exc:  # pragma: no cover - asserted below
+                step_errors.append(exc)
+
+        worker = threading.Thread(target=run_step)
+        worker.start()
+        self.assertTrue(client.blocked_call_entered.wait(timeout=2))
+        replacement_profile = deepcopy(snapshot.demo_input["student_profile"])
+        replacement_profile["profile_ref"] = "failed_candidate_profile"
+        replacement_profile["contains_direct_identity"] = True
+        replacement_body = {
+            "goal": snapshot.demo_input["goal"],
+            "student_profile": replacement_profile,
+            "start_idempotency_key": "preserve-active-turn-replacement-002",
+            "replace_session_id": started["session_id"],
+            **self._replacement_guards(started),
+            "remote_processing_acknowledged": True,
+        }
+        with self.assertRaisesRegex(Exception, "direct identity"):
+            snapshot.start(replacement_body)
+        record = snapshot.sessions[started["session_id"]]
+        self.assertFalse(record.retiring)
+        self.assertIsNotNone(record.active_turn_id)
+        self.assertTrue(snapshot.resume({"session_id": started["session_id"]})["turn_runtime"]["active"])
+        self.assertEqual(set(snapshot.sessions), {started["session_id"]})
+
+        client.release_blocked_call.set()
+        worker.join(timeout=5)
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(step_errors)
+        self.assertEqual(len(step_results), 1)
+        self.assertEqual(step_results[0]["rounds_completed"], 1)
+
     def test_step_requires_session_round_and_idempotency_key(self) -> None:
         snapshot = self._offline_snapshot()
         started = self._start_offline(snapshot)
@@ -1590,7 +2072,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertEqual(second["rounds_completed"], 2)
         self.assertEqual(len(second["history"]), 2)
 
-    def test_concurrent_identical_step_is_applied_once(self) -> None:
+    def test_concurrent_identical_step_is_applied_once_or_explicitly_running(self) -> None:
         snapshot = self._offline_snapshot()
         started = self._start_offline(snapshot)
         body = {
@@ -1621,9 +2103,13 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         for worker_thread in workers:
             worker_thread.join(timeout=5)
 
-        self.assertFalse(errors)
-        self.assertEqual(len(results), 2)
-        self.assertEqual(results[0], results[1])
+        self.assertEqual(len(results) + len(errors), 2)
+        self.assertLessEqual(len(errors), 1)
+        if errors:
+            self.assertIsInstance(errors[0], TeacherAgentDashboardError)
+            self.assertIn("idempotent turn is still running", str(errors[0]))
+        self.assertGreaterEqual(len(results), 1)
+        self.assertTrue(all(item == results[0] for item in results))
         self.assertEqual(snapshot.session["round"], 1)
         self.assertEqual(len(snapshot.session["history"]), 1)
 
@@ -1885,7 +2371,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertIsNone(released["pending_skill_id"])
         self.assertEqual(
             released["control_notice"],
-            "manual_skill_released_after_safety_fallback",
+            "manual_skill_released_by_skill_contract_guard",
         )
         self.assertEqual(
             snapshot.resume({"session_id": released["session_id"]}), released

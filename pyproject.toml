@@ -46,6 +46,7 @@ asr-gpu = [
 dev = [
   "build>=1.2",
   "jsonschema>=4.20",
+  "Pillow>=10,<13",
   "pytest>=8",
   "ruff==0.15.22",
   "setuptools==80.9.0",
@@ -87,6 +88,7 @@ namespaces = false
   "data/teacher_agent_free_text_benchmark.json",
   "data/teacher_agent_free_text_benchmark_receipt.json",
   "data/teacher_agent_learning_outcome_demo.json",
+  "data/teacher_agent_multiturn_benchmark_v1.json",
   "data/teacher_agent_skill_library.json",
   "data/teacher_agent_skill_library_v2.json",
 ]
@@ -125,6 +127,7 @@ namespaces = false
   "schema/teacher_agent_live_session.schema.json",
   "schema/teacher_agent_learning_observation.schema.json",
   "schema/teacher_agent_learning_report.schema.json",
+  "schema/teacher_agent_multiturn_benchmark.schema.json",
   "schema/teacher_agent_session.schema.json",
   "schema/teacher_agent_skill_library.schema.json",
   "schema/teacher_agent_skill_library_v2.schema.json",

@@ -155,7 +155,11 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             "attachmentThumbnail",
             "attachmentStatus",
             "attachmentEvidencePreview",
+            "attachmentConfirmation",
+            "attachmentConfirmationText",
+            "confirmAttachmentTextButton",
             "removeAttachmentButton",
+            "cancelTurnButton",
         ):
             with self.subTest(element_id=element_id):
                 self.parser.by_id(element_id)
@@ -169,9 +173,13 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             'postJson("api/attachment"',
             "attachment_idempotency_key",
             "attachment_ids: attachmentIds",
+            "confirmed_attachment_ids",
             "await file.arrayBuffer()",
             "function clearPendingAttachment()",
             "function uploadPendingAttachment()",
+            "function attachmentNeedsConfirmation",
+            "function renderAttachmentConfirmation",
+            "confirmAttachmentTextButton",
             "event.multimodal_evidence",
             "event.learner_text",
             "原图未发送",
@@ -185,12 +193,35 @@ class TeacherAgentUiContractTests(unittest.TestCase):
         )[0]
         self.assertIn("if (!learnerResponse && !hasAttachment)", submit)
         self.assertIn("const attachmentIds = await uploadPendingAttachment()", submit)
+        self.assertIn("if (attachmentNeedsConfirmation() && !learnerResponse)", submit)
+        self.assertIn("payload.confirmed_attachment_ids", submit)
         self.assertIn("clearPendingAttachment()", submit)
         self.assertIn(".attachment-preview", self.style)
         self.assertIn(".visual-evidence-summary", self.style)
         rendered_text = " ".join(self.parser.text_parts)
         self.assertIn("原图仅本机短暂处理", rendered_text)
         self.assertIn("原图不会交给 DeepSeek", rendered_text)
+
+    def test_busy_turn_exposes_a_stop_command_and_stales_the_late_step_response(
+        self,
+    ) -> None:
+        stop = self.script.split("async function requestStopGeneration()", 1)[1].split(
+            "async function applySkillOverride", 1
+        )[0]
+        self.assertIn('await sendCommand("cancel_turn")', stop)
+        self.assertIn("app.stopRequested = true", stop)
+        controls = self.script.split("function syncControls()", 1)[1].split(
+            "function setRange", 1
+        )[0]
+        self.assertIn('select("#cancelTurnButton")', controls)
+        self.assertIn("app.pendingTurn?.active", controls)
+        submit = self.script.split("async function submitTurn(event)", 1)[1].split(
+            "async function chooseAutoMode", 1
+        )[0]
+        self.assertIn("active: true", submit)
+        self.assertIn("app.stopRequested || app.session?.status !== \"active\"", submit)
+        self.assertIn("当前教学轮没有提交", submit)
+        self.assertIn("会话仍可继续", self.script)
 
     def test_mobile_header_keeps_the_student_profile_visible(self) -> None:
         mobile = self.style.split("@media (max-width: 560px)", 1)[1].split(
@@ -484,8 +515,11 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             "async function synchronizeCurrentSession(", 1
         )[1].split("async function submitTurn", 1)[0]
         self.assertIn(
-            'app.session = await postJson("api/session", {session_id: sessionId})',
+            'const synchronized = await postJson("api/session", {session_id: sessionId})',
             current_session,
+        )
+        self.assertIn(
+            "commitSessionResponse(requestAnchor, synchronized)", current_session
         )
         self.assertIn("synchronizeControlModeFromSession()", current_session)
 
@@ -493,7 +527,11 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             1
         ].split("async function init()", 1)[0]
         self.assertIn(
-            'app.session = await postJson("api/session", {session_id: sessionId})',
+            'const restoredSession = await postJson("api/session", {session_id: sessionId})',
+            restore_session,
+        )
+        self.assertIn(
+            "commitSessionResponse(requestAnchor, restoredSession, {",
             restore_session,
         )
         self.assertIn("synchronizeControlModeFromSession()", restore_session)
@@ -505,7 +543,7 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             "async function applySkillOverride", 1
         )[0]
         request = 'updatedSession = await postJson("api/command"'
-        commit = "app.session = updatedSession"
+        commit = "commitSessionResponse(requestAnchor, updatedSession)"
         synchronize = "synchronizeControlModeFromSession()"
         self.assertIn(request, send_command)
         self.assertIn(commit, send_command)
@@ -534,6 +572,57 @@ class TeacherAgentUiContractTests(unittest.TestCase):
         self.assertNotIn("setControlMode(", before_request)
         self.assertIn("synchronizeControlModeFromSession()", active_session)
 
+    def test_all_stateful_async_responses_use_identity_and_epoch_guards(self) -> None:
+        helper = self.script.split("class StaleResponseError", 1)[1].split(
+            "function showToast", 1
+        )[0]
+        for required in (
+            "app.requestEpochs[kind] = requestSerial",
+            "stateEpoch: app.stateEpoch",
+            "profileEpoch: app.profileEpoch",
+            'sessionId: textValue(session?.session_id, "")',
+            "profileRevision: sessionProfileRevision(session)",
+            "contextVersion: sessionContextVersion(session)",
+            "app.requestEpochs[anchor.kind] !== anchor.requestSerial",
+            "app.stateEpoch !== anchor.stateEpoch",
+            "app.profileEpoch !== anchor.profileEpoch",
+            "app.selectedProfileId !== anchor.targetProfileId",
+            "app.profileRevision !== anchor.targetProfileRevision",
+            "identity.sessionId !== anchor.sessionId",
+            "identity.profileRevision !== anchor.profileRevision",
+            "identity.contextVersion < anchor.contextVersion",
+            "app.session = response",
+            "app.stateEpoch += 1",
+        ):
+            with self.subTest(async_guard=required):
+                self.assertIn(required, helper)
+
+        guarded_flows = {
+            "attachment": ("uploadPendingAttachment()", "commitAttachmentResponse"),
+            "start": ("startSession(event)", "commitSessionResponse"),
+            "command": ("sendCommand(command", "commitSessionResponse"),
+            "sync": ("synchronizeCurrentSession(", "commitSessionResponse"),
+            "step": ("submitTurn(event)", "commitSessionResponse"),
+            "resume": ("restoreSession()", "commitSessionResponse"),
+        }
+        for request_kind, (function_marker, commit_marker) in guarded_flows.items():
+            with self.subTest(request_kind=request_kind):
+                function_body = self.script.split(
+                    f"async function {function_marker}", 1
+                )[1].split("\n  async function ", 1)[0]
+                anchor = f'beginRequestAnchor("{request_kind}"'
+                self.assertIn(anchor, function_body)
+                self.assertIn(commit_marker, function_body)
+                self.assertLess(
+                    function_body.index(anchor), function_body.index(commit_marker)
+                )
+
+        profile_switch = self.script.split("function applyProfile(profileId", 1)[
+            1
+        ].split("function markProfileEdited", 1)[0]
+        self.assertIn("app.profileEpoch += 1", profile_switch)
+        self.assertIn("app.pendingStart = null", profile_switch)
+
     def test_assessment_provenance_distinguishes_model_contract_and_fallback(
         self,
     ) -> None:
@@ -544,6 +633,7 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             "deepseek_v4_flash",
             "deepseek_v4_flash_constrained_by_deterministic_contract",
             "active_question_contract_exact_match",
+            "teacher_knowledge_spec_exact_match",
             "deterministic_safety_fallback",
         ):
             with self.subTest(source=source):
@@ -552,20 +642,23 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             "DEEPSEEK ASSESSMENT",
             "DEEPSEEK + CONTRACT GUARD",
             "ACTIVE CONTRACT EXACT MATCH",
+            "TEACHER KNOWLEDGE EXACT MATCH",
             "SAFETY FALLBACK SIGNAL",
         ):
             with self.subTest(label=label):
                 self.assertIn(label, renderer)
         self.assertIn("本问契约精确命中", renderer)
+        self.assertIn("教师知识标准精确命中", renderer)
         self.assertIn("约束层修正 · 建议人工确认", renderer)
         self.assertIn("lowConfidence", renderer)
-        self.assertIn("modelBackedAssessment ? probability", renderer)
+        self.assertIn("confidenceBearingAssessment ? probability", renderer)
         self.assertIn("等待诊断来源", " ".join(self.parser.text_parts))
         for label in (
             "等待学生回答 · 尚无诊断",
             "在线模型诊断 · DeepSeek",
             "在线模型诊断 · 契约约束",
             "确定性契约 · 精确命中",
+            "教师知识标准 · 精确命中",
             "安全规则回退 · 非模型",
             "结构化演示信号 · 非模型",
         ):
@@ -632,6 +725,134 @@ class TeacherAgentUiContractTests(unittest.TestCase):
         self.assertIn("新画像会话已建立", start)
         self.assertIn("可审计的安全规则动作", start)
 
+    def test_teacher_knowledge_spec_form_round_trips_through_start_and_resume(
+        self,
+    ) -> None:
+        for element_id in (
+            "knowledgeComponentsInput",
+            "canonicalClaimsInput",
+            "rubricCriteriaInput",
+            "acceptedAlternativesInput",
+            "misconceptionCatalogInput",
+            "knowledgeSpecStatus",
+        ):
+            with self.subTest(element_id=element_id):
+                self.parser.by_id(element_id)
+
+        form_writer = self.script.split("function writeKnowledgeSpecForm", 1)[1].split(
+            "function formKnowledgeSpec", 1
+        )[0]
+        for field in (
+            "knowledge_components",
+            "canonical_claims",
+            "rubric_criteria",
+            "accepted_alternatives",
+            "misconception_catalog",
+        ):
+            with self.subTest(restored_field=field):
+                self.assertIn(field, form_writer)
+
+        payload = self.script.split("function setupPayload()", 1)[1].split(
+            "function populateSkillSelect", 1
+        )[0]
+        self.assertIn(
+            "const {knowledgeComponents, knowledgeSpec} = formKnowledgeSpec()", payload
+        )
+        self.assertIn("knowledge_components: knowledgeComponents", payload)
+        self.assertIn("knowledge_spec: knowledgeSpec", payload)
+        self.assertIn('const sourceId = "source_teacher_workbench"', self.script)
+        self.assertIn("source_id: sourceId", self.script)
+        self.assertIn("系统未独立验证其学科正确性", self.script)
+
+        snapshot = self.script.split("function applySetupSnapshot", 1)[1].split(
+            "function fillSetupForm", 1
+        )[0]
+        preset = self.script.split("function fillSetupForm", 1)[1].split(
+            "function setupPayload", 1
+        )[0]
+        self.assertIn("writeKnowledgeSpecForm(goal)", snapshot)
+        self.assertIn("writeKnowledgeSpecForm(goal)", preset)
+
+    def test_inspector_exposes_evidence_linked_long_horizon_memory(self) -> None:
+        for element_id in (
+            "teachingMemoryStatus",
+            "memoryPreferences",
+            "memoryQuestions",
+            "memoryCommitments",
+            "memoryReferents",
+            "teachingMemoryBoundary",
+        ):
+            with self.subTest(element_id=element_id):
+                self.parser.by_id(element_id)
+
+        renderer = self.script.split("function renderTeachingMemory(session)", 1)[
+            1
+        ].split("function masteryDeltaNodes", 1)[0]
+        for field in (
+            "active_preferences",
+            "unresolved_questions",
+            "pending_teacher_commitments",
+            "active_referents",
+            "history_version",
+            "compaction_generation",
+        ):
+            with self.subTest(memory_field=field):
+                self.assertIn(field, renderer)
+        self.assertIn("evidence_refs", self.script)
+        self.assertIn("不充当学科标准答案", renderer)
+        render_session = self.script.split("function renderSession()", 1)[1].split(
+            "function evaluationTimeline", 1
+        )[0]
+        self.assertIn("renderTeachingMemory(session)", render_session)
+
+    def test_action_provenance_distinguishes_model_repair_and_fallback(self) -> None:
+        for element_id in (
+            "currentActionOrigin",
+            "actionProvenanceLabel",
+            "actionProvenanceDetail",
+        ):
+            with self.subTest(element_id=element_id):
+                self.parser.by_id(element_id)
+
+        renderer = self.script.split("function actionProvenanceSummary", 1)[1].split(
+            "function applyOriginBadge", 1
+        )[0]
+        for origin, label in (
+            ("deepseek_safe_generative", "模型生成"),
+            ("deterministic_materializer", "契约修复"),
+            ("deterministic_safety_fallback", "确定性回退"),
+        ):
+            with self.subTest(origin=origin):
+                self.assertIn(origin, renderer)
+                self.assertIn(label, renderer)
+        history = self.script.split("function renderHistory(history)", 1)[1].split(
+            "function renderRuntime", 1
+        )[0]
+        self.assertIn("actionProvenanceSummary(action)", history)
+        self.assertIn("话语来源：", history)
+
+    def test_terminal_session_profile_switch_starts_fresh_without_question_guard(
+        self,
+    ) -> None:
+        start = self.script.split("async function startSession(event)", 1)[1].split(
+            "async function sendCommand", 1
+        )[0]
+        self.assertIn(
+            'const replacingActiveSession = app.session?.status === "active"',
+            start,
+        )
+        self.assertIn("if (replacingActiveSession)", start)
+        self.assertLess(
+            start.index("if (replacingActiveSession)"),
+            start.index("replace_expected_question_id"),
+        )
+        replacement_ui = self.script.split("function syncReplacementDraftUi", 1)[
+            1
+        ].split("function beginReplacementDraft", 1)[0]
+        self.assertIn("replacementDraftNotice", replacement_ui)
+        self.assertIn("profileSwitchHint", replacement_ui)
+        self.assertIn("当前对话仍属于", replacement_ui)
+
     def test_free_text_prior_context_is_unlabeled_and_split_only_by_line(
         self,
     ) -> None:
@@ -660,6 +881,7 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             'if (commandText === "/stop")', 1
         )[0]
         self.assertIn('await sendCommand("auto")', auto_command)
+        self.assertIn('select("#learnerResponse").value = ""', auto_command)
         self.assertNotIn("setControlMode(", auto_command)
         skill_command = text_commands.split(
             'if (commandText.startsWith("/+skill"))', 1
@@ -676,6 +898,54 @@ class TeacherAgentUiContractTests(unittest.TestCase):
         active_auto_mode = auto_mode.split("setBusy(true);", 1)[1]
         self.assertIn('await sendCommand("auto")', active_auto_mode)
         self.assertNotIn("setControlMode(", active_auto_mode)
+
+    def test_live_announcer_tracks_every_committed_session_transition(self) -> None:
+        helper = self.script.split("function syncNewMessageAnnouncer", 1)[1].split(
+            "function skillName", 1
+        )[0]
+        for required in (
+            'announcer.textContent = ""',
+            'session.status !== "active"',
+            'announcer.textContent = "本次教学会话已经结束。"',
+            "object(currentAction(session)).teacher_action?.message",
+            "`老师的新问题：${message}`",
+        ):
+            with self.subTest(announcer_contract=required):
+                self.assertIn(required, helper)
+
+        flows = {
+            "start": (
+                "async function startSession(event)",
+                "async function sendCommand",
+            ),
+            "command": (
+                "async function sendCommand",
+                "async function applySkillOverride",
+            ),
+            "sync": (
+                "async function synchronizeCurrentSession(",
+                "async function submitTurn",
+            ),
+            "step": (
+                "async function submitTurn(event)",
+                "async function chooseAutoMode",
+            ),
+            "resume": ("async function restoreSession()", "async function init()"),
+        }
+        for flow, (start_marker, end_marker) in flows.items():
+            with self.subTest(session_flow=flow):
+                body = self.script.split(start_marker, 1)[1].split(end_marker, 1)[0]
+                self.assertIn("renderSession()", body)
+                self.assertIn("syncNewMessageAnnouncer()", body)
+                self.assertLess(
+                    body.index("renderSession()"),
+                    body.index("syncNewMessageAnnouncer()"),
+                )
+
+        discard = self.script.split("function discardUnavailableSession", 1)[1].split(
+            "function probability", 1
+        )[0]
+        self.assertIn("syncNewMessageAnnouncer(null)", discard)
 
     def test_active_manual_editor_is_a_draft_until_apply_succeeds(self) -> None:
         bindings = self.script.split(
@@ -810,7 +1080,9 @@ class TeacherAgentUiContractTests(unittest.TestCase):
         self.assertIn("delete startPayload.start_idempotency_key", start_session)
         self.assertIn("replace_session_id: app.session.session_id", start_session)
         self.assertIn("replace_expected_round:", start_session)
-        self.assertIn("replace_expected_question_id: synchronizedQuestionId", start_session)
+        self.assertIn(
+            "replace_expected_question_id: synchronizedQuestionId", start_session
+        )
         self.assertIn("replace_expected_context_version:", start_session)
         self.assertIn(
             "replace_expected_profile_revision: synchronizedRevision",
@@ -882,8 +1154,11 @@ class TeacherAgentUiContractTests(unittest.TestCase):
     def test_api_session_resumes_the_exact_opaque_handle(self) -> None:
         self.assertIn("async function restoreSession()", self.script)
         self.assertIn(
-            'app.session = await postJson("api/session", {session_id: sessionId})',
+            'const restoredSession = await postJson("api/session", {session_id: sessionId})',
             self.script,
+        )
+        self.assertIn(
+            "commitSessionResponse(requestAnchor, restoredSession, {", self.script
         )
         self.assertIn("const restored = await restoreSession()", self.script)
         self.assertIn('elif route == "api/session":', self.dashboard_source)
@@ -998,15 +1273,21 @@ class TeacherAgentUiContractTests(unittest.TestCase):
                     rf"{selector}\s*\{{[^}}]*font-size:\s*{minimum_size};",
                 )
 
+    def test_profile_card_hover_does_not_move_the_click_target(self) -> None:
+        hover = re.search(r"\.profile-card:hover\s*\{([^}]*)\}", self.style)
+        self.assertIsNotNone(hover)
+        hover_rules = hover.group(1) if hover else ""
+        self.assertNotRegex(hover_rules, r"(?:^|;)\s*transform\s*:")
+
     def test_responsive_drawers_are_modal_inert_and_focus_contained(self) -> None:
         for element_id in ("setupPanel", "statePanel"):
             with self.subTest(panel=element_id):
                 _tag, attrs = self.parser.by_id(element_id)
                 self.assertEqual(attrs.get("tabindex"), "-1")
 
-        responsive = self.script.split("function responsiveDrawerState()", 1)[
-            1
-        ].split("function syncDrawerBackdrop", 1)[0]
+        responsive = self.script.split("function responsiveDrawerState()", 1)[1].split(
+            "function syncDrawerBackdrop", 1
+        )[0]
         for required in (
             'window.matchMedia("(max-width: 860px)").matches',
             'window.matchMedia("(max-width: 1260px)").matches',
@@ -1017,10 +1298,10 @@ class TeacherAgentUiContractTests(unittest.TestCase):
             'panel.removeAttribute("inert")',
             'select(".topbar").toggleAttribute("inert", modalOpen)',
             'select("#liveLoop").toggleAttribute("inert", modalOpen)',
-            'focusResponsiveDrawer(activeDrawer)',
+            "focusResponsiveDrawer(activeDrawer)",
             'if (event.key !== "Tab") return',
-            'document.activeElement === first',
-            'document.activeElement === last',
+            "document.activeElement === first",
+            "document.activeElement === last",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, responsive)

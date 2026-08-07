@@ -125,6 +125,115 @@ class TeacherAgentTests(unittest.TestCase):
         self.assertIn("next_focus", state)
         self.assertTrue(session["current_action"]["selection_reason"])
 
+    def test_teacher_knowledge_spec_is_normalized_and_bound_to_components(self) -> None:
+        goal = deepcopy(self.demo["goal"])
+        goal["knowledge_components"] = ["状态定义", "状态转移"]
+        goal["knowledge_spec"] = {
+            "canonical_claims": [
+                {
+                    "claim_id": "claim_transition",
+                    "statement": "状态转移说明当前状态怎样依赖已解决子问题。",
+                    "knowledge_components": ["状态转移"],
+                    "source_ids": ["teacher_note"],
+                }
+            ],
+            "rubric_criteria": [
+                {
+                    "criterion_id": "criterion_dependency",
+                    "description": "指出依赖的先前状态及组合方式",
+                    "knowledge_component": "状态转移",
+                    "acceptable_evidence": ["明确写出依赖关系"],
+                }
+            ],
+            "accepted_alternatives": [
+                {
+                    "alternative_id": "alternative_recursive",
+                    "description": "用记忆化递归表达同一依赖",
+                    "equivalent_claim_ids": ["claim_transition"],
+                }
+            ],
+            "reference_steps": [
+                {
+                    "step_id": "step_define",
+                    "description": "先定义状态",
+                    "knowledge_components": ["状态定义"],
+                },
+                {
+                    "step_id": "step_transition",
+                    "description": "再写转移",
+                    "knowledge_components": ["状态转移"],
+                    "depends_on": ["step_define"],
+                },
+            ],
+            "misconception_catalog": [
+                {
+                    "tag": "only_previous",
+                    "description": "误以为所有状态只依赖紧邻前一项",
+                    "contradicts_claim_ids": ["claim_transition"],
+                }
+            ],
+            "sources": [
+                {
+                    "source_id": "teacher_note",
+                    "title": "教师课程说明",
+                    "citation": "本次课程讲义第 2 节",
+                }
+            ],
+        }
+        session = start_teacher_agent_session(
+            goal, self.demo["student_profile"], self.library
+        )
+        spec = session["goal"]["knowledge_spec"]
+        self.assertEqual(spec["status"], "teacher_provided")
+        self.assertTrue(spec["claim_boundary"]["authoritative_for_runtime_grading"])
+        self.assertFalse(spec["claim_boundary"]["independently_verified_by_system"])
+        self.assertEqual(
+            spec["rubric_criteria"][0]["knowledge_component"], "状态转移"
+        )
+
+    def test_absent_knowledge_spec_does_not_promote_model_memory_to_answer_key(self) -> None:
+        goal = deepcopy(self.demo["goal"])
+        goal.pop("knowledge_spec", None)
+        session = start_teacher_agent_session(
+            goal,
+            self.demo["student_profile"],
+            self.library,
+        )
+        spec = session["goal"]["knowledge_spec"]
+        self.assertEqual(spec["status"], "not_provided")
+        self.assertFalse(spec["claim_boundary"]["authoritative_for_runtime_grading"])
+        self.assertFalse(
+            spec["claim_boundary"]["model_memory_is_authoritative_when_absent"]
+        )
+
+    def test_knowledge_spec_rejects_unknown_component_and_dangling_claim(self) -> None:
+        for knowledge_spec in (
+            {
+                "canonical_claims": [
+                    {
+                        "statement": "错误组件引用",
+                        "knowledge_components": ["不存在的组件"],
+                    }
+                ]
+            },
+            {
+                "accepted_alternatives": [
+                    {
+                        "description": "悬空等价路径",
+                        "equivalent_claim_ids": ["missing_claim"],
+                    }
+                ]
+            },
+        ):
+            goal = deepcopy(self.demo["goal"])
+            goal["knowledge_components"] = ["状态转移"]
+            goal["knowledge_spec"] = knowledge_spec
+            with self.subTest(knowledge_spec=knowledge_spec):
+                with self.assertRaises(TeacherAgentError):
+                    start_teacher_agent_session(
+                        goal, self.demo["student_profile"], self.library
+                    )
+
     def test_each_action_tags_only_the_active_goal_knowledge_component(self) -> None:
         goal = deepcopy(self.demo["goal"])
         goal["knowledge_components"] = [
@@ -133,6 +242,7 @@ class TeacherAgentTests(unittest.TestCase):
             "状态转移",
             "迁移判定",
         ]
+        goal.pop("knowledge_spec", None)
         session = start_teacher_agent_session(
             goal,
             self.demo["student_profile"],

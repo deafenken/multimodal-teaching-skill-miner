@@ -23,6 +23,7 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[recognition,dev]"
       - run: python -m pytest
+      - run: python scripts/run_teacher_agent_multiturn_benchmark.py --validate-only
       - run: python -m compileall -q teaching_skill_miner scripts
       - run: sh -n scripts/*.sh
       - run: python -m ruff check teaching_skill_miner tests scripts

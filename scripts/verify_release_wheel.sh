@@ -102,6 +102,13 @@ fi
   "$verification_tmp/core-venv/bin/python" -m \
     teaching_skill_miner.teacher_agent_benchmark \
     --output "$verification_tmp/teacher-agent-benchmark-standalone.json" >/dev/null
+  "$verification_tmp/core-venv/bin/python" -m \
+    teaching_skill_miner.teacher_agent_multiturn_benchmark \
+    --validate-only \
+    --output "$verification_tmp/teacher-agent-multiturn-validation.json" >/dev/null
+  "$verification_tmp/core-venv/bin/python" -c \
+    'import json,sys; value=json.load(open(sys.argv[1], encoding="utf-8")); assert value["validated"] is True; assert value["episode_count"] == 20; assert value["gold_sent_to_model"] is False; assert value["schema"] == "teaching_skill_miner.teacher_agent_multiturn_benchmark.v1"' \
+    "$verification_tmp/teacher-agent-multiturn-validation.json"
   "$verification_tmp/core-venv/bin/tsm" teacher-agent-outcome-evaluate \
     --output "$verification_tmp/teacher-agent-learning-report.json" >/dev/null
   "$verification_tmp/core-venv/bin/tsm" teacher-agent-demo \

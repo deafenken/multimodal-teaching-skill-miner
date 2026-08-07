@@ -22,7 +22,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping, Sequence
+import unicodedata
 
 
 VISUAL_EVIDENCE_SCHEMA = "teaching_skill_miner.local_visual_evidence.v1"
@@ -30,6 +31,9 @@ SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"}
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_RECOGNIZED_TEXT_CHARS = 2_400
 MINIMUM_TRUSTED_OCR_CONFIDENCE = 0.58
+MINIMUM_CORROBORATED_OCR_CONFIDENCE = 0.72
+MINIMUM_SINGLE_ENGINE_FORMULA_CONFIDENCE = 0.90
+MAX_DECODED_IMAGE_PIXELS = 20_000_000
 _LANGUAGE_RE = re.compile(r"[A-Za-z0-9_+.-]{1,80}")
 _APPLE_VISION_CONTROL_VALUES = frozenset(
     {"auto", "on", "off", "true", "false", "1", "0", "yes", "no"}
@@ -131,6 +135,249 @@ def contains_formula_like_text(value: str) -> bool:
     """
 
     return bool(_FORMULA_TEXT_RE.search(str(value)))
+
+
+def _bounded_confidence(value: Any) -> float:
+    if (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    ):
+        return max(0.0, min(1.0, float(value)))
+    return 0.0
+
+
+def _canonical_transcription(value: str) -> str:
+    """Normalize only OCR-formatting differences, not mathematical meaning."""
+
+    normalized = unicodedata.normalize("NFKC", str(value)).casefold()
+    normalized = normalized.translate(
+        str.maketrans(
+            {
+                "−": "-",
+                "–": "-",
+                "—": "-",
+                "﹣": "-",
+                "×": "*",
+                "÷": "/",
+            }
+        )
+    )
+    return re.sub(r"\s+", "", normalized).strip()
+
+
+def _answer_variants(value: str) -> set[str]:
+    """Return conservative full-answer variants for deterministic alignment."""
+
+    text = str(value).strip()
+    values = {_canonical_transcription(text)} if text else set()
+    terminal_stripped = text.rstrip("。.!！?？;；")
+    if terminal_stripped != text:
+        values.add(_canonical_transcription(terminal_stripped))
+    for prefix in (
+        "答案是",
+        "答案",
+        "结果是",
+        "结果",
+        "我认为是",
+        "我觉得是",
+        "应该是",
+        "answer is",
+        "answer",
+    ):
+        match = re.match(
+            rf"^\s*{re.escape(prefix)}\s*[:：=]?\s*(?P<answer>.+?)\s*$",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if match:
+            answer = match.group("answer").rstrip("。.!！?？;；")
+            values.add(_canonical_transcription(answer))
+    values.discard("")
+    return values
+
+
+def assess_typed_visual_consistency(
+    learner_text: str,
+    evidence: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Flag a typed/OCR disagreement without pretending to understand the image.
+
+    This comparison is deliberately lexical.  It can establish that two local
+    transcriptions agree, but never that either answer is pedagogically correct.
+    """
+
+    typed = str(learner_text or "").strip()
+    recognized = [
+        str(item.get("recognized_text", "")).strip()
+        for item in evidence
+        if str(item.get("recognized_text", "")).strip()
+        and (
+            item.get("status") == "recognized"
+            or item.get("student_confirmed_recognized_text") is True
+        )
+        and not bool(item.get("needs_student_confirmation"))
+    ]
+    if not typed or not recognized:
+        return {
+            "relation": "not_comparable",
+            "possible_conflict": False,
+            "needs_student_confirmation": False,
+        }
+    typed_variants = _answer_variants(typed)
+    per_attachment_relations: list[str] = []
+    for recognized_text in recognized:
+        visual_variants = _answer_variants(recognized_text)
+        if typed_variants & visual_variants:
+            per_attachment_relations.append("exact_agreement")
+        elif any(
+            len(left) >= 3 and len(right) >= 3 and (left in right or right in left)
+            for left in typed_variants
+            for right in visual_variants
+        ):
+            per_attachment_relations.append("compatible_overlap")
+        else:
+            per_attachment_relations.append("possible_conflict")
+    if "possible_conflict" in per_attachment_relations:
+        relation = "possible_conflict"
+        conflict = True
+    elif set(per_attachment_relations) == {"exact_agreement"}:
+        relation = "exact_agreement"
+        conflict = False
+    else:
+        relation = "compatible_overlap"
+        conflict = False
+    return {
+        "relation": relation,
+        "possible_conflict": conflict,
+        "needs_student_confirmation": conflict,
+    }
+
+
+def align_ocr_text_to_answer_references(
+    recognized_text: str,
+    question_contract: Mapping[str, Any] | None,
+    knowledge_spec: Mapping[str, Any] | None = None,
+    active_knowledge_components: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Deterministically align OCR text to teacher-owned answer references.
+
+    Exact alignment is intentionally narrow.  It is suitable for repairing a
+    model false negative after the OCR transcription itself has passed the
+    local reliability gate.  It is not semantic grading and it never promotes
+    a merely related phrase to a correct answer.
+    """
+
+    text_variants = _answer_variants(recognized_text)
+    contract = question_contract if isinstance(question_contract, Mapping) else {}
+    answer_type = str(contract.get("answer_type", "open"))
+    raw_contract_references: list[tuple[str, str]] = []
+    for field in ("target_concepts", "accepted_aliases"):
+        values = contract.get(field, [])
+        if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+            raw_contract_references.extend(
+                (field, str(value).strip()) for value in values if str(value).strip()
+            )
+
+    def exact_match(
+        references: Iterable[tuple[str, str]],
+    ) -> tuple[str, str] | None:
+        for source, reference in references:
+            if _canonical_transcription(reference) in text_variants:
+                return source, reference
+        return None
+
+    contract_match = exact_match(raw_contract_references)
+    if contract_match is not None:
+        source, reference = contract_match
+        formula_or_numeric = contains_formula_like_text(reference) or bool(
+            re.fullmatch(r"[-+]?\d+(?:\.\d+)?", reference.strip())
+        )
+        correctness_established = answer_type == "short_concept" or (
+            answer_type == "worked_step" and formula_or_numeric
+        )
+        return {
+            "alignment": "exact_contract_match",
+            "matched_source": f"question_contract.{source}",
+            "matched_reference": reference,
+            "deterministic_correctness_established": correctness_established,
+            "requires_reliable_transcription": True,
+        }
+
+    active_components = {
+        str(item).strip()
+        for item in (active_knowledge_components or [])
+        if str(item).strip()
+    }
+
+    def claim_is_in_scope(item: Mapping[str, Any]) -> bool:
+        """Only use teacher claims explicitly attached to this action's topic.
+
+        An unscoped claim is useful as model context, but it is never an
+        authoritative deterministic answer key.  This prevents a correct
+        statement about a neighbouring concept from being credited for the
+        question currently on screen.
+        """
+
+        components = {
+            str(component).strip()
+            for component in (item.get("knowledge_components", []) or [])
+            if str(component).strip()
+        }
+        return bool(active_components and components and active_components & components)
+
+    teacher_references: list[tuple[str, str, bool]] = []
+    spec = knowledge_spec if isinstance(knowledge_spec, Mapping) else {}
+    for item in spec.get("canonical_claims", []) or []:
+        if (
+            isinstance(item, Mapping)
+            and claim_is_in_scope(item)
+            and str(item.get("statement", "")).strip()
+        ):
+            teacher_references.append(
+                (
+                    f"knowledge_spec.canonical_claims.{item.get('claim_id', 'unknown')}",
+                    str(item["statement"]).strip(),
+                    True,
+                )
+            )
+    for item in spec.get("rubric_criteria", []) or []:
+        if not isinstance(item, Mapping):
+            continue
+        criterion_component = str(item.get("knowledge_component", "")).strip()
+        if not active_components or not criterion_component or criterion_component not in active_components:
+            continue
+        criterion_id = str(item.get("criterion_id", "unknown"))
+        for accepted in item.get("acceptable_evidence", []) or []:
+            if str(accepted).strip():
+                teacher_references.append(
+                    (
+                        f"knowledge_spec.rubric_criteria.{criterion_id}",
+                        str(accepted).strip(),
+                        False,
+                    )
+                )
+    teacher_match: tuple[str, str, bool] | None = None
+    for source, reference, establishes_correctness in teacher_references:
+        if _canonical_transcription(reference) in text_variants:
+            teacher_match = (source, reference, establishes_correctness)
+            break
+    if teacher_match is not None:
+        source, reference, establishes_correctness = teacher_match
+        return {
+            "alignment": "exact_teacher_reference_match",
+            "matched_source": source,
+            "matched_reference": reference,
+            "deterministic_correctness_established": establishes_correctness,
+            "requires_reliable_transcription": True,
+        }
+    return {
+        "alignment": "not_established",
+        "matched_source": None,
+        "matched_reference": None,
+        "deterministic_correctness_established": False,
+        "requires_reliable_transcription": True,
+    }
 
 
 def _detected_mime_type(image_bytes: bytes) -> str | None:
@@ -354,14 +601,11 @@ def _candidate_score(
     characters = [character for character in stripped if not character.isspace()]
     accepted_symbols = frozenset("+-*/%=<>[](){}_^.,:;!?，。！？；：、'\"")
     readable_count = sum(
-        character.isalnum() or character in accepted_symbols
-        for character in characters
+        character.isalnum() or character in accepted_symbols for character in characters
     )
     readable_ratio = readable_count / len(characters) if characters else 0.0
     diversity_ratio = (
-        min(1.0, len(set(characters)) / min(len(characters), 32))
-        if characters
-        else 0.0
+        min(1.0, len(set(characters)) / min(len(characters), 32)) if characters else 0.0
     )
     return (
         int(bool(stripped)),
@@ -370,6 +614,244 @@ def _candidate_score(
         round(diversity_ratio, 6),
         min(len(stripped), MAX_RECOGNIZED_TEXT_CHARS),
     )
+
+
+def _otsu_threshold(histogram: Sequence[int]) -> int:
+    """Return a deterministic Otsu threshold for an 8-bit histogram."""
+
+    total = sum(int(value) for value in histogram[:256])
+    if total <= 0:
+        return 127
+    weighted_total = sum(
+        index * int(value) for index, value in enumerate(histogram[:256])
+    )
+    background_weight = 0
+    background_sum = 0.0
+    best_threshold = 127
+    best_variance = -1.0
+    for threshold, count_raw in enumerate(histogram[:256]):
+        count = int(count_raw)
+        background_weight += count
+        if background_weight == 0:
+            continue
+        foreground_weight = total - background_weight
+        if foreground_weight == 0:
+            break
+        background_sum += threshold * count
+        background_mean = background_sum / background_weight
+        foreground_mean = (weighted_total - background_sum) / foreground_weight
+        between_variance = (
+            background_weight
+            * foreground_weight
+            * (background_mean - foreground_mean) ** 2
+        )
+        if between_variance > best_variance:
+            best_variance = between_variance
+            best_threshold = threshold
+    return best_threshold
+
+
+def _prepare_ocr_variants(
+    image_path: Path,
+    *,
+    working_dir: Path,
+) -> list[dict[str, Any]]:
+    """Create bounded local OCR variants; failure leaves the original usable.
+
+    Pillow is optional at runtime.  When available, rotation normalization,
+    upscaling, grayscale autocontrast, and binarization provide genuinely
+    different OCR routes.  Every derivative stays inside the ephemeral working
+    directory and is deleted with the original attachment.
+    """
+
+    original_digest = sha256(image_path.read_bytes()).hexdigest()
+    variants: list[dict[str, Any]] = [
+        {
+            "name": "original",
+            "path": image_path,
+            "content_sha256": original_digest,
+        }
+    ]
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        return variants
+    try:
+        with Image.open(image_path) as source:
+            width, height = source.size
+            if width <= 0 or height <= 0 or width * height > MAX_DECODED_IMAGE_PIXELS:
+                return variants
+            normalized = ImageOps.exif_transpose(source).convert("L")
+            longest_side = max(normalized.size)
+            if longest_side < 1_600:
+                scale = min(3.0, 1_600 / max(1, longest_side))
+                normalized = normalized.resize(
+                    (
+                        max(1, round(normalized.width * scale)),
+                        max(1, round(normalized.height * scale)),
+                    ),
+                    Image.Resampling.LANCZOS,
+                )
+            enhanced = ImageOps.autocontrast(normalized, cutoff=1)
+            enhanced_path = working_dir / "answer-grayscale-autocontrast.png"
+            enhanced.save(enhanced_path, format="PNG", optimize=False)
+            threshold = _otsu_threshold(enhanced.histogram())
+            binary = enhanced.point(
+                lambda pixel: 255 if pixel > threshold else 0,
+                mode="1",
+            )
+            binary_path = working_dir / "answer-high-contrast-binary.png"
+            binary.save(binary_path, format="PNG", optimize=False)
+    except (OSError, ValueError, RuntimeError):
+        return variants
+    seen_digests = {original_digest}
+    for name, path in (
+        ("grayscale_autocontrast", enhanced_path),
+        ("high_contrast_binary", binary_path),
+    ):
+        digest = sha256(path.read_bytes()).hexdigest()
+        if digest in seen_digests:
+            continue
+        seen_digests.add(digest)
+        variants.append({"name": name, "path": path, "content_sha256": digest})
+    return variants
+
+
+def _ocr_candidate(
+    *,
+    text: str,
+    confidence: float,
+    engine: str,
+    preprocessing: str,
+    preprocessing_digest: str,
+    page_segmentation_mode: int | None,
+) -> dict[str, Any]:
+    return {
+        "text": str(text).strip()[:MAX_RECOGNIZED_TEXT_CHARS],
+        "confidence": _bounded_confidence(confidence),
+        "engine": engine,
+        "engine_family": (
+            "apple_vision" if engine.startswith("apple_vision") else "tesseract"
+        ),
+        "preprocessing": preprocessing,
+        "preprocessing_digest": preprocessing_digest,
+        "page_segmentation_mode": page_segmentation_mode,
+    }
+
+
+def _select_ocr_consensus(candidates: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Select a transcription and summarize independent local corroboration."""
+
+    usable = [
+        dict(candidate)
+        for candidate in candidates
+        if str(candidate.get("text", "")).strip()
+    ]
+    if not usable:
+        return {
+            "text": "",
+            "confidence": 0.0,
+            "transcription_confidence": 0.0,
+            "engine": "unavailable",
+            "candidate_count": 0,
+            "agreement_count": 0,
+            "engine_count": 0,
+            "preprocessing_count": 0,
+            "transcription_corroborated": False,
+            "material_disagreement": False,
+        }
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for candidate in usable:
+        canonical = _canonical_transcription(str(candidate["text"]))
+        if canonical:
+            groups.setdefault(canonical, []).append(candidate)
+
+    def group_summary(group: list[dict[str, Any]]) -> dict[str, Any]:
+        confidences = [_bounded_confidence(item.get("confidence")) for item in group]
+        engine_families = {str(item.get("engine_family")) for item in group}
+        preprocessing_digests = {
+            str(item.get("preprocessing_digest")) for item in group
+        }
+        average = sum(confidences) / len(confidences)
+        cross_engine = len(engine_families) >= 2
+        apple_supported = "apple_vision" in engine_families
+        route_score = (
+            average
+            + 0.10 * int(cross_engine)
+            + 0.04 * min(3, len(preprocessing_digests) - 1)
+            + 0.03 * int(apple_supported)
+        )
+        best = max(
+            group,
+            key=lambda item: _candidate_score(
+                str(item.get("text", "")), _bounded_confidence(item.get("confidence"))
+            ),
+        )
+        corroborated = bool(
+            (cross_engine and average >= MINIMUM_CORROBORATED_OCR_CONFIDENCE)
+            or (
+                len(group) >= 3
+                and len(preprocessing_digests) >= 3
+                and average >= MINIMUM_SINGLE_ENGINE_FORMULA_CONFIDENCE
+            )
+        )
+        return {
+            "group": group,
+            "best": best,
+            "average": average,
+            "route_score": route_score,
+            "engine_count": len(engine_families),
+            "preprocessing_count": len(preprocessing_digests),
+            "corroborated": corroborated,
+        }
+
+    summaries = [group_summary(group) for group in groups.values()]
+    selected = max(
+        summaries,
+        key=lambda item: (
+            float(item["route_score"]),
+            _candidate_score(
+                str(item["best"].get("text", "")),
+                _bounded_confidence(item["best"].get("confidence")),
+            ),
+        ),
+    )
+    competing = [
+        item
+        for item in summaries
+        if item is not selected
+        and max(
+            _bounded_confidence(candidate.get("confidence"))
+            for candidate in item["group"]
+        )
+        >= MINIMUM_CORROBORATED_OCR_CONFIDENCE
+    ]
+    # A strong conflicting transcription must never disappear merely because
+    # several variants from the selected engine agree with one another.  In
+    # particular, three Tesseract preprocessing routes do not overrule a
+    # high-confidence Apple Vision result that says something materially
+    # different.  The caller will abstain and ask the learner to confirm.
+    material_disagreement = bool(competing)
+    transcription_confidence = float(selected["average"])
+    if selected["corroborated"]:
+        transcription_confidence += 0.08
+    elif len(selected["group"]) >= 2:
+        transcription_confidence += 0.03
+    if material_disagreement:
+        transcription_confidence -= 0.20
+    best = selected["best"]
+    return {
+        "text": str(best["text"]),
+        "confidence": _bounded_confidence(best.get("confidence")),
+        "transcription_confidence": max(0.0, min(1.0, transcription_confidence)),
+        "engine": str(best.get("engine", "unavailable")),
+        "candidate_count": len(usable),
+        "agreement_count": len(selected["group"]),
+        "engine_count": int(selected["engine_count"]),
+        "preprocessing_count": int(selected["preprocessing_count"]),
+        "transcription_corroborated": bool(selected["corroborated"]),
+        "material_disagreement": material_disagreement,
+    }
 
 
 def _run_tesseract(
@@ -416,9 +898,8 @@ def extract_local_visual_evidence(
     content_sha256 = sha256(image_bytes).hexdigest()
     apple_vision = _apple_vision_command()
     tesseract = _tesseract_command()
-    recognized_text = ""
-    confidence = 0.0
-    engine = "unavailable"
+    candidates: list[dict[str, Any]] = []
+    preprocessing_routes: list[str] = []
     apple_attempted = False
     apple_failed = False
     tesseract_attempted = False
@@ -432,43 +913,71 @@ def extract_local_visual_evidence(
             working_dir = Path(tmp_dir)
             image_path = working_dir / f"answer{suffix}"
             image_path.write_bytes(image_bytes)
+            variants = _prepare_ocr_variants(
+                image_path,
+                working_dir=working_dir,
+            )
+            preprocessing_routes = [str(item["name"]) for item in variants]
             if apple_vision is not None:
                 apple_attempted = True
                 try:
-                    recognized_text, confidence = _run_apple_vision(
+                    apple_text, apple_confidence = _run_apple_vision(
                         apple_vision,
                         image_path,
                         working_dir=working_dir,
                     )
                 except LocalVisualEvidenceError:
                     apple_failed = True
-                    engine = "apple_vision_local_objc_cli_failed"
                 else:
-                    engine = "apple_vision_local_objc_cli"
-            if not recognized_text and tesseract is not None:
+                    candidates.append(
+                        _ocr_candidate(
+                            text=apple_text,
+                            confidence=apple_confidence,
+                            engine="apple_vision_local_objc_cli",
+                            preprocessing="original",
+                            preprocessing_digest=str(variants[0]["content_sha256"]),
+                            page_segmentation_mode=None,
+                        )
+                    )
+            apple_candidate = candidates[0] if candidates else None
+            apple_needs_crosscheck = bool(
+                apple_candidate is None
+                or not str(apple_candidate.get("text", "")).strip()
+                or _bounded_confidence(apple_candidate.get("confidence"))
+                < MINIMUM_TRUSTED_OCR_CONFIDENCE
+                or contains_formula_like_text(str(apple_candidate.get("text", "")))
+            )
+            if tesseract is not None and apple_needs_crosscheck:
                 tesseract_attempted = True
-                candidates = [
-                    _run_tesseract(
-                        tesseract,
-                        image_path,
-                        page_segmentation_mode=6,
-                    ),
-                    _run_tesseract(
-                        tesseract,
-                        image_path,
-                        page_segmentation_mode=11,
-                    ),
-                ]
-                recognized_text, confidence = max(
-                    candidates,
-                    key=lambda candidate: _candidate_score(candidate[0], candidate[1]),
-                )
-                engine = (
-                    "tesseract_local_cli_fallback"
-                    if apple_attempted
-                    else "tesseract_local_cli"
-                )
-    recognized_text = recognized_text[:MAX_RECOGNIZED_TEXT_CHARS].strip()
+                for variant in variants:
+                    modes = (6, 11) if variant["name"] == "original" else (6, 7)
+                    for page_segmentation_mode in modes:
+                        text, confidence = _run_tesseract(
+                            tesseract,
+                            Path(variant["path"]),
+                            page_segmentation_mode=page_segmentation_mode,
+                        )
+                        candidates.append(
+                            _ocr_candidate(
+                                text=text,
+                                confidence=confidence,
+                                engine="tesseract_local_cli",
+                                preprocessing=str(variant["name"]),
+                                preprocessing_digest=str(variant["content_sha256"]),
+                                page_segmentation_mode=page_segmentation_mode,
+                            )
+                        )
+    consensus = _select_ocr_consensus(candidates)
+    recognized_text = str(consensus["text"])[:MAX_RECOGNIZED_TEXT_CHARS].strip()
+    confidence = float(consensus["confidence"])
+    transcription_confidence = float(consensus["transcription_confidence"])
+    engine = str(consensus["engine"])
+    if engine == "tesseract_local_cli" and apple_attempted:
+        engine = (
+            "tesseract_local_cli_fallback"
+            if apple_failed
+            else "tesseract_local_cli_crosscheck"
+        )
     if apple_vision is None and tesseract is None:
         status = "extractor_unavailable"
     elif not recognized_text:
@@ -477,12 +986,28 @@ def extract_local_visual_evidence(
             if apple_failed and not tesseract_attempted
             else "no_text_recognized"
         )
-    elif confidence < MINIMUM_TRUSTED_OCR_CONFIDENCE:
+    elif consensus["material_disagreement"]:
+        status = "conflicting_recognition"
+    elif transcription_confidence < MINIMUM_TRUSTED_OCR_CONFIDENCE:
         status = "low_confidence"
     else:
         status = "recognized"
     formula_like_text = contains_formula_like_text(recognized_text)
-    needs_confirmation = status != "recognized" or formula_like_text
+    formula_transcription_established = bool(
+        formula_like_text
+        and status == "recognized"
+        and consensus["transcription_corroborated"]
+        and not consensus["material_disagreement"]
+    )
+    needs_confirmation = status != "recognized" or (
+        formula_like_text and not formula_transcription_established
+    )
+    if status != "recognized":
+        recognition_reliability = status
+    elif consensus["transcription_corroborated"]:
+        recognition_reliability = "corroborated_transcription"
+    else:
+        recognition_reliability = "single_route_transcription"
     safe_name = Path(str(display_name or "learner-answer-image")).name[:120]
     return {
         "schema": VISUAL_EVIDENCE_SCHEMA,
@@ -496,10 +1021,27 @@ def extract_local_visual_evidence(
         "status": status,
         "recognized_text": recognized_text,
         "confidence": round(confidence, 4),
-        "confidence_semantics": ("engine_native_ocr_heuristic_not_formula_correctness"),
+        "confidence_semantics": (
+            "selected_engine_native_ocr_heuristic_not_formula_correctness"
+        ),
+        "transcription_confidence": round(transcription_confidence, 4),
+        "transcription_confidence_semantics": (
+            "local_cross_route_agreement_heuristic_not_answer_correctness"
+        ),
+        "recognition_reliability": recognition_reliability,
+        "ocr_candidate_count": int(consensus["candidate_count"]),
+        "ocr_agreement_count": int(consensus["agreement_count"]),
+        "ocr_independent_engine_count": int(consensus["engine_count"]),
+        "ocr_preprocessing_count": int(consensus["preprocessing_count"]),
+        "ocr_preprocessing_routes": preprocessing_routes,
+        "ocr_transcription_corroborated": bool(consensus["transcription_corroborated"]),
+        "ocr_material_disagreement": bool(consensus["material_disagreement"]),
         "formula_like_text_detected": formula_like_text,
         "formula_accuracy_established": False,
-        "extractor_fallback_used": engine == "tesseract_local_cli_fallback",
+        "formula_transcription_established": formula_transcription_established,
+        "content_style_assessment": "not_classified",
+        "handwriting_recognition_established": False,
+        "extractor_fallback_used": apple_failed and tesseract_attempted,
         "needs_student_confirmation": needs_confirmation,
         "raw_media_retained": False,
         "remote_media_sent": False,
@@ -524,6 +1066,7 @@ def compose_visual_evidence_text(
     parts: list[str] = []
     if typed:
         parts.append("[STUDENT_TYPED_TEXT]\n" + typed)
+    consistency = assess_typed_visual_consistency(typed, evidence_items)
     for index, raw in enumerate(evidence_items, 1):
         text = str(raw.get("recognized_text", "")).strip()
         status = str(raw.get("status", "unavailable"))
@@ -533,16 +1076,39 @@ def compose_visual_evidence_text(
             if isinstance(confidence, (int, float)) and not isinstance(confidence, bool)
             else "unknown"
         )
+        transcription_confidence = raw.get("transcription_confidence")
+        transcription_confidence_text = (
+            f"{float(transcription_confidence):.2f}"
+            if isinstance(transcription_confidence, (int, float))
+            and not isinstance(transcription_confidence, bool)
+            else "unknown"
+        )
         parts.append(
             "\n".join(
                 [
                     f"[LOCAL_VISUAL_EVIDENCE {index}]",
                     "原图未发送给远程模型；以下内容由本机 OCR 提取，可能存在识别误差。",
                     f"status={status}; confidence={confidence_text}; "
+                    f"transcription_confidence={transcription_confidence_text}; "
+                    f"corroborated={str(bool(raw.get('ocr_transcription_corroborated'))).lower()}; "
+                    "student_confirmed_transcription="
+                    f"{str(bool(raw.get('student_confirmed_recognized_text'))).lower()}; "
                     f"needs_confirmation={str(bool(raw.get('needs_student_confirmation'))).lower()}",
                     "recognized_text:",
                     text or "（未识别到可靠文字）",
                 ]
             )
         )
+    if consistency["relation"] != "not_comparable":
+        consistency_lines = [
+            "[TYPED_VISUAL_CONSISTENCY]",
+            f"relation={consistency['relation']}; "
+            f"needs_confirmation={str(bool(consistency['needs_student_confirmation'])).lower()}",
+        ]
+        if consistency["possible_conflict"]:
+            consistency_lines.append(
+                "学生键入文本与本机 OCR 文字不一致；不得把两者合并成一个答案，"
+                "也不得据此判对或判错，应先请学生确认。"
+            )
+        parts.append("\n".join(consistency_lines))
     return "\n\n".join(parts).strip()

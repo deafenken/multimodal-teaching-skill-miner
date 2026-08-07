@@ -14,6 +14,7 @@
     pendingTurn: null,
     pendingCommand: null,
     pendingAttachment: null,
+    stopRequested: false,
     draftingReplacement: false,
     activeView: "learning",
     toastTimer: null,
@@ -23,8 +24,13 @@
     profileEditCounter: 0,
     profileDraftReady: false,
     profileDrafts: {},
+    knowledgeSpecDraft: null,
     inspectorTab: "state",
-    lastDrawerTrigger: null
+    lastDrawerTrigger: null,
+    stateEpoch: 0,
+    profileEpoch: 0,
+    requestSequence: 0,
+    requestEpochs: {}
   };
 
   const sessionHandleKey = "teachlab_opaque_session_handle_v2";
@@ -100,8 +106,28 @@
     "DEEPSEEK ASSESSMENT": "在线模型诊断 · DeepSeek",
     "DEEPSEEK + CONTRACT GUARD": "在线模型诊断 · 契约约束",
     "ACTIVE CONTRACT EXACT MATCH": "确定性契约 · 精确命中",
+    "TEACHER KNOWLEDGE EXACT MATCH": "教师知识标准 · 精确命中",
+    "TEACHER GOAL BOUNDED MATCH": "教师目标知识点 · 有界命中",
     "SAFETY FALLBACK SIGNAL": "安全规则回退 · 非模型",
     "STRUCTURED DEMO SIGNAL": "结构化演示信号 · 非模型"
+  };
+  const provenanceReasonLabels = {
+    deterministic_legacy_mode: "配置为确定性执行",
+    validated_model_plan_unavailable: "模型计划不可用",
+    visual_confirmation_requires_materializer: "图片文字需要学生确认",
+    model_teacher_action_type_mismatch: "动作类型与 Skill 不一致",
+    model_teacher_action_message_invalid: "教师话语格式无效",
+    model_teacher_action_expected_signal_invalid: "观察目标格式无效",
+    model_teacher_action_final_answer_pattern: "候选话语可能直接泄露答案",
+    model_teacher_action_policy_or_answer_violation: "候选话语触发安全边界",
+    model_teacher_action_does_not_elicit_response: "候选话语没有等待学生回应",
+    action_only_repair_applied: "固定 Skill 后已由 DeepSeek 定向修复话语",
+    model_teacher_action_does_not_execute_selected_skill: "候选话语没有落实所选 Skill",
+    model_question_contract_not_object: "本轮评分契约缺失",
+    model_question_contract_requires_server_repair: "本轮评分契约需要校正",
+    primary_skill_selection_constrained: "主 Skill 已按契约校正",
+    supporting_skill_selection_constrained: "辅助 Skill 已按契约校正",
+    next_focus_constrained_to_primary_skill: "下一重点已对齐主 Skill"
   };
   const dimensionLabels = {
     prerequisite: "前置知识",
@@ -191,6 +217,158 @@
     });
   }
 
+  class StaleResponseError extends Error {
+    constructor(message = "已忽略过期的异步响应") {
+      super(message);
+      this.name = "StaleResponseError";
+    }
+  }
+
+  function isStaleResponseError(error) {
+    return error instanceof StaleResponseError
+      || error?.name === "StaleResponseError";
+  }
+
+  function sessionProfileRevision(session = app.session) {
+    return textValue(object(session?.profile_summary).profile_revision, "");
+  }
+
+  function sessionContextVersion(session = app.session) {
+    return Math.max(0, Math.round(finite(session?.context_version, 0)));
+  }
+
+  function beginRequestAnchor(kind, {
+    session = app.session,
+    targetProfileId = app.selectedProfileId,
+    targetProfileRevision = app.profileRevision
+  } = {}) {
+    const requestSerial = ++app.requestSequence;
+    app.requestEpochs[kind] = requestSerial;
+    return {
+      kind,
+      requestSerial,
+      stateEpoch: app.stateEpoch,
+      profileEpoch: app.profileEpoch,
+      sessionId: textValue(session?.session_id, ""),
+      profileRevision: sessionProfileRevision(session),
+      contextVersion: sessionContextVersion(session),
+      targetProfileId,
+      targetProfileRevision
+    };
+  }
+
+  function assertRequestAnchorCurrent(anchor, {
+    requireSameSession = true,
+    requireTargetProfile = false
+  } = {}) {
+    if (
+      !anchor
+      || app.requestEpochs[anchor.kind] !== anchor.requestSerial
+      || app.stateEpoch !== anchor.stateEpoch
+    ) {
+      throw new StaleResponseError();
+    }
+    if (requireSameSession) {
+      if (
+        textValue(app.session?.session_id, "") !== anchor.sessionId
+        || sessionProfileRevision() !== anchor.profileRevision
+        || sessionContextVersion() !== anchor.contextVersion
+      ) {
+        throw new StaleResponseError();
+      }
+    }
+    if (
+      requireTargetProfile
+      && (
+        app.profileEpoch !== anchor.profileEpoch
+        || app.selectedProfileId !== anchor.targetProfileId
+        || app.profileRevision !== anchor.targetProfileRevision
+      )
+    ) {
+      throw new StaleResponseError("画像设置已变化，旧响应未应用");
+    }
+  }
+
+  function sessionResponseIdentity(response) {
+    const session = object(response);
+    const sessionId = textValue(session.session_id, "");
+    const profileRevision = sessionProfileRevision(session);
+    const rawContextVersion = Number(session.context_version);
+    if (
+      !sessionId
+      || !profileRevision
+      || !Number.isInteger(rawContextVersion)
+      || rawContextVersion < 1
+    ) {
+      throw new Error("服务返回的会话身份或上下文版本无效");
+    }
+    return {sessionId, profileRevision, contextVersion: rawContextVersion};
+  }
+
+  function commitSessionResponse(anchor, response, {
+    newSession = false,
+    expectedSessionId = "",
+    targetProfileRevision = "",
+    requireDifferentSession = false,
+    requireTargetProfile = false
+  } = {}) {
+    assertRequestAnchorCurrent(anchor, {
+      requireSameSession: !newSession || Boolean(anchor.sessionId),
+      requireTargetProfile
+    });
+    const identity = sessionResponseIdentity(response);
+    if (newSession) {
+      if (expectedSessionId && identity.sessionId !== expectedSessionId) {
+        throw new Error("恢复响应没有返回请求的会话");
+      }
+      if (targetProfileRevision && identity.profileRevision !== targetProfileRevision) {
+        throw new Error("新画像会话没有返回目标 profile_revision");
+      }
+      if (requireDifferentSession && anchor.sessionId === identity.sessionId) {
+        throw new Error("画像替换必须创建不同的 session_id");
+      }
+    } else {
+      if (
+        identity.sessionId !== anchor.sessionId
+        || identity.profileRevision !== anchor.profileRevision
+      ) {
+        throw new Error("服务响应与当前会话或画像不匹配");
+      }
+      if (
+        identity.contextVersion < anchor.contextVersion
+        || identity.contextVersion < sessionContextVersion()
+      ) {
+        throw new StaleResponseError("服务返回了较旧的 context_version");
+      }
+    }
+    app.session = response;
+    app.stateEpoch += 1;
+    return response;
+  }
+
+  function commitAttachmentResponse(anchor, response) {
+    assertRequestAnchorCurrent(anchor);
+    const sessionId = textValue(response?.session_id, "");
+    const profileRevision = textValue(response?.profile_revision, "");
+    const contextVersion = Number(response?.context_version);
+    if (
+      sessionId !== anchor.sessionId
+      || profileRevision !== anchor.profileRevision
+    ) {
+      throw new Error("图片证据响应与当前会话或画像不匹配");
+    }
+    if (
+      !Number.isInteger(contextVersion)
+      || contextVersion < anchor.contextVersion
+      || contextVersion < sessionContextVersion()
+    ) {
+      throw new StaleResponseError("图片证据返回了较旧的 context_version");
+    }
+    app.session.context_version = contextVersion;
+    app.stateEpoch += 1;
+    return response;
+  }
+
   function showToast(message) {
     const toast = select("#toast");
     toast.textContent = message;
@@ -263,8 +441,10 @@
   }
 
   function discardUnavailableSession({render = true} = {}) {
+    app.stateEpoch += 1;
     clearPendingAttachment();
     app.session = null;
+    syncNewMessageAnnouncer(null);
     app.activeProfileId = "";
     app.pendingStart = null;
     app.pendingTurn = null;
@@ -272,6 +452,7 @@
     app.draftingReplacement = false;
     clearSessionHandle();
     setControlMode("auto");
+    syncReplacementDraftUi();
     if (!render) return;
     select("#activeSession").hidden = true;
     select("#emptySession").hidden = false;
@@ -323,7 +504,8 @@
       signal_confidence: payload.signal_confidence ?? null,
       misconception_tag: payload.misconception_tag ?? null,
       manual_skill_id: payload.manual_skill_id ?? null,
-      attachment_ids: array(payload.attachment_ids)
+      attachment_ids: array(payload.attachment_ids),
+      confirmed_attachment_ids: array(payload.confirmed_attachment_ids)
     });
   }
 
@@ -358,6 +540,7 @@
       select("#attachmentStatus").textContent = "等待本机识别";
       select("#attachmentStatus").removeAttribute("data-state");
       select("#attachmentEvidencePreview").textContent = "发送时提取 OCR，原图不会交给 DeepSeek。";
+      renderAttachmentConfirmation();
       return;
     }
     preview.hidden = false;
@@ -368,6 +551,30 @@
     statusNode.dataset.state = pending.state || "selected";
     select("#attachmentEvidencePreview").textContent = evidence
       || "原图只在本机内存和临时目录短暂处理；识别文字会随本轮回答送入 Agent。";
+    renderAttachmentConfirmation();
+  }
+
+  function attachmentNeedsConfirmation(pending = app.pendingAttachment) {
+    return Boolean(
+      pending?.uploaded?.needs_student_confirmation
+      && pending.ocrTextConfirmed !== true
+    );
+  }
+
+  function renderAttachmentConfirmation() {
+    const panel = select("#attachmentConfirmation");
+    const pending = app.pendingAttachment;
+    const needsConfirmation = attachmentNeedsConfirmation(pending);
+    panel.hidden = !needsConfirmation;
+    if (!needsConfirmation) return;
+    select("#attachmentConfirmationText").textContent = textValue(
+      pending.uploaded?.recognized_text,
+      "本机没有识别出可靠文字；请在输入框手动填写答案"
+    );
+    select("#confirmAttachmentTextButton").disabled = app.busy
+      || app.session?.status !== "active"
+      || app.draftingReplacement
+      || !textValue(pending.uploaded?.recognized_text, "");
   }
 
   function clearPendingAttachment() {
@@ -402,7 +609,8 @@
       state: "selected",
       uploadFingerprint: "",
       uploadIdempotencyKey: "",
-      uploaded: null
+      uploaded: null,
+      ocrTextConfirmed: false
     };
     renderPendingAttachment();
     syncControls();
@@ -432,6 +640,7 @@
       pending.uploadFingerprint = bindingFingerprint;
       pending.uploadIdempotencyKey = makeIdempotencyKey();
       pending.uploaded = null;
+      pending.ocrTextConfirmed = false;
     }
     pending.state = "uploading";
     renderPendingAttachment({status: "正在本机提取文字证据……"});
@@ -439,6 +648,7 @@
     if (app.pendingAttachment !== pending || attachmentBindingFingerprint(pending.file) !== bindingFingerprint) {
       throw new Error("图片处理期间会话已变化，请重新选择本轮答案图片");
     }
+    const requestAnchor = beginRequestAnchor("attachment");
     const response = await postJson("api/attachment", {
       session_id: app.session.session_id,
       expected_round: finite(app.session.rounds_completed, 0),
@@ -454,14 +664,18 @@
       data_base64: dataBase64
     });
     if (app.pendingAttachment !== pending) {
-      throw new Error("图片上传完成前已被移除");
+      throw new StaleResponseError("图片上传完成前已被移除或替换");
     }
+    if (attachmentBindingFingerprint(pending.file) !== bindingFingerprint) {
+      throw new StaleResponseError("图片处理期间会话绑定已变化");
+    }
+    commitAttachmentResponse(requestAnchor, response);
     const attachment = object(response.attachment);
     if (!textValue(attachment.attachment_id, "")) {
       throw new Error("本机图片识别没有返回可绑定的证据编号");
     }
-    app.session.context_version = finite(response.context_version, app.session.context_version);
     pending.uploaded = attachment;
+    pending.ocrTextConfirmed = false;
     pending.state = attachment.needs_student_confirmation ? "review" : "ready";
     const recognized = compactText(attachment.recognized_text, 220);
     const confidence = probability(attachment.confidence, 0);
@@ -665,6 +879,24 @@
       : "填写一组可直接运行的样例";
   }
 
+  function syncReplacementDraftUi() {
+    const notice = select("#replacementDraftNotice");
+    const hint = select("#profileSwitchHint");
+    const replacing = Boolean(app.session && app.draftingReplacement);
+    notice.hidden = !replacing;
+    select("#setupForm").classList.toggle("replacement-draft", replacing);
+    if (!replacing) {
+      hint.textContent = "切换后新建独立会话";
+      return;
+    }
+    const activeName = activeProfile().name;
+    const nextName = selectedProfile().name;
+    hint.textContent = `待切换：${nextName}`;
+    notice.textContent = activeName === nextName
+      ? `当前“${activeName}”会话仍完整保留；确认设置并开始后，才会创建新的独立会话。`
+      : `当前对话仍属于“${activeName}”；点击“切换到${nextName}并开始”成功后，才会替换为新画像会话。`;
+  }
+
   function beginReplacementDraft({resetControl = true} = {}) {
     if (!app.session) return;
     clearPendingAttachment();
@@ -674,6 +906,7 @@
     clearPendingCommand();
     if (resetControl) setControlMode("auto");
     showSetupForm(true);
+    syncReplacementDraftUi();
     if (window.matchMedia("(max-width: 860px)").matches) setSidebar(true);
     syncControls();
   }
@@ -682,6 +915,7 @@
     if (!app.draftingReplacement) return;
     app.draftingReplacement = false;
     synchronizeControlModeFromSession();
+    syncReplacementDraftUi();
     syncControls();
   }
 
@@ -759,12 +993,12 @@
       badge.classList.add("online");
       select("#providerState").textContent = "ONLINE";
       select("#providerHeadline").textContent = `${model} 已完成本轮调用`;
-      select("#providerDetail").textContent = "本轮语义诊断与 Skill 提议来自在线模型；最终话语由服务端按 Skill 契约生成。";
+      select("#providerDetail").textContent = "本轮诊断、Skill 提议和候选教师话语来自在线模型；服务端校验通过才直接展示，否则明确标记修复或回退。";
     } else if (ready && !fallback) {
       badge.classList.add("online");
       select("#providerState").textContent = "ONLINE READY";
       select("#providerHeadline").textContent = `${model} 在线模式已就绪`;
-      select("#providerDetail").textContent = "只有开始会话或提交学生回答后，才能由成功响应确认本轮在线调用。";
+      select("#providerDetail").textContent = "开始会话或提交学生回答后，页面会同时确认在线调用和最终教师话语来源。";
     } else {
       badge.classList.add("degraded");
       select("#providerState").textContent = "DEGRADED";
@@ -861,6 +1095,15 @@
     select("#fallbackSignalInput").disabled = app.busy
       || !active
       || select("#fallbackSignalField").hidden;
+    const cancelButton = select("#cancelTurnButton");
+    const cancellableTurn = app.busy
+      && Boolean(app.pendingTurn?.active)
+      && active
+      && commandSupport;
+    cancelButton.hidden = !cancellableTurn;
+    cancelButton.disabled = !cancellableTurn || app.stopRequested;
+    cancelButton.textContent = app.stopRequested ? "正在停止…" : "停止生成";
+    renderAttachmentConfirmation();
     for (const card of document.querySelectorAll("[data-profile-id]")) {
       card.disabled = app.busy;
     }
@@ -911,6 +1154,226 @@
       .split(/\r?\n/)
       .map((item) => item.trim())
       .filter(Boolean);
+  }
+
+  function knowledgeRowText(value, preferredKeys) {
+    if (typeof value === "string") return value.trim();
+    const row = object(value);
+    for (const key of preferredKeys) {
+      const rendered = textValue(row[key], "");
+      if (rendered) return rendered;
+    }
+    return "";
+  }
+
+  function knowledgeRows(value, preferredKeys) {
+    return array(value)
+      .map((item) => knowledgeRowText(item, preferredKeys))
+      .filter(Boolean);
+  }
+
+  function copyJSON(value) {
+    try {
+      return JSON.parse(JSON.stringify(value));
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function rowKey(value, preferredKeys) {
+    return knowledgeRowText(value, preferredKeys).replace(/\s+/g, " ").trim();
+  }
+
+  function preserveKnowledgeRows(originalRows, lines, preferredKeys, makeNew, sanitize) {
+    const unused = array(originalRows).map((item) => object(copyJSON(item)));
+    let newCount = 0;
+    const rows = lines.map((line, index) => {
+      const matchIndex = unused.findIndex(
+        (item) => rowKey(item, preferredKeys) === line.replace(/\s+/g, " ").trim()
+      );
+      if (matchIndex >= 0) {
+        const [original] = unused.splice(matchIndex, 1);
+        return sanitize({...original}, line, index, false);
+      }
+      newCount += 1;
+      return sanitize(makeNew(line, index), line, index, true);
+    });
+    return {rows, newCount};
+  }
+
+  function parseScopedKnowledgeLine(line, activeComponents) {
+    const raw = String(line || "").trim();
+    const separator = raw.indexOf("::");
+    if (separator <= 0) return {text: raw, components: []};
+    const labels = raw.slice(0, separator)
+      .split(/[,|]/)
+      .map((item) => item.trim())
+      .filter((item) => activeComponents.has(item));
+    const text = raw.slice(separator + 2).trim();
+    return labels.length && text ? {text, components: labels} : {text: raw, components: []};
+  }
+
+  function updateKnowledgeSpecStatus() {
+    const components = splitLines(select("#knowledgeComponentsInput").value);
+    const evidenceRows = [
+      "#canonicalClaimsInput",
+      "#rubricCriteriaInput",
+      "#acceptedAlternativesInput",
+      "#misconceptionCatalogInput"
+    ].reduce((count, id) => count + splitLines(select(id).value).length, 0);
+    const status = select("#knowledgeSpecStatus");
+    status.textContent = evidenceRows
+      ? `${components.length} 个知识点 · ${evidenceRows} 条依据`
+      : (components.length ? `${components.length} 个知识点 · 未提供评分依据` : "未提供");
+    status.classList.toggle("provided", evidenceRows > 0);
+  }
+
+  function writeKnowledgeSpecForm(goal) {
+    const normalizedGoal = object(goal);
+    const spec = object(normalizedGoal.knowledge_spec);
+    app.knowledgeSpecDraft = copyJSON(spec);
+    select("#knowledgeComponentsInput").value = array(normalizedGoal.knowledge_components)
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .join("\n");
+    select("#canonicalClaimsInput").value = knowledgeRows(
+      spec.canonical_claims,
+      ["statement", "claim"]
+    ).join("\n");
+    select("#rubricCriteriaInput").value = knowledgeRows(
+      spec.rubric_criteria,
+      ["description", "criterion"]
+    ).join("\n");
+    select("#acceptedAlternativesInput").value = knowledgeRows(
+      spec.accepted_alternatives,
+      ["description", "alternative"]
+    ).join("\n");
+    select("#misconceptionCatalogInput").value = knowledgeRows(
+      spec.misconception_catalog,
+      ["description", "tag"]
+    ).join("\n");
+    updateKnowledgeSpecStatus();
+  }
+
+  function formKnowledgeSpec() {
+    const knowledgeComponents = splitLines(select("#knowledgeComponentsInput").value);
+    const canonicalClaims = splitLines(select("#canonicalClaimsInput").value);
+    const rubricCriteria = splitLines(select("#rubricCriteriaInput").value);
+    const acceptedAlternatives = splitLines(select("#acceptedAlternativesInput").value);
+    const misconceptionCatalog = splitLines(select("#misconceptionCatalogInput").value);
+    const original = object(app.knowledgeSpecDraft);
+    const activeComponents = new Set(knowledgeComponents);
+    const sourceId = "source_teacher_workbench";
+    const canonical = preserveKnowledgeRows(
+      original.canonical_claims,
+      canonicalClaims,
+      ["statement", "claim"],
+      (statement, index) => ({
+        ...(() => {
+          const parsed = parseScopedKnowledgeLine(statement, activeComponents);
+          return {statement: parsed.text, knowledge_components: parsed.components};
+        })(),
+        claim_id: `workbench_claim_${String(index + 1).padStart(2, "0")}`,
+        required: true,
+        source_ids: [sourceId]
+      }),
+      (row, statement, _index, isNew) => {
+        const parsed = parseScopedKnowledgeLine(statement, activeComponents);
+        return {
+          ...row,
+          statement: parsed.text,
+        ...(isNew ? {source_ids: [sourceId]} : {}),
+          knowledge_components: isNew
+            ? parsed.components
+            : array(row.knowledge_components)
+              .map((item) => String(item || "").trim())
+              .filter((item) => activeComponents.has(item))
+        };
+      }
+    );
+    const rubric = preserveKnowledgeRows(
+      original.rubric_criteria,
+      rubricCriteria,
+      ["description", "criterion"],
+      (description, index) => ({
+        ...(() => {
+          const parsed = parseScopedKnowledgeLine(description, activeComponents);
+          return {description: parsed.text, knowledge_component: parsed.components[0] || ""};
+        })(),
+        criterion_id: `workbench_criterion_${String(index + 1).padStart(2, "0")}`,
+        required: true,
+        acceptable_evidence: []
+      }),
+      (row, description) => ({...row, description})
+    );
+    const alternatives = preserveKnowledgeRows(
+      original.accepted_alternatives,
+      acceptedAlternatives,
+      ["description", "alternative"],
+      (description, index) => ({
+        alternative_id: `workbench_alternative_${String(index + 1).padStart(2, "0")}`,
+        description,
+        equivalent_claim_ids: [],
+        conditions: []
+      }),
+      (row, description) => ({...row, description})
+    );
+    const misconceptions = preserveKnowledgeRows(
+      original.misconception_catalog,
+      misconceptionCatalog,
+      ["description", "tag"],
+      (description, index) => ({
+        tag: `workbench_misconception_${String(index + 1).padStart(2, "0")}`,
+        description,
+        contradicts_claim_ids: [],
+        corrective_principle: ""
+      }),
+      (row, description) => ({...row, description})
+    );
+    const claimIds = new Set(canonical.rows.map((row) => String(row.claim_id || "")));
+    const sanitizedAlternatives = alternatives.rows.map((row) => ({
+      ...row,
+      equivalent_claim_ids: array(row.equivalent_claim_ids)
+        .map((item) => String(item || "").trim())
+        .filter((item) => claimIds.has(item))
+    }));
+    const sanitizedMisconceptions = misconceptions.rows.map((row) => ({
+      ...row,
+      contradicts_claim_ids: array(row.contradicts_claim_ids)
+        .map((item) => String(item || "").trim())
+        .filter((item) => claimIds.has(item))
+    }));
+    const provided = canonical.rows.length
+      + rubricCriteria.length
+      + acceptedAlternatives.length
+      + misconceptionCatalog.length > 0;
+    const sources = array(original.sources).map((item) => object(copyJSON(item)));
+    const needsWorkbenchSource = canonical.newCount + rubric.newCount
+      + alternatives.newCount + misconceptions.newCount > 0;
+    if (needsWorkbenchSource && !sources.some((item) => item.source_id === sourceId)) {
+      sources.push({
+        source_id: sourceId,
+        title: "当前工作台中的教师知识规格",
+        citation: "由当前操作者在本次会话设置中提供；系统未独立验证其学科正确性。",
+        kind: "teacher_authored_runtime_input"
+      });
+    }
+    return {
+      knowledgeComponents,
+      knowledgeSpec: {
+        canonical_claims: canonical.rows,
+        rubric_criteria: rubric.rows,
+        accepted_alternatives: sanitizedAlternatives,
+        reference_steps: array(original.reference_steps).map((item) => ({
+          ...object(copyJSON(item)),
+          knowledge_components: array(item.knowledge_components)
+            .map((component) => String(component || "").trim())
+            .filter((component) => activeComponents.has(component))
+        })),
+        misconception_catalog: sanitizedMisconceptions,
+        sources: provided ? sources : []
+      }
+    };
   }
 
   function profileByReference(reference) {
@@ -1011,6 +1474,7 @@
       captureProfileDraft();
     }
     app.selectedProfileId = profile.id;
+    app.profileEpoch += 1;
     restoreProfileDraft(profile);
     app.pendingStart = null;
     clearPendingTurn();
@@ -1028,6 +1492,7 @@
     } else {
       beginReplacementDraft({resetControl: true});
     }
+    syncReplacementDraftUi();
     if (announce) {
       showToast(app.session
         ? `已选择“${profile.name} · ${profile.type}”；新会话默认 AUTO，旧学生的手动 Skill 不会继承。提交成功前，当前会话仍完整保留。`
@@ -1037,6 +1502,7 @@
 
   function markProfileEdited() {
     if (app.busy) return;
+    app.profileEpoch += 1;
     app.profileEditCounter += 1;
     app.profileRevision = `${selectedProfile().revision}-custom-${app.profileEditCounter}`;
     app.pendingStart = null;
@@ -1048,6 +1514,7 @@
     if (profile) {
       app.activeProfileId = profile.id;
       if (syncDraft) {
+        app.profileEpoch += 1;
         app.selectedProfileId = profile.id;
         app.profileRevision = textValue(summary.profile_revision, profile.revision);
         const revisionCounter = app.profileRevision.match(/-custom-(\d+)$/);
@@ -1087,6 +1554,7 @@
     select("#exampleInput").value = textValue(materials.example, "");
     select("#practiceInput").value = textValue(materials.practice, "");
     select("#transferInput").value = textValue(materials.transfer_task, "");
+    writeKnowledgeSpecForm(goal);
     setRange(select("#thresholdPrerequisite"), thresholds.prerequisite ?? 0.6);
     setRange(select("#thresholdConceptual"), thresholds.conceptual ?? 0.65);
     setRange(select("#thresholdProcedural"), thresholds.procedural ?? 0.6);
@@ -1138,6 +1606,7 @@
     select("#exampleInput").value = textValue(materials.example, "");
     select("#practiceInput").value = textValue(materials.practice, "");
     select("#transferInput").value = textValue(materials.transfer_task, "");
+    writeKnowledgeSpecForm(goal);
     applyProfile("xiaoyu", {resetDrafts: true});
     setRange(select("#thresholdPrerequisite"), thresholds.prerequisite ?? 0.6);
     setRange(select("#thresholdConceptual"), thresholds.conceptual ?? 0.65);
@@ -1145,6 +1614,7 @@
     setRange(select("#thresholdTransfer"), thresholds.transfer ?? 0.55);
     select("#remoteConsent").checked = false;
     updateWorkspaceIdentity(goal);
+    syncReplacementDraftUi();
   }
 
   function setupPayload() {
@@ -1156,10 +1626,13 @@
       }));
     const backgroundHistory = splitLines(select("#historyInput").value);
     const extras = profileDraftExtras();
+    const {knowledgeComponents, knowledgeSpec} = formKnowledgeSpec();
     return {
       goal: {
         concept: select("#conceptInput").value.trim(),
         objective: select("#objectiveInput").value.trim(),
+        ...(knowledgeComponents.length ? {knowledge_components: knowledgeComponents} : {}),
+        knowledge_spec: knowledgeSpec,
         success_thresholds: {
           prerequisite: readRange("thresholdPrerequisite"),
           conceptual: readRange("thresholdConceptual"),
@@ -1229,9 +1702,98 @@
     return object(session?.next_action || session?.current_action);
   }
 
+  function syncNewMessageAnnouncer(session = app.session) {
+    const announcer = select("#newMessageAnnouncer");
+    if (!session) {
+      announcer.textContent = "";
+      return;
+    }
+    if (session.status !== "active") {
+      announcer.textContent = "本次教学会话已经结束。";
+      return;
+    }
+    const message = textValue(object(currentAction(session)).teacher_action?.message, "");
+    announcer.textContent = message ? `老师的新问题：${message}` : "";
+  }
+
   function skillName(skillId) {
     const match = array(app.bootstrap?.skills).find((item) => item.skill_id === skillId);
     return match ? match.name : textValue(skillId);
+  }
+
+  function actionProvenanceSummary(actionValue) {
+    const action = object(actionValue);
+    const provenance = object(action.action_provenance);
+    const trace = object(action.model_trace);
+    const origin = textValue(provenance.executor_origin, "");
+    const requestedMode = textValue(provenance.requested_executor_mode, "");
+    const reasons = [
+      ...array(provenance.model_action_validation_reasons),
+      ...array(provenance.normalization_reasons)
+    ].map((reason) => textValue(reason, "")).filter(Boolean);
+    const fallback = trace.fallback_used === true
+      || action.decision_origin === "deterministic_safety_fallback"
+      || origin === "deterministic_safety_fallback"
+      || app.bootstrap?.provider_status?.provider === "deterministic_fallback";
+    if (fallback) {
+      return {
+        key: "fallback",
+        label: "确定性回退",
+        detail: "在线模型计划不可用或未通过安全门禁，本轮由可复现的规则动作接管；不能把该话语算作模型生成。"
+      };
+    }
+    if (provenance.model_teacher_action_used === true || origin === "deepseek_safe_generative") {
+      return {
+        key: "model",
+        label: "模型生成",
+        detail: provenance.message_preserved_verbatim === true
+          ? "DeepSeek 候选教师话语通过 Skill、安全和问题契约校验，本轮按原文展示。"
+          : "DeepSeek 候选教师话语通过校验；仅叠加了已公开的辅助 Skill 约束。"
+      };
+    }
+    if (origin.includes("repair") || (origin === "deterministic_materializer" && requestedMode === "safe_generative")) {
+      const readableReasons = reasons
+        .map((reason) => provenanceReasonLabels[reason] || (reason.startsWith("diagnosis_or_routing_normalized:") ? "诊断或路由已按契约校正" : "候选动作未通过一项执行约束"))
+        .filter((reason, index, values) => values.indexOf(reason) === index)
+        .slice(0, 2);
+      return {
+        key: "repaired",
+        label: "契约修复",
+        detail: `模型参与了诊断与路由，但教师话语由服务端按所选 Skill 重新生成${readableReasons.length ? `：${readableReasons.join("；")}` : "。"}`
+      };
+    }
+    if (origin === "deterministic_materializer" || requestedMode === "deterministic_legacy") {
+      return {
+        key: "deterministic",
+        label: "规则生成",
+        detail: "当前配置使用确定性 Skill 执行器生成教师话语，不是在线模型原样输出。"
+      };
+    }
+    if (action.type === "terminate" || action.termination_reason) {
+      return {
+        key: "deterministic",
+        label: "终止判定",
+        detail: "该动作来自显式停止条件，系统不会继续生成教学内容。"
+      };
+    }
+    return {
+      key: "unknown",
+      label: "来源未记录",
+      detail: "当前会话响应没有提供 action_provenance；不能推断该话语由模型还是规则生成。"
+    };
+  }
+
+  function applyOriginBadge(element, summary) {
+    element.textContent = summary.label;
+    element.dataset.origin = summary.key;
+    element.title = summary.detail;
+  }
+
+  function renderActionProvenance(action) {
+    const summary = actionProvenanceSummary(action);
+    applyOriginBadge(select("#currentActionOrigin"), summary);
+    applyOriginBadge(select("#actionProvenanceLabel"), summary);
+    select("#actionProvenanceDetail").textContent = summary.detail;
   }
 
   function normalizeSignal(value) {
@@ -1250,7 +1812,10 @@
       },
       skill_switched: event.skill_switched,
       selection_reason: event.selection_reason,
-      teacher_action: {message: event.teacher_message}
+      teacher_action: {message: event.teacher_message},
+      action_provenance: event.action_provenance,
+      decision_origin: event.decision_origin,
+      model_trace: event.model_trace
     };
   }
 
@@ -1415,9 +1980,14 @@
     const assessmentSource = textValue(diagnosis.assessment_source || signalSource, signalSource);
     const rawDeepseekAssessment = assessmentSource === "deepseek_v4_flash";
     const contractConstrainedAssessment = assessmentSource === "deepseek_v4_flash_constrained_by_deterministic_contract";
-    const exactContractAssessment = assessmentSource === "active_question_contract_exact_match";
-    const modelBackedAssessment = Object.keys(diagnosis).length > 0
-      && (rawDeepseekAssessment || contractConstrainedAssessment || exactContractAssessment);
+    const activeContractExactAssessment = assessmentSource === "active_question_contract_exact_match";
+    const teacherKnowledgeExactAssessment = assessmentSource === "teacher_knowledge_spec_exact_match";
+    const teacherGoalBoundedAssessment = assessmentSource === "teacher_goal_knowledge_component_bounded_match";
+    const exactGroundedAssessment = activeContractExactAssessment
+      || teacherKnowledgeExactAssessment
+      || teacherGoalBoundedAssessment;
+    const confidenceBearingAssessment = Object.keys(diagnosis).length > 0
+      && (rawDeepseekAssessment || contractConstrainedAssessment || exactGroundedAssessment);
     const safetyFallback = signalSource === "deterministic_safety_fallback" || Boolean(latest.model_error);
     const signal = textValue(diagnosis.signal || stateSignal.label, "not_observed");
     const confidence = diagnosis.confidence ?? state.assessment_confidence ?? stateSignal.confidence;
@@ -1436,14 +2006,22 @@
         ? "DEEPSEEK ASSESSMENT"
         : (contractConstrainedAssessment
           ? "DEEPSEEK + CONTRACT GUARD"
-          : (exactContractAssessment
+          : (activeContractExactAssessment
             ? "ACTIVE CONTRACT EXACT MATCH"
-            : (safetyFallback ? "SAFETY FALLBACK SIGNAL" : "STRUCTURED DEMO SIGNAL"))));
+            : (teacherKnowledgeExactAssessment
+              ? "TEACHER KNOWLEDGE EXACT MATCH"
+              : (teacherGoalBoundedAssessment
+                ? "TEACHER GOAL BOUNDED MATCH"
+                : (safetyFallback ? "SAFETY FALLBACK SIGNAL" : "STRUCTURED DEMO SIGNAL"))))));
     select("#assessmentSourceLabel").textContent = assessmentSourceLabels[sourceLabelKey] || sourceLabelKey;
     select("#assessmentStatus").textContent = history.length
-      ? (modelBackedAssessment
-        ? (exactContractAssessment
-          ? (review ? "本问契约精确命中 · 仍建议复核" : "本问契约精确命中")
+      ? (confidenceBearingAssessment
+        ? (exactGroundedAssessment
+          ? (teacherKnowledgeExactAssessment
+            ? (review ? "教师知识标准精确命中 · 仍建议复核" : "教师知识标准精确命中")
+            : (teacherGoalBoundedAssessment
+              ? (review ? "教师目标知识点有界命中 · 仍建议复核" : "教师目标知识点有界命中")
+              : (review ? "本问契约精确命中 · 仍建议复核" : "本问契约精确命中")))
           : (contractConstrainedAssessment
             ? (review ? "约束层修正 · 建议人工确认" : "约束层修正已记录")
             : (review
@@ -1455,11 +2033,15 @@
     select("#answerAlignmentLabel").textContent = answerAlignmentLabels[answerAlignment] || answerAlignment;
     select("#assessmentConfidence").textContent = signal === "not_observed"
       ? "—"
-      : (modelBackedAssessment ? probability(confidence, 0) : (safetyFallback ? "规则回退" : "人工输入"));
+      : (confidenceBearingAssessment ? probability(confidence, 0) : (safetyFallback ? "规则回退" : "人工输入"));
     select("#assessmentEvidence").textContent = history.length
-      ? (modelBackedAssessment
-        ? (exactContractAssessment
-          ? `“${evidence}”——当前回答精确命中服务端绑定的本问契约；${reason}`
+      ? (confidenceBearingAssessment
+        ? (exactGroundedAssessment
+          ? (teacherKnowledgeExactAssessment
+            ? `“${evidence}”——当前回答精确命中教师提供的知识标准；${reason}`
+            : (teacherGoalBoundedAssessment
+              ? `“${evidence}”——当前回答在教师目标限定的知识点范围内形成有界命中；${reason}`
+              : `“${evidence}”——当前回答精确命中服务端绑定的本问契约；${reason}`))
           : (contractConstrainedAssessment
             ? `“${evidence}”——DeepSeek 诊断经确定性契约修正；${reason}`
             : `“${evidence}”——${reason}`))
@@ -1711,6 +2293,71 @@
       : `该请求快照只反映提交前 R${snapshotRound} 的状态；最新结果以上方学生状态区为准。这里只展示可审计范围，不展示模型私有推理。`;
   }
 
+  function visibleTeachingMemory(session) {
+    const directProjection = object(session.teaching_memory_projection);
+    if (Object.keys(directProjection).length) return directProjection;
+    const direct = object(session.teaching_memory);
+    if (Object.keys(direct).length) return direct;
+    const contextMemory = object(session.context_memory);
+    const semantic = object(contextMemory.semantic_memory || contextMemory.semantic_summary);
+    const semanticProjection = object(semantic.teaching_memory);
+    if (Object.keys(semanticProjection).length) return semanticProjection;
+    return object(object(contextMemory.snapshot).teaching_memory);
+  }
+
+  function teachingMemoryRows(memory, projectionField, fullField) {
+    const projected = array(memory[projectionField]);
+    return projected.length ? projected : array(memory[fullField]);
+  }
+
+  function teachingMemoryEvidence(item) {
+    const refs = array(item.evidence_refs).map((ref) => textValue(ref, "")).filter(Boolean);
+    const answerRefs = array(item.answer_evidence_refs).map((ref) => textValue(ref, "")).filter(Boolean);
+    const combined = [...refs, ...answerRefs].filter((ref, index, values) => values.indexOf(ref) === index);
+    return combined.length ? combined.join(" · ") : "证据指针未公开";
+  }
+
+  function renderTeachingMemoryList(rootId, countId, rows, preferredKeys, emptyText) {
+    select(`#${countId}`).textContent = String(rows.length);
+    const root = select(`#${rootId}`);
+    if (!rows.length) {
+      root.replaceChildren(node("li", "", emptyText));
+      return;
+    }
+    root.replaceChildren(...rows.map((raw) => {
+      const item = object(raw);
+      const entry = node("li", "");
+      entry.append(node("span", "", compactText(contextText(item, preferredKeys), 130)));
+      const evidence = node("small", "", teachingMemoryEvidence(item));
+      evidence.title = teachingMemoryEvidence(item);
+      entry.append(evidence);
+      return entry;
+    }));
+  }
+
+  function renderTeachingMemory(session) {
+    const memory = visibleTeachingMemory(session);
+    const preferences = teachingMemoryRows(memory, "active_preferences", "preferences")
+      .filter((item) => object(item).status !== "superseded");
+    const questions = teachingMemoryRows(memory, "unresolved_questions", "open_questions")
+      .filter((item) => object(item).status !== "resolved");
+    const commitments = teachingMemoryRows(memory, "pending_teacher_commitments", "commitments")
+      .filter((item) => !object(item).status || object(item).status === "pending");
+    const referents = teachingMemoryRows(memory, "active_referents", "referents")
+      .filter((item) => !object(item).status || object(item).status === "active");
+    const itemCount = preferences.length + questions.length + commitments.length + referents.length;
+    const version = Math.max(0, Math.round(finite(memory.history_version, 0)));
+    const generation = Math.max(0, Math.round(finite(memory.compaction_generation, 0)));
+    select("#teachingMemoryStatus").textContent = `V${version} · ${itemCount} 项`;
+    renderTeachingMemoryList("memoryPreferences", "memoryPreferenceCount", preferences, ["statement", "description"], "尚无明确偏好。");
+    renderTeachingMemoryList("memoryQuestions", "memoryQuestionCount", questions, ["question", "description"], "尚无待解决问题。");
+    renderTeachingMemoryList("memoryCommitments", "memoryCommitmentCount", commitments, ["statement", "description"], "尚无待兑现承诺。");
+    renderTeachingMemoryList("memoryReferents", "memoryReferentCount", referents, ["description", "statement"], "尚无跨轮指代。");
+    select("#teachingMemoryBoundary").textContent = Object.keys(memory).length
+      ? `历史版本 V${version} · 压缩代次 ${generation}。每项必须指向可观察原话；它们只维持对话连续性，不充当学科标准答案，也不允许模型直接改写。`
+      : "当前后端尚未返回长期教学记忆；页面不会用前端猜测补齐偏好、问题、承诺或指代。";
+  }
+
   function masteryDeltaNodes(beforeState, afterState) {
     const before = object(object(beforeState).knowledge_mastery);
     const after = object(object(afterState).knowledge_mastery);
@@ -1756,10 +2403,15 @@
       teacherAvatar.setAttribute("aria-hidden", "true");
       const teacherBubble = node("div", "chat-bubble");
       const teacherMeta = node("div", "chat-meta");
+      const provenanceSummary = actionProvenanceSummary(action);
+      const provenanceChip = node("span", "action-origin-chip", provenanceSummary.label);
+      provenanceChip.dataset.origin = provenanceSummary.key;
+      provenanceChip.title = provenanceSummary.detail;
       teacherMeta.append(
         node("span", "", `老师 · R${finite(action.round, Math.max(0, finite(event.round, index + 1) - 1))}`),
         node("strong", "", textValue(skill.name || event.skill_name, "教学动作")),
-        ...(action.skill_switched || event.skill_switched ? [node("span", "", "已切换方法")] : [])
+        ...(action.skill_switched || event.skill_switched ? [node("span", "", "已切换方法")] : []),
+        provenanceChip
       );
       teacherBubble.append(
         teacherMeta,
@@ -1807,7 +2459,9 @@
                 : "本机识别器不可用";
           const confirmationLabel = item.needs_student_confirmation
             ? " · 需学生核对"
-            : "";
+            : item.student_confirmed_recognized_text
+              ? " · 学生已核对转写"
+              : "";
           const visualItem = node("div", "visual-evidence-item");
           const visualMeta = node("span", "");
           visualMeta.append(
@@ -1843,9 +2497,11 @@
       diagnosisReceipt.append(node("strong", "", "诊断："), document.createTextNode(answerAlignmentLabels[answerAlignment] || signalLabels[signal] || signal));
       const skillReceipt = node("span", "");
       skillReceipt.append(node("strong", "", "Skill："), document.createTextNode(textValue(skill.name || event.skill_name)));
+      const provenanceReceipt = node("span", "");
+      provenanceReceipt.append(node("strong", "", "话语："), document.createTextNode(provenanceSummary.label));
       const deltaList = node("div", "delta-list");
       deltaList.append(...masteryDeltaNodes(before, after));
-      receipt.append(diagnosisReceipt, skillReceipt, deltaList);
+      receipt.append(diagnosisReceipt, skillReceipt, provenanceReceipt, deltaList);
       const detail = node("div", "turn-evidence");
       const diagnosisLine = node("p", "");
       diagnosisLine.append(node("b", "", "依据："), document.createTextNode(`“${evidence}”——${diagnosisReason}`));
@@ -1862,11 +2518,16 @@
           `${routingSummary} · ${textValue(action.decision_origin, "来源未记录")}${action.manual_override_applied ? " · 人工锁定已执行" : ""}`
         )
       );
+      const provenanceLine = node("p", "");
+      provenanceLine.append(
+        node("b", "", "话语来源："),
+        document.createTextNode(`${provenanceSummary.label}——${provenanceSummary.detail}`)
+      );
       const traceLine = node("p", "");
       traceLine.append(node("b", "", "运行："), document.createTextNode(trace.model
         ? `${trace.model} · ${Number.isFinite(Number(trace.latency_ms)) ? `${trace.latency_ms} ms` : "延迟未记录"}${trace.fallback_used ? " · FALLBACK" : ""} · 媒体发送 ${privacy.media_sent === false ? "否" : "未确认"}`
         : "确定性规则路径"));
-      detail.append(diagnosisLine, skillLine, routingLine, traceLine);
+      detail.append(diagnosisLine, skillLine, routingLine, provenanceLine, traceLine);
       details.append(summary, detail);
       turn.append(teacherRow, studentRow, receipt, details);
       return turn;
@@ -1958,6 +2619,7 @@
     updateWorkspaceIdentity(session.goal);
     renderPhase(session);
     if (active) renderActive(session, action); else renderTerminal(session, action);
+    renderActionProvenance(action);
 
     renderAssessment(session);
     const states = latestHistoryStates();
@@ -1974,6 +2636,7 @@
     renderRanking(active ? action : {});
     renderGoalPlan(session);
     renderContextMemory(session);
+    renderTeachingMemory(session);
     renderHistory(array(session.history));
     renderRuntime(session, action);
     syncControls();
@@ -2186,7 +2849,9 @@
     let recoveredFromConcurrentUpdate = false;
     try {
       const startPayload = setupPayload();
-      if (app.session?.session_id) {
+      const replacingActiveSession = app.session?.status === "active"
+        && Boolean(app.session?.session_id);
+      if (replacingActiveSession) {
         const priorRevision = textValue(
           object(app.session.profile_summary).profile_revision,
           ""
@@ -2213,10 +2878,21 @@
         const startKey = reusable ? app.pendingStart.key : makeIdempotencyKey();
         app.pendingStart = {signature: startSignature, key: startKey};
         startPayload.start_idempotency_key = startKey;
+        const requestAnchor = beginRequestAnchor("start", {
+          targetProfileId: app.selectedProfileId,
+          targetProfileRevision: textValue(startPayload.profile_revision, "")
+        });
         try {
           startedSession = await postJson("api/start", startPayload);
+          commitSessionResponse(requestAnchor, startedSession, {
+            newSession: true,
+            targetProfileRevision: textValue(startPayload.profile_revision, ""),
+            requireDifferentSession: Boolean(requestAnchor.sessionId),
+            requireTargetProfile: true
+          });
           break;
         } catch (error) {
+          if (isStaleResponseError(error)) throw error;
           const staleReplacement = Boolean(startPayload.replace_session_id)
             && isUnavailableSessionError(error, {replacement: true});
           const staleReplacementGuards = Boolean(startPayload.replace_session_id)
@@ -2270,9 +2946,9 @@
       }
       if (!startedSession) throw new Error("新会话未能建立");
       app.sessionInitialMastery = {...startPayload.student_profile.initial_mastery};
-      app.session = startedSession;
       app.activeProfileId = app.selectedProfileId;
       app.draftingReplacement = false;
+      syncReplacementDraftUi();
       applySessionProfile(app.session, {syncDraft: true});
       applySetupSnapshot(app.session);
       persistSessionHandle();
@@ -2284,6 +2960,7 @@
       select("#learnerResponse").value = "";
       synchronizeControlModeFromSession();
       renderSession();
+      syncNewMessageAnnouncer();
       showSetupForm(false);
       setSidebar(false);
       const startedWithFallback = finite(
@@ -2298,6 +2975,10 @@
           ? "新画像会话已建立；在线模型暂时不可用，本轮使用可审计的安全规则动作。"
           : "学习已开始：老师只给出了第一步，现在正在等待你的回答。 ");
     } catch (error) {
+      if (isStaleResponseError(error)) {
+        showInlineError("#setupError", "较早的开始/画像切换响应已被忽略；当前会话和设置均未被覆盖。");
+        return;
+      }
       if (recoveredFromUnavailableSession) discardUnavailableSession();
       showInlineError("#setupError", `无法开始：${String(error.message || error)}`);
     } finally {
@@ -2327,21 +3008,45 @@
     payload.command_idempotency_key = idempotencyKey;
     app.pendingCommand = {fingerprint: requestFingerprint, key: idempotencyKey};
     const priorContextVersion = finite(app.session.context_version, 1);
+    const requestAnchor = beginRequestAnchor("command");
     let updatedSession;
     try {
       updatedSession = await postJson("api/command", payload);
+      commitSessionResponse(requestAnchor, updatedSession);
     } catch (error) {
+      if (isStaleResponseError(error)) throw error;
       const synchronized = await synchronizeCurrentSession({preserveOnFailure: true});
       if (synchronized && finite(app.session?.context_version, 1) !== priorContextVersion) {
         clearPendingCommand();
       }
       throw error;
     }
-    app.session = updatedSession;
     clearPendingCommand();
     persistSessionHandle();
     synchronizeControlModeFromSession();
     renderSession();
+    syncNewMessageAnnouncer();
+  }
+
+  async function requestStopGeneration() {
+    if (
+      !app.busy
+      || !app.pendingTurn?.active
+      || !app.session
+      || app.session.status !== "active"
+      || !commandControlsSupported()
+      || app.stopRequested
+    ) return;
+    app.stopRequested = true;
+    syncControls();
+    try {
+      await sendCommand("cancel_turn");
+      showToast("已请求停止本轮生成：会话仍可继续，当前文字和图片草稿保持不变。 ");
+    } catch (error) {
+      app.stopRequested = false;
+      syncControls();
+      showInlineError("#turnError", `停止生成失败：${String(error.message || error)}`);
+    }
   }
 
   async function applySkillOverride() {
@@ -2386,6 +3091,7 @@
       setBusy(true);
       try {
         await sendCommand("auto");
+        select("#learnerResponse").value = "";
         showToast("已恢复自动 Skill 选择。 ");
       } finally {
         setBusy(false);
@@ -2433,13 +3139,17 @@
   async function synchronizeCurrentSession({preserveOnFailure = false} = {}) {
     const sessionId = app.session?.session_id;
     if (!sessionId) return false;
+    const requestAnchor = beginRequestAnchor("sync");
     try {
-      app.session = await postJson("api/session", {session_id: sessionId});
+      const synchronized = await postJson("api/session", {session_id: sessionId});
+      commitSessionResponse(requestAnchor, synchronized);
       persistSessionHandle();
       synchronizeControlModeFromSession();
       renderSession();
+      syncNewMessageAnnouncer();
       return true;
     } catch (error) {
+      if (isStaleResponseError(error)) return false;
       const unavailable = isUnavailableSessionError(error);
       if (preserveOnFailure && !unavailable) return false;
       discardUnavailableSession();
@@ -2470,6 +3180,13 @@
     setBusy(true);
     try {
       const attachmentIds = await uploadPendingAttachment();
+      if (attachmentNeedsConfirmation() && !learnerResponse) {
+        showInlineError(
+          "#turnError",
+          "这张图片的 OCR 需要你确认。请点击“确认识别文字”，或在输入框写出正确答案；本次不会消耗教学轮。"
+        );
+        return;
+      }
       const round = finite(app.session.rounds_completed, 0);
       const payload = {
         learner_response: learnerResponse,
@@ -2480,6 +3197,10 @@
         expected_context_version: finite(app.session.context_version, 1),
         profile_revision: textValue(app.session.profile_summary?.profile_revision, app.profileRevision)
       };
+      payload.confirmed_attachment_ids = attachmentIds.filter(
+        (attachmentId) => app.pendingAttachment?.uploaded?.attachment_id === attachmentId
+          && app.pendingAttachment.ocrTextConfirmed === true
+      );
       if (!select("#fallbackSignalField").hidden) {
         payload.signal = select("#fallbackSignalInput").value;
         payload.signal_confidence = 1.0;
@@ -2492,8 +3213,16 @@
       const reusable = app.pendingTurn?.fingerprint === requestFingerprint;
       const idempotencyKey = reusable ? app.pendingTurn.key : makeIdempotencyKey();
       payload.idempotency_key = idempotencyKey;
-      app.pendingTurn = {fingerprint: requestFingerprint, key: idempotencyKey};
-      app.session = await postJson("api/step", payload);
+      app.pendingTurn = {fingerprint: requestFingerprint, key: idempotencyKey, active: true};
+      // setBusy(true) runs before attachment preparation and therefore cannot
+      // yet know that a cancellable model turn exists.  Re-sync after marking
+      // the turn active so the real DOM exposes “停止生成” while fetch is in
+      // flight; without this, cancellation worked only through direct API
+      // calls and the browser button remained hidden for the whole request.
+      syncControls();
+      const requestAnchor = beginRequestAnchor("step");
+      const updatedSession = await postJson("api/step", payload);
+      commitSessionResponse(requestAnchor, updatedSession);
       persistSessionHandle();
       app.pendingTurn = null;
       app.pendingCommand = null;
@@ -2501,9 +3230,7 @@
       clearPendingAttachment();
       synchronizeControlModeFromSession();
       renderSession();
-      select("#newMessageAnnouncer").textContent = app.session.status === "active"
-        ? `老师的新问题：${textValue(object(currentAction()).teacher_action?.message, "已更新")}`
-        : "本次教学会话已经结束。";
+      syncNewMessageAnnouncer();
       const controlNotice = textValue(app.session.control_notice, "");
       showToast(controlNotice
         ? "人工 Skill 与本轮证据或执行边界冲突，系统已安全释放锁定并恢复 AUTO。"
@@ -2512,6 +3239,20 @@
           : "系统已依据停止条件结束本次会话。 ");
     } catch (error) {
       const message = String(error.message || error);
+      if (app.stopRequested || app.session?.status !== "active") {
+        showInlineError(
+          "#turnError",
+          "生成已停止；当前教学轮没有提交。你的文字输入和答案图片仍保留在页面中。"
+        );
+        return;
+      }
+      if (isStaleResponseError(error)) {
+        showInlineError(
+          "#turnError",
+          "较早的教学响应已被忽略；当前文字和答案图片均已保留，请核对最新问题后重试。"
+        );
+        return;
+      }
       if (/expected_(?:round|question_id|context_version)/.test(message)) {
         const synchronized = await synchronizeCurrentSession();
         if (synchronized) {
@@ -2545,6 +3286,8 @@
       }
     } finally {
       setBusy(false);
+      app.stopRequested = false;
+      syncControls();
     }
   }
 
@@ -2648,6 +3391,19 @@
     for (const input of ["#preferencesInput", "#knownMisconceptionsInput", "#historyInput", "#learnerLevelInput"]) {
       select(input).addEventListener("input", markProfileEdited);
     }
+    for (const input of [
+      "#knowledgeComponentsInput",
+      "#canonicalClaimsInput",
+      "#rubricCriteriaInput",
+      "#acceptedAlternativesInput",
+      "#misconceptionCatalogInput"
+    ]) {
+      select(input).addEventListener("input", () => {
+        app.profileEpoch += 1;
+        app.pendingStart = null;
+        updateKnowledgeSpecStatus();
+      });
+    }
     for (const button of document.querySelectorAll("[data-quick-response]")) {
       button.addEventListener("click", () => {
         const textarea = select("#learnerResponse");
@@ -2690,6 +3446,29 @@
       select("#learnerResponse").focus();
       syncControls();
     });
+    select("#confirmAttachmentTextButton").addEventListener("click", () => {
+      const pending = app.pendingAttachment;
+      if (!attachmentNeedsConfirmation(pending) || app.busy) return;
+      if (!textValue(pending.uploaded?.recognized_text, "")) {
+        showInlineError(
+          "#turnError",
+          "本机没有识别出可核对的文字，请在输入框手动填写图片中的答案。"
+        );
+        select("#learnerResponse").focus();
+        return;
+      }
+      pending.ocrTextConfirmed = true;
+      pending.state = "confirmed";
+      clearPendingTurn();
+      renderPendingAttachment({
+        status: "学生已确认识别文字 · 可发送",
+        evidence: `已确认文字：${compactText(pending.uploaded?.recognized_text, 220)}`
+      });
+      syncControls();
+      select("#learnerResponse").focus();
+      showToast("已记录你对 OCR 转写的核对；系统仍会依据当前问题契约判断答案。 ");
+    });
+    select("#cancelTurnButton").addEventListener("click", requestStopGeneration);
     select("#presetButton").addEventListener("click", handleSetupButton);
     select("#conceptInput").addEventListener("input", () => updateWorkspaceIdentity());
     select("#objectiveInput").addEventListener("input", () => updateWorkspaceIdentity());
@@ -2788,8 +3567,13 @@
   async function restoreSession() {
     const sessionId = readSessionHandle();
     if (!sessionId) return false;
+    const requestAnchor = beginRequestAnchor("resume", {session: null});
     try {
-      app.session = await postJson("api/session", {session_id: sessionId});
+      const restoredSession = await postJson("api/session", {session_id: sessionId});
+      commitSessionResponse(requestAnchor, restoredSession, {
+        newSession: true,
+        expectedSessionId: sessionId
+      });
       const initial = object(app.session.profile_summary).initial_mastery;
       app.sessionInitialMastery = {...object(initial)};
       app.pendingStart = null;
@@ -2797,14 +3581,19 @@
       app.pendingCommand = null;
       clearPendingAttachment();
       app.draftingReplacement = false;
+      syncReplacementDraftUi();
       applySessionProfile(app.session, {syncDraft: true});
       applySetupSnapshot(app.session);
       synchronizeControlModeFromSession();
       renderSession();
+      syncNewMessageAnnouncer();
       showSetupForm(false);
       return true;
-    } catch (_error) {
+    } catch (error) {
+      if (isStaleResponseError(error)) return false;
+      app.stateEpoch += 1;
       app.session = null;
+      syncNewMessageAnnouncer(null);
       clearSessionHandle();
       return false;
     }
@@ -2820,6 +3609,7 @@
     renderPhase(null);
     showSetupForm(true);
     setControlMode("auto");
+    syncReplacementDraftUi();
     try {
       app.bootstrap = await requestJson("api/bootstrap");
       fillSetupForm();

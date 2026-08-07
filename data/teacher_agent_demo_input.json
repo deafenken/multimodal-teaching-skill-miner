@@ -3,6 +3,128 @@
   "goal": {
     "concept": "动态规划的状态与转移",
     "objective": "学习者能够定义状态、写出状态转移并判断一个新问题是否适合动态规划。",
+    "knowledge_components": [
+      "递归分解",
+      "状态定义",
+      "状态转移",
+      "边界与计算顺序",
+      "迁移判定"
+    ],
+    "knowledge_spec": {
+      "canonical_claims": [
+        {
+          "claim_id": "claim_state_semantics",
+          "statement": "在爬楼梯例子中，dp[i] 表示到达第 i 级的走法数；状态定义必须说明下标、数值和问题对象各自代表什么。",
+          "knowledge_components": ["状态定义"],
+          "source_ids": ["source_demo_teacher"]
+        },
+        {
+          "claim_id": "claim_stair_transition",
+          "statement": "每次只能走 1 级或 2 级时，到达第 i 级的最后一步来自 i-1 或 i-2，因此 dp[i]=dp[i-1]+dp[i-2]。",
+          "knowledge_components": ["递归分解", "状态转移"],
+          "source_ids": ["source_demo_teacher"]
+        },
+        {
+          "claim_id": "claim_stair_boundary",
+          "statement": "采用 dp[0]=1、dp[1]=1 的计数约定后，可以从小到大计算后续状态；边界必须与状态含义一致。",
+          "knowledge_components": ["边界与计算顺序"],
+          "source_ids": ["source_demo_teacher"]
+        },
+        {
+          "claim_id": "claim_transfer_test",
+          "statement": "迁移到新问题时，需要检查子问题是否可复用、当前状态是否包含影响后续决策的必要信息，以及局部子结果能否组合成目标结果。",
+          "knowledge_components": ["迁移判定"],
+          "source_ids": ["source_demo_teacher"]
+        }
+      ],
+      "rubric_criteria": [
+        {
+          "criterion_id": "criterion_state",
+          "description": "明确说明 dp[i] 的下标 i 和保存值分别代表什么",
+          "knowledge_component": "状态定义",
+          "acceptable_evidence": ["说明 i 对应楼梯级数", "说明 dp[i] 对应到达该级的走法数"]
+        },
+        {
+          "criterion_id": "criterion_transition",
+          "description": "同时识别最后走 1 级和最后走 2 级两种互斥来源，并把两部分相加",
+          "knowledge_component": "状态转移",
+          "acceptable_evidence": ["提到 dp[i-1]", "提到 dp[i-2]", "解释两类走法相加"]
+        },
+        {
+          "criterion_id": "criterion_boundary",
+          "description": "给出与状态定义一致的边界，并说明按依赖顺序计算",
+          "knowledge_component": "边界与计算顺序",
+          "acceptable_evidence": ["dp[0]=1 和 dp[1]=1", "先得到较小状态再计算较大状态"]
+        },
+        {
+          "criterion_id": "criterion_transfer",
+          "description": "在新情境中重新定义状态，并检查状态是否包含影响未来选择的必要信息",
+          "knowledge_component": "迁移判定",
+          "acceptable_evidence": ["针对硬币金额定义状态", "指出仅记录金额何时不足"]
+        }
+      ],
+      "accepted_alternatives": [
+        {
+          "alternative_id": "alternative_memoized_recursion",
+          "description": "使用带缓存的递归表达同一状态依赖，与自底向上的表格计算在该例中等价。",
+          "equivalent_claim_ids": ["claim_stair_transition"],
+          "conditions": ["缓存键与状态定义一致", "包含正确边界"]
+        }
+      ],
+      "reference_steps": [
+        {
+          "step_id": "reference_step_decompose",
+          "description": "先按最后一步把完整走法划分为两个互斥来源。",
+          "knowledge_components": ["递归分解"]
+        },
+        {
+          "step_id": "reference_step_define",
+          "description": "定义 dp[i] 的含义，使它能直接回答规模为 i 的子问题。",
+          "knowledge_components": ["状态定义"],
+          "depends_on": ["reference_step_decompose"]
+        },
+        {
+          "step_id": "reference_step_transition",
+          "description": "把两个最后一步来源写成 dp[i-1] 与 dp[i-2] 并相加。",
+          "knowledge_components": ["状态转移"],
+          "depends_on": ["reference_step_define"]
+        },
+        {
+          "step_id": "reference_step_boundary",
+          "description": "给出边界并按依赖从小到大计算。",
+          "knowledge_components": ["边界与计算顺序"],
+          "depends_on": ["reference_step_transition"]
+        },
+        {
+          "step_id": "reference_step_transfer",
+          "description": "在硬币问题中重新检查状态信息、子问题复用和组合方式。",
+          "knowledge_components": ["迁移判定"],
+          "depends_on": ["reference_step_boundary"]
+        }
+      ],
+      "misconception_catalog": [
+        {
+          "tag": "missing_second_transition",
+          "description": "只考虑最后走 1 级，遗漏最后走 2 级的合法路径。",
+          "contradicts_claim_ids": ["claim_stair_transition"],
+          "corrective_principle": "按最后一步的所有互斥可能分类，逐项检查是否遗漏。"
+        },
+        {
+          "tag": "state_lacks_future_constraint",
+          "description": "状态只记录当前金额，却遗漏会影响后续可选集合的限制。",
+          "contradicts_claim_ids": ["claim_transfer_test"],
+          "corrective_principle": "状态必须包含决定后续合法选择所需的全部信息。"
+        }
+      ],
+      "sources": [
+        {
+          "source_id": "source_demo_teacher",
+          "title": "题目二演示用教师知识规格",
+          "citation": "项目内合成教学样例，由项目作者为现场演示编写，不代表外部专家审定。",
+          "kind": "teacher_authored_demo_fixture"
+        }
+      ]
+    },
     "success_thresholds": {
       "prerequisite": 0.6,
       "conceptual": 0.65,

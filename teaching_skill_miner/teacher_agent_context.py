@@ -14,10 +14,19 @@ import json
 import re
 from typing import Any, Mapping, Sequence
 
+from .teacher_agent_memory import (
+    TEACHING_MEMORY_PROJECTION_SCHEMA,
+    project_teaching_memory,
+    validate_teaching_memory,
+)
+
 
 CONTEXT_SCHEMA = "teaching_skill_miner.teacher_agent_context.v1"
 LAYERED_CONTEXT_SCHEMA = "teaching_skill_miner.layered_teacher_context.v1"
 GOAL_PLAN_SCHEMA = "teaching_skill_miner.teacher_agent_goal_plan.v1"
+CONTINUITY_RECALL_SCHEMA = (
+    "teaching_skill_miner.teacher_agent_continuity_recall.v1"
+)
 
 DEFAULT_LAYERED_CONTEXT_CHARS = 14_000
 MINIMUM_LAYERED_CONTEXT_CHARS = 6_000
@@ -67,6 +76,26 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 _TRAILING_PATH_PUNCTUATION = ".,;!?)]}，。；！？）》】」』"
 _TEXT_TRUNCATION_MARKER = "…[truncated]"
+_MIDDLE_TRUNCATION_MARKER = "…[middle truncated]…"
+_COMMON_POSIX_PATH_PREFIXES = (
+    "/Applications/",
+    "/Library/",
+    "/System/",
+    "/Users/",
+    "/Volumes/",
+    "/data/",
+    "/etc/",
+    "/home/",
+    "/mnt/",
+    "/opt/",
+    "/private/",
+    "/s1home/",
+    "/tmp/",
+    "/usr/",
+    "/var/",
+    "/work/",
+    "/workspace/",
+)
 _EXPLICIT_LEARNER_QUESTION_RE = re.compile(
     r"(?:[?？]\s*$|(?:为什么|怎么|如何|哪一步|哪里|是否|能否|是不是|会不会))"
 )
@@ -76,6 +105,75 @@ _EXPLICIT_LEARNER_REQUEST_RE = re.compile(
 _TEACHER_NEXT_STEP_RE = re.compile(
     r"(?:下一步|接下来|随后|之后(?:我|我们)?|然后(?:我|我们)?|我会|我们会|我们将)"
 )
+_NAMED_ALTERNATIVE_MARKER_RE = re.compile(
+    r"(?:第\s*[一二三四五六七八九十\d]+\s*种|"
+    r"方法\s*[一二三四五六七八九十\dABC]|"
+    r"方案\s*[一二三四五六七八九十\dABC]|"
+    r"路径\s*[一二三四五六七八九十\dABC]|"
+    r"(?:^|[，,；;。\n])\s*[123]\s*[.、)])",
+    re.IGNORECASE,
+)
+_ORDINAL_REFERENCE_CUE_RE = re.compile(
+    r"(?:第\s*[一二三四五六七八九十\d]+\s*种|"
+    r"方法\s*[一二三四五六七八九十\dABC]|"
+    r"方案\s*[一二三四五六七八九十\dABC]|"
+    r"前一种|后一种|另一个(?:方法|方案)?|前一个|后一个)",
+    re.IGNORECASE,
+)
+_EARLIEST_INSTRUCTION_CUE_RE = re.compile(
+    r"(?:按|照|继续用|还是用).{0,12}(?:最开始|一开始|最初).{0,12}"
+    r"(?:说|提|要求|希望|方式|方法)",
+    re.IGNORECASE,
+)
+_EARLIER_QUESTION_CUE_RE = re.compile(
+    r"(?:回到|继续|回答).{0,12}(?:一开始|最开始|最初|前面|之前|刚才).{0,12}"
+    r"(?:问题|疑问)|(?:一开始|最开始|最初|前面|之前|刚才).{0,12}"
+    r"(?:问题|疑问).{0,12}(?:呢|继续|回答|回去)",
+    re.IGNORECASE,
+)
+_PRIOR_AGREEMENT_CUE_RE = re.compile(
+    r"(?:按|照).{0,12}(?:刚才|之前|前面|先前).{0,12}"
+    r"(?:约定|说好|说的|安排).{0,12}(?:继续|来|做|讲|走)?|"
+    r"(?:刚才|之前|前面|先前).{0,12}(?:约定|说好|安排).{0,12}"
+    r"(?:继续|下一步|往下)",
+    re.IGNORECASE,
+)
+_ROUND_REFERENCE_CUE_RE = re.compile(
+    r"第\s*([\d零〇一二两三四五六七八九十百]+)\s*轮",
+    re.IGNORECASE,
+)
+_SEMANTIC_HISTORY_CUE_RE = re.compile(
+    r"(?:回到|回顾|重新(?:讲|解释|看|说|做)|再(?:讲|解释|看|说一下)|"
+    r"之前.{0,16}(?:讲|提|说|学|问|讨论)|"
+    r"前面.{0,16}(?:讲|提|说|学|问|讨论)|"
+    r"刚才.{0,16}(?:讲|提|说|学|问|讨论|个))",
+    re.IGNORECASE,
+)
+_LEARNER_FUTURE_AGENDA_RE = re.compile(
+    r"(?:之后|稍后|等会(?:儿)?|待会(?:儿)?|下一步|然后).{0,18}"
+    r"(?:再|回到|继续|讲|看|做|处理|讨论)|"
+    r"(?:先).{1,120}(?:，|,|；|;|。)?\s*(?:再|然后|之后).{1,120}",
+    re.IGNORECASE,
+)
+
+_QUERY_STOP_TERMS = {
+    "一下",
+    "之前",
+    "前面",
+    "刚才",
+    "回到",
+    "回顾",
+    "重新",
+    "解释",
+    "讲的",
+    "问题",
+    "关系",
+    "这个",
+    "那个",
+    "第一",
+    "第二",
+    "第三",
+}
 
 
 def _trim_candidate(kind: str, text: str, start: int, end: int) -> tuple[int, int]:
@@ -83,6 +181,24 @@ def _trim_candidate(kind: str, text: str, start: int, end: int) -> tuple[int, in
         while end > start and text[end - 1] in _TRAILING_PATH_PUNCTUATION:
             end -= 1
     return start, end
+
+
+def _looks_like_local_path(value: str) -> bool:
+    """Reject division/formula fragments without weakening real path redaction."""
+
+    if re.match(r"^[A-Za-z]:\\", value):
+        return True
+    if not value.startswith("/"):
+        return False
+    if value.startswith(_COMMON_POSIX_PATH_PREFIXES):
+        return True
+    # Expressions such as ``dp[i]/dp[i-1]`` and ``f(n)/g(n)`` used to lose
+    # their denominator because ``/dp[i-1]`` looked like a one-segment path.
+    if any(character in value for character in "[](){}=+*^"):
+        return False
+    basename = value.rsplit("/", 1)[-1]
+    has_file_extension = bool(re.search(r"\.[A-Za-z0-9]{1,12}$", basename))
+    return value.count("/") >= 2 or has_file_extension
 
 
 def redact_remote_text(text: str) -> tuple[str, list[dict[str, Any]]]:
@@ -101,7 +217,10 @@ def redact_remote_text(text: str) -> tuple[str, list[dict[str, Any]]]:
     for priority, (kind, pattern) in enumerate(_PATTERNS):
         for match in pattern.finditer(text):
             start, end = _trim_candidate(kind, text, match.start(), match.end())
-            if end > start:
+            candidate = text[start:end]
+            if end > start and (
+                kind != "local_path" or _looks_like_local_path(candidate)
+            ):
                 candidates.append((start, end, priority, kind))
 
     candidates.sort(key=lambda row: (row[0], row[2], -(row[1] - row[0])))
@@ -250,6 +369,586 @@ def _event_view(event: Mapping[str, Any], fallback_round: int) -> dict[str, Any]
     }
 
 
+def _named_alternative_marker_count(value: str) -> int:
+    markers = {
+        re.sub(r"[\s，,；;。\n.、)]", "", match.group(0)).casefold()
+        for match in _NAMED_ALTERNATIVE_MARKER_RE.finditer(str(value))
+    }
+    return len({item for item in markers if item})
+
+
+def _parse_positive_ordinal(value: str) -> int | None:
+    token = str(value).strip()
+    if not token:
+        return None
+    if token.isdigit():
+        number = int(token)
+        return number if number > 0 else None
+    digits = {
+        "零": 0,
+        "〇": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if token in digits:
+        return digits[token] or None
+    if token == "十":
+        return 10
+    if "百" in token:
+        left, _, right = token.partition("百")
+        hundreds = digits.get(left, 1 if not left else -1)
+        if hundreds < 0:
+            return None
+        remainder = _parse_positive_ordinal(right) if right else 0
+        if remainder is None:
+            return None
+        result = hundreds * 100 + remainder
+        return result if result > 0 else None
+    if "十" in token:
+        left, _, right = token.partition("十")
+        tens = digits.get(left, 1 if not left else -1)
+        ones = digits.get(right, 0 if not right else -1)
+        if tens < 0 or ones < 0:
+            return None
+        result = tens * 10 + ones
+        return result if result > 0 else None
+    return None
+
+
+def _requested_round(value: str) -> int | None:
+    match = _ROUND_REFERENCE_CUE_RE.search(str(value))
+    return _parse_positive_ordinal(match.group(1)) if match else None
+
+
+def _query_terms(value: str) -> set[str]:
+    """Return small deterministic lexical anchors without a tokenizer/model."""
+
+    terms: set[str] = set()
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_\-]{1,}|[\u4e00-\u9fff]{2,}", str(value)):
+        normalized = token.casefold()
+        if re.fullmatch(r"[\u4e00-\u9fff]+", normalized):
+            for size in (2, 3, 4):
+                for index in range(max(0, len(normalized) - size + 1)):
+                    term = normalized[index : index + size]
+                    if term not in _QUERY_STOP_TERMS:
+                        terms.add(term)
+        elif normalized not in _QUERY_STOP_TERMS:
+            terms.add(normalized)
+    return terms
+
+
+def _event_query_score(
+    event: Mapping[str, Any],
+    learner_response: str,
+    *,
+    requested_round: int | None = None,
+    query_terms: set[str] | None = None,
+) -> tuple[int, int, int]:
+    if requested_round is None:
+        requested_round = _requested_round(learner_response)
+    if query_terms is None:
+        query_terms = _query_terms(learner_response)
+    round_number = _safe_round(event.get("round"), 0)
+    explicit_round_match = int(
+        requested_round is not None and round_number == requested_round
+    )
+    query_folded = learner_response.casefold()
+    mentioned_kcs = sum(
+        1
+        for item in event.get("knowledge_components", [])
+        if str(item).strip() and str(item).strip().casefold() in query_folded
+    )
+    searchable = "\n".join(
+        [
+            str(event.get("teacher_message", "")),
+            str(event.get("learner_response", "")),
+            " ".join(str(item) for item in event.get("knowledge_components", [])),
+        ]
+    )
+    lexical_overlap = len(query_terms & _query_terms(searchable))
+    return explicit_round_match, mentioned_kcs, lexical_overlap
+
+
+def _continuity_cue_kind(value: str) -> str | None:
+    """Classify only explicit backward-looking learner references.
+
+    A turn that defines two alternatives is not itself a recall request.  This
+    prevents ``第一种...第二种...`` from being treated as missing history before
+    the just-written alternatives have been committed.
+    """
+
+    text = str(value).strip()
+    if not text:
+        return None
+    if _ROUND_REFERENCE_CUE_RE.search(text):
+        return "explicit_round_reference"
+    if _EARLIER_QUESTION_CUE_RE.search(text):
+        return "earlier_unresolved_question"
+    if _EARLIEST_INSTRUCTION_CUE_RE.search(text):
+        return "earliest_learner_instruction"
+    if _PRIOR_AGREEMENT_CUE_RE.search(text):
+        return "prior_agreement_or_agenda"
+    if (
+        _named_alternative_marker_count(text) < 2
+        and _ORDINAL_REFERENCE_CUE_RE.search(text)
+    ):
+        return "ordinal_reference"
+    if _SEMANTIC_HISTORY_CUE_RE.search(text):
+        return "semantic_topic_reference"
+    return None
+
+
+def _history_continuity_candidates(
+    session: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    history = session.get("history", [])
+    if not isinstance(history, list):
+        return []
+    candidates: list[dict[str, Any]] = []
+    for fallback_round, raw_event in enumerate(history, 1):
+        if not isinstance(raw_event, Mapping):
+            continue
+        round_number = _safe_round(raw_event.get("round"), fallback_round)
+        learner_text = str(
+            raw_event.get("learner_text", raw_event.get("learner_response", ""))
+            or ""
+        ).strip()
+        action = raw_event.get("action", {})
+        teacher_action = action.get("teacher_action", {}) if isinstance(action, Mapping) else {}
+        teacher_text = (
+            str(teacher_action.get("message", "") or "").strip()
+            if isinstance(teacher_action, Mapping)
+            else ""
+        )
+        event_view = _event_view(raw_event, fallback_round)
+        generic_excerpt = teacher_text or learner_text
+        if generic_excerpt:
+            generic_field = (
+                "action.teacher_action.message"
+                if teacher_text
+                else "learner_response"
+            )
+            generic_speaker = "teacher" if teacher_text else "learner"
+            candidates.append(
+                {
+                    "kind": "historical_turn",
+                    "speaker": generic_speaker,
+                    "round": round_number,
+                    "excerpt": generic_excerpt,
+                    "evidence_refs": [
+                        (
+                            f"session_history:r{round_number}:teacher_action"
+                            if teacher_text
+                            else f"session_history:r{round_number}:learner_response"
+                        )
+                    ],
+                    "source": "session_history",
+                    "field": generic_field,
+                    "knowledge_components": event_view.get(
+                        "knowledge_components", []
+                    ),
+                    "teacher_message": teacher_text,
+                    "learner_response": learner_text,
+                }
+            )
+        if learner_text and _named_alternative_marker_count(learner_text) >= 2:
+            candidates.append(
+                {
+                    "kind": "learner_named_alternatives",
+                    "speaker": "learner",
+                    "round": round_number,
+                    "excerpt": learner_text,
+                    "evidence_refs": [
+                        f"session_history:r{round_number}:learner_response"
+                    ],
+                    "source": "learner_defined_alternatives",
+                    "field": "learner_response",
+                }
+            )
+        if learner_text and _LEARNER_FUTURE_AGENDA_RE.search(learner_text):
+            candidates.append(
+                {
+                    "kind": "learner_future_agenda",
+                    "speaker": "learner",
+                    "round": round_number,
+                    "excerpt": learner_text,
+                    "evidence_refs": [
+                        f"session_history:r{round_number}:learner_response"
+                    ],
+                    "source": "learner_requested_future_agenda",
+                    "field": "learner_response",
+                }
+            )
+        if teacher_text and _named_alternative_marker_count(teacher_text) >= 2:
+            candidates.append(
+                {
+                    "kind": "teacher_named_alternatives",
+                    "speaker": "teacher",
+                    "round": round_number,
+                    "excerpt": teacher_text,
+                    "evidence_refs": [
+                        f"session_history:r{round_number}:teacher_action"
+                    ],
+                    "source": "teacher_named_alternatives",
+                    "field": "action.teacher_action.message",
+                }
+            )
+        if teacher_text and isinstance(teacher_action, Mapping) and (
+            teacher_action.get("question_id")
+            or _EXPLICIT_LEARNER_QUESTION_RE.search(teacher_text)
+        ):
+            candidates.append(
+                {
+                    "kind": "teacher_question",
+                    "speaker": "teacher",
+                    "round": round_number,
+                    "excerpt": teacher_text,
+                    "evidence_refs": [
+                        f"session_history:r{round_number}:teacher_action"
+                    ],
+                    "source": "teacher_question",
+                    "field": "action.teacher_action.message",
+                }
+            )
+    return candidates
+
+
+def _current_action_continuity_candidates(
+    session: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    action = session.get("current_action", {})
+    if not isinstance(action, Mapping):
+        return []
+    teacher_action = action.get("teacher_action", {})
+    if not isinstance(teacher_action, Mapping):
+        return []
+    message = str(teacher_action.get("message", "") or "").strip()
+    if not message:
+        return []
+    round_number = _safe_round(
+        action.get("round"), int(session.get("round", 0)) + 1
+    )
+    evidence_ref = f"current_action:r{round_number}:teacher_action"
+    candidates: list[dict[str, Any]] = []
+    if _named_alternative_marker_count(message) >= 2:
+        candidates.append(
+            {
+                "kind": "teacher_named_alternatives",
+                "speaker": "teacher",
+                "round": round_number,
+                "excerpt": message,
+                "evidence_refs": [evidence_ref],
+                "source": "current_validated_teacher_action",
+                "field": "current_action.teacher_action.message",
+            }
+        )
+    if _TEACHER_NEXT_STEP_RE.search(message):
+        candidates.append(
+            {
+                "kind": "teacher_commitment",
+                "speaker": "teacher",
+                "round": round_number,
+                "excerpt": message,
+                "evidence_refs": [evidence_ref],
+                "source": "current_validated_teacher_action",
+                "field": "current_action.teacher_action.message",
+            }
+        )
+    if teacher_action.get("question_id") or _EXPLICIT_LEARNER_QUESTION_RE.search(
+        message
+    ):
+        candidates.append(
+            {
+                "kind": "teacher_question",
+                "speaker": "teacher",
+                "round": round_number,
+                "excerpt": message,
+                "evidence_refs": [evidence_ref],
+                "source": "current_validated_teacher_action",
+                "field": "current_action.teacher_action.message",
+            }
+        )
+    return candidates
+
+
+def _memory_continuity_candidates(
+    session: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    memory = session.get("teaching_memory")
+    if not isinstance(memory, Mapping):
+        return []
+    candidates: list[dict[str, Any]] = []
+    for item in memory.get("preferences", []):
+        if not isinstance(item, Mapping) or item.get("status") == "superseded":
+            continue
+        status = str(item.get("status", ""))
+        candidates.append(
+            {
+                "kind": "learner_instruction",
+                "speaker": (
+                    "teacher_profile"
+                    if status == "confirmed_teacher_profile"
+                    else "learner"
+                ),
+                "round": _safe_round(item.get("first_observed_round"), 0),
+                "excerpt": str(item.get("statement", "")),
+                "evidence_refs": list(item.get("evidence_refs", [])),
+                "source": (
+                    "teacher_provided_student_profile"
+                    if status == "confirmed_teacher_profile"
+                    else "learner_explicit_preference"
+                ),
+                "field": "teaching_memory.preferences.statement",
+            }
+        )
+    for item in memory.get("open_questions", []):
+        if not isinstance(item, Mapping) or item.get("status") == "resolved":
+            continue
+        candidates.append(
+            {
+                "kind": "unresolved_learner_question",
+                "speaker": "learner",
+                "round": _safe_round(item.get("first_raised_round"), 0),
+                "excerpt": str(item.get("question", "")),
+                "evidence_refs": list(item.get("evidence_refs", [])),
+                "source": "learner_question",
+                "field": "teaching_memory.open_questions.question",
+            }
+        )
+    for item in memory.get("commitments", []):
+        if not isinstance(item, Mapping) or item.get("status") != "pending":
+            continue
+        candidates.append(
+            {
+                "kind": "teacher_commitment",
+                "speaker": "teacher",
+                "round": _safe_round(item.get("created_round"), 0),
+                "excerpt": str(item.get("statement", "")),
+                "evidence_refs": list(item.get("evidence_refs", [])),
+                "source": "teacher_commitment",
+                "field": "teaching_memory.commitments.statement",
+            }
+        )
+    for item in memory.get("referents", []):
+        if not isinstance(item, Mapping) or item.get("status") != "active":
+            continue
+        candidates.append(
+            {
+                "kind": "teacher_named_alternatives",
+                "speaker": "teacher",
+                "round": _safe_round(item.get("round"), 0),
+                "excerpt": str(item.get("description", "")),
+                "evidence_refs": list(item.get("evidence_refs", [])),
+                "source": "teacher_named_alternatives",
+                "field": "teaching_memory.referents.description",
+            }
+        )
+    return candidates
+
+
+def _select_continuity_target(
+    cue_kind: str,
+    candidates: Sequence[Mapping[str, Any]],
+    learner_response: str,
+) -> Mapping[str, Any] | None:
+    if cue_kind == "explicit_round_reference":
+        requested_round = _requested_round(learner_response)
+        if requested_round is None:
+            return None
+        return next(
+            (
+                item
+                for item in candidates
+                if item.get("kind") == "historical_turn"
+                and _safe_round(item.get("round"), 0) == requested_round
+            ),
+            None,
+        )
+    if cue_kind == "semantic_topic_reference":
+        eligible = [
+            item for item in candidates if item.get("kind") == "historical_turn"
+        ]
+        requested_round = _requested_round(learner_response)
+        query_terms = _query_terms(learner_response)
+        scored = [
+            (
+                _event_query_score(
+                    item,
+                    learner_response,
+                    requested_round=requested_round,
+                    query_terms=query_terms,
+                ),
+                item,
+            )
+            for item in eligible
+        ]
+        scored = [
+            (score, item)
+            for score, item in scored
+            if score[0] or score[1] or score[2] >= 2
+        ]
+        return (
+            max(
+                scored,
+                key=lambda row: (
+                    row[0],
+                    _safe_round(row[1].get("round"), 0),
+                ),
+            )[1]
+            if scored
+            else None
+        )
+    if cue_kind == "ordinal_reference":
+        eligible = [
+            item
+            for item in candidates
+            if item.get("kind")
+            in {"learner_named_alternatives", "teacher_named_alternatives"}
+        ]
+        return (
+            max(
+                eligible,
+                key=lambda item: (
+                    _safe_round(item.get("round"), 0),
+                    item.get("speaker") == "learner",
+                ),
+            )
+            if eligible
+            else None
+        )
+    if cue_kind == "earliest_learner_instruction":
+        learner_items = [
+            item
+            for item in candidates
+            if item.get("kind") == "learner_instruction"
+            and item.get("speaker") == "learner"
+        ]
+        fallback_items = [
+            item
+            for item in candidates
+            if item.get("kind") == "learner_instruction"
+        ]
+        eligible = learner_items or fallback_items
+        return (
+            min(eligible, key=lambda item: _safe_round(item.get("round"), 0))
+            if eligible
+            else None
+        )
+    if cue_kind == "earlier_unresolved_question":
+        learner_questions = [
+            item
+            for item in candidates
+            if item.get("kind") == "unresolved_learner_question"
+        ]
+        teacher_questions = [
+            item for item in candidates if item.get("kind") == "teacher_question"
+        ]
+        eligible = learner_questions or teacher_questions
+        return (
+            min(eligible, key=lambda item: _safe_round(item.get("round"), 0))
+            if eligible
+            else None
+        )
+    if cue_kind == "prior_agreement_or_agenda":
+        eligible = [
+            item
+            for item in candidates
+            if item.get("kind") in {"learner_future_agenda", "teacher_commitment"}
+        ]
+        return (
+            max(
+                eligible,
+                key=lambda item: (
+                    _safe_round(item.get("round"), 0),
+                    item.get("kind") == "learner_future_agenda",
+                ),
+            )
+            if eligible
+            else None
+        )
+    return None
+
+
+def _continuity_recall_layer(
+    session: Mapping[str, Any],
+    learner_response: str | None,
+    *,
+    current_response_id: str | None,
+    content_limit: int,
+    evidence_excerpt_limit: int,
+    evidence: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if learner_response is None or current_response_id is None:
+        return None
+    cue_kind = _continuity_cue_kind(learner_response)
+    if cue_kind is None:
+        return None
+    candidates = [
+        *_current_action_continuity_candidates(session),
+        *_history_continuity_candidates(session),
+        *_memory_continuity_candidates(session),
+    ]
+    target = _select_continuity_target(cue_kind, candidates, learner_response)
+    cue_excerpt = _bounded_text(learner_response, min(240, content_limit))
+    if target is None:
+        return {
+            "schema": CONTINUITY_RECALL_SCHEMA,
+            "cue_kind": cue_kind,
+            "cue_excerpt": cue_excerpt,
+            "cue_evidence_refs": [current_response_id],
+            "status": "unresolved_no_matching_evidence",
+            "target": None,
+            "instruction": (
+                "不得声称记得不存在的方案、约定或问题；明确说明没有找到匹配记录，"
+                "并请学生用一句话重述所指内容。"
+            ),
+            "selection_policy": "fail_closed_when_no_evidence_linked_target",
+            "must_not_invent": True,
+        }
+
+    excerpt = _bounded_text(target.get("excerpt", ""), min(400, content_limit))
+    refs = [str(ref) for ref in target.get("evidence_refs", []) if str(ref)]
+    round_number = _safe_round(target.get("round"), 0)
+    for evidence_id in refs:
+        evidence.append(
+            _evidence_record(
+                evidence_id,
+                source=str(target.get("source", "session_history")),
+                field=str(target.get("field", "utterance")),
+                round_number=round_number,
+                excerpt=_bounded_text(excerpt, evidence_excerpt_limit),
+            )
+        )
+    return {
+        "schema": CONTINUITY_RECALL_SCHEMA,
+        "cue_kind": cue_kind,
+        "cue_excerpt": cue_excerpt,
+        "cue_evidence_refs": [current_response_id],
+        "status": "resolved_evidence_linked",
+        "target": {
+            "kind": str(target.get("kind", "")),
+            "speaker": str(target.get("speaker", "")),
+            "source_round": round_number,
+            "excerpt": excerpt,
+            "evidence_refs": refs,
+        },
+        "instruction": (
+            "先按目标证据消解当前指代，再生成本轮动作；只使用所引证的原话，"
+            "不得补写未命名的方案、约定、偏好或问题。"
+        ),
+        "selection_policy": "cue_specific_evidence_linked_target",
+        "must_not_invent": True,
+    }
+
+
 def _redact_value(value: str, counts: Counter[str]) -> str:
     redacted, findings = redact_remote_text(value)
     counts.update(item["kind"] for item in findings)
@@ -312,6 +1011,24 @@ def _truncate_text(value: str, limit: int) -> tuple[str, bool]:
     return value[: limit - len(_TEXT_TRUNCATION_MARKER)] + _TEXT_TRUNCATION_MARKER, True
 
 
+def _truncate_current_response(value: str, limit: int) -> tuple[str, bool]:
+    """Preserve both the setup and final conclusion of the current answer."""
+
+    if len(value) <= limit:
+        return value, False
+    if limit <= len(_MIDDLE_TRUNCATION_MARKER):
+        return _MIDDLE_TRUNCATION_MARKER[:limit], True
+    remaining = limit - len(_MIDDLE_TRUNCATION_MARKER)
+    head = max(1, (remaining * 3) // 5)
+    tail = remaining - head
+    return (
+        value[:head]
+        + _MIDDLE_TRUNCATION_MARKER
+        + (value[-tail:] if tail else ""),
+        True,
+    )
+
+
 def _rebuild_context(
     *,
     learner_response: str,
@@ -323,10 +1040,11 @@ def _rebuild_context(
     history_count: int,
     max_recent_turns: int,
     max_chars: int,
+    response_limit: int,
     text_limit: int,
     truncated: bool,
 ) -> dict[str, Any]:
-    response, response_cut = _truncate_text(learner_response, text_limit * 2)
+    response, response_cut = _truncate_current_response(learner_response, response_limit)
     turns: list[dict[str, Any]] = []
     any_cut = response_cut
     for item in selected:
@@ -351,7 +1069,7 @@ def _rebuild_context(
             "residual_identity_risk": True,
         },
         "selection": {
-            "priority": "same_knowledge_component_then_same_focus_then_recency",
+            "priority": "query_round_kc_lexical_then_active_focus_recency",
             "history_turn_count": history_count,
             "selected_turn_count": len(turns),
             "max_recent_turns": max_recent_turns,
@@ -369,9 +1087,10 @@ def build_relevant_history(
 ) -> dict[str, Any]:
     """Build bounded, redacted history for one remote learner assessment.
 
-    Same-knowledge-component turns rank above same-focus turns, followed by
-    recency.  At least the latest two turns are retained when capacity permits;
-    all omitted turns are represented only by aggregate statistics.
+    Explicit round references and current-query matches rank first, followed
+    by the active knowledge component, focus and recency.  At least the latest
+    two turns are retained when capacity permits; all omitted turns are
+    represented only by aggregate statistics.
     """
 
     if not isinstance(session, Mapping):
@@ -398,14 +1117,24 @@ def build_relevant_history(
 
     current_focus, current_kcs = _current_focus_and_kcs(session)
     normalized_kcs = {item.casefold() for item in current_kcs}
+    requested_round = _requested_round(learner_response)
+    response_query_terms = _query_terms(learner_response)
 
     latest_indices: set[int] = set()
     if max_recent_turns:
         latest_count = min(2, max_recent_turns, len(events))
         latest_indices.update(range(len(events) - latest_count, len(events)))
 
-    def relevance(index: int) -> tuple[int, int, int]:
+    def relevance(index: int) -> tuple[int, int, int, int, int, int]:
         event = events[index]
+        query_round_match, query_kc_matches, query_lexical_overlap = (
+            _event_query_score(
+                event,
+                learner_response,
+                requested_round=requested_round,
+                query_terms=response_query_terms,
+            )
+        )
         event_kcs = {
             str(item).casefold() for item in event.get("knowledge_components", [])
         }
@@ -414,7 +1143,14 @@ def build_relevant_history(
             current_focus
             and event.get("focus_dimension") == current_focus
         )
-        return int(kc_match), int(focus_match), index
+        return (
+            query_round_match,
+            query_kc_matches,
+            query_lexical_overlap,
+            int(kc_match),
+            int(focus_match),
+            index,
+        )
 
     available = [index for index in range(len(events)) if index not in latest_indices]
     available.sort(key=relevance, reverse=True)
@@ -431,43 +1167,42 @@ def build_relevant_history(
         current_focus = _redact_value(current_focus, finding_counts)
     current_kcs = [_redact_value(item, finding_counts) for item in current_kcs]
 
+    # The answer being assessed is more valuable than already-recorded turns.
+    # Keep up to 2,400 characters (with a balanced head/tail cut) while first
+    # shrinking and then dropping older history.  Only after the history layer
+    # is exhausted may the current answer itself be reduced.
+    response_limits = (2400, 1800, 1200, 800, 480, 280, 160, 80, 32, 0)
     text_limits = (1200, 800, 480, 280, 160, 80, 32, 0)
     context: dict[str, Any] | None = None
-    for text_limit in text_limits:
-        context = _rebuild_context(
-            learner_response=redacted_response,
-            selected=selected,
-            omitted=omitted,
-            current_focus=current_focus,
-            current_kcs=current_kcs,
-            finding_counts=finding_counts,
-            history_count=len(events),
-            max_recent_turns=max_recent_turns,
-            max_chars=max_chars,
-            text_limit=text_limit,
-            truncated=text_limit < text_limits[0],
-        )
-        if _serialized_length(context) <= max_chars:
-            return context
-
-    while selected:
-        omitted.append(selected.pop(0))
-        omitted.sort(key=lambda item: int(item.get("round", 0)))
-        context = _rebuild_context(
-            learner_response="",
-            selected=selected,
-            omitted=omitted,
-            current_focus=current_focus,
-            current_kcs=[],
-            finding_counts=finding_counts,
-            history_count=len(events),
-            max_recent_turns=max_recent_turns,
-            max_chars=max_chars,
-            text_limit=0,
-            truncated=True,
-        )
-        if _serialized_length(context) <= max_chars:
-            return context
+    for response_limit in response_limits:
+        retained = list(selected)
+        additionally_omitted = list(omitted)
+        while True:
+            for text_limit in text_limits:
+                context = _rebuild_context(
+                    learner_response=redacted_response,
+                    selected=retained,
+                    omitted=additionally_omitted,
+                    current_focus=current_focus,
+                    current_kcs=current_kcs,
+                    finding_counts=finding_counts,
+                    history_count=len(events),
+                    max_recent_turns=max_recent_turns,
+                    max_chars=max_chars,
+                    response_limit=response_limit,
+                    text_limit=text_limit,
+                    truncated=(
+                        response_limit < response_limits[0]
+                        or text_limit < text_limits[0]
+                        or len(retained) < len(selected)
+                    ),
+                )
+                if _serialized_length(context) <= max_chars:
+                    return context
+            if not retained:
+                break
+            additionally_omitted.append(retained.pop(0))
+            additionally_omitted.sort(key=lambda item: int(item.get("round", 0)))
 
     minimal = {
         "schema": CONTEXT_SCHEMA,
@@ -487,7 +1222,7 @@ def build_relevant_history(
             "residual_identity_risk": True,
         },
         "selection": {
-            "priority": "same_knowledge_component_then_same_focus_then_recency",
+            "priority": "query_round_kc_lexical_then_active_focus_recency",
             "history_turn_count": len(events),
             "selected_turn_count": 0,
             "max_recent_turns": max_recent_turns,
@@ -505,6 +1240,13 @@ def _bounded_text(value: Any, limit: int) -> str:
     if not text or limit <= 0:
         return ""
     return _truncate_text(text, limit)[0]
+
+
+def _bounded_current_response(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if not text or limit <= 0:
+        return ""
+    return _truncate_current_response(text, limit)[0]
 
 
 def _redact_structure(value: Any, counts: Counter[str]) -> Any:
@@ -695,6 +1437,291 @@ def _teacher_profile_layer(
         "source": "teacher_input_normalized_locally",
         "mutable_by_model": False,
     }
+
+
+def _bounded_knowledge_spec(value: Any, *, content_limit: int) -> dict[str, Any]:
+    """Project teacher-provided domain truth without claiming independent review."""
+
+    if not isinstance(value, Mapping) or value.get("status") == "not_provided":
+        return {
+            "status": "not_provided",
+            "claim_boundary": {
+                "authoritative_for_runtime_grading": False,
+                "model_memory_is_authoritative_when_absent": False,
+            },
+        }
+    limit = max(48, min(content_limit, 320))
+
+    def rows(field: str, text_fields: tuple[str, ...], maximum: int) -> list[dict[str, Any]]:
+        raw = value.get(field, [])
+        if not isinstance(raw, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for item in raw[:maximum]:
+            if not isinstance(item, Mapping):
+                continue
+            row = deepcopy(dict(item))
+            for text_field in text_fields:
+                if text_field in row:
+                    row[text_field] = _bounded_text(row[text_field], limit)
+            result.append(row)
+        return result
+
+    return {
+        "schema": value.get("schema"),
+        "status": value.get("status", "not_provided"),
+        "canonical_claims": rows("canonical_claims", ("statement",), 8),
+        "rubric_criteria": rows("rubric_criteria", ("description",), 8),
+        "accepted_alternatives": rows(
+            "accepted_alternatives", ("description",), 6
+        ),
+        "reference_steps": rows("reference_steps", ("description",), 8),
+        "misconception_catalog": rows(
+            "misconception_catalog", ("description", "corrective_principle"), 8
+        ),
+        "sources": rows("sources", ("title", "citation"), 6),
+        "claim_boundary": deepcopy(value.get("claim_boundary", {})),
+    }
+
+
+def _minimal_knowledge_spec(
+    value: Any,
+    *,
+    current_components: Sequence[str],
+    content_limit: int,
+) -> dict[str, Any] | None:
+    """Keep only the grading evidence relevant to the active knowledge step.
+
+    The normal layered context carries the complete teacher-authored knowledge
+    specification.  The 6k emergency envelope cannot do that safely, so this
+    projection keeps the active claims, criteria, equivalent method, reference
+    step, and misconception cue without changing their teacher provenance.
+    """
+
+    if not isinstance(value, Mapping) or value.get("status") != "teacher_provided":
+        return None
+    limit = max(32, min(int(content_limit), 96))
+    active = {str(item) for item in current_components if str(item).strip()}
+
+    def mappings(field: str) -> list[Mapping[str, Any]]:
+        rows = value.get(field, [])
+        if not isinstance(rows, list):
+            return []
+        return [item for item in rows if isinstance(item, Mapping)]
+
+    def components_for(item: Mapping[str, Any]) -> set[str]:
+        raw = item.get("knowledge_components")
+        if isinstance(raw, list):
+            return {str(component) for component in raw}
+        component = item.get("knowledge_component")
+        return {str(component)} if component else set()
+
+    def relevant(rows: list[Mapping[str, Any]], maximum: int) -> list[Mapping[str, Any]]:
+        selected = [item for item in rows if components_for(item) & active]
+        if not selected:
+            selected = [item for item in rows if not components_for(item)]
+        if not selected and rows:
+            selected = rows[:1]
+        return selected[:maximum]
+
+    claim_rows = relevant(mappings("canonical_claims"), 2)
+    claim_ids = {
+        str(item.get("claim_id")) for item in claim_rows if item.get("claim_id")
+    }
+    rubric_rows = relevant(mappings("rubric_criteria"), 2)
+    step_rows = relevant(mappings("reference_steps"), 1)
+    alternative_rows = [
+        item
+        for item in mappings("accepted_alternatives")
+        if claim_ids
+        & {
+            str(claim_id)
+            for claim_id in item.get("equivalent_claim_ids", [])
+            if isinstance(item.get("equivalent_claim_ids"), list)
+        }
+    ][:1]
+    misconception_rows = [
+        item
+        for item in mappings("misconception_catalog")
+        if claim_ids
+        & {
+            str(claim_id)
+            for claim_id in item.get("contradicts_claim_ids", [])
+            if isinstance(item.get("contradicts_claim_ids"), list)
+        }
+    ][:1]
+    boundary = value.get("claim_boundary", {})
+    if not isinstance(boundary, Mapping):
+        boundary = {}
+    return {
+        "status": "teacher_provided",
+        "active_knowledge_components": list(active)[:4],
+        "canonical_claims": [
+            {
+                "claim_id": item.get("claim_id"),
+                "statement": _bounded_text(item.get("statement", ""), limit),
+                "required": item.get("required") is True,
+            }
+            for item in claim_rows
+        ],
+        "rubric_criteria": [
+            {
+                "criterion_id": item.get("criterion_id"),
+                "description": _bounded_text(item.get("description", ""), limit),
+                "required": item.get("required") is True,
+                "acceptable_evidence": [
+                    _bounded_text(candidate, 48)
+                    for candidate in item.get("acceptable_evidence", [])[:2]
+                    if _bounded_text(candidate, 48)
+                ]
+                if isinstance(item.get("acceptable_evidence"), list)
+                else [],
+            }
+            for item in rubric_rows
+        ],
+        "accepted_alternatives": [
+            {"description": _bounded_text(item.get("description", ""), limit)}
+            for item in alternative_rows
+        ],
+        "reference_steps": [
+            {"description": _bounded_text(item.get("description", ""), limit)}
+            for item in step_rows
+        ],
+        "misconception_catalog": [
+            {
+                "tag": _bounded_text(item.get("tag", ""), 48),
+                "description": _bounded_text(item.get("description", ""), limit),
+                "corrective_principle": _bounded_text(
+                    item.get("corrective_principle", ""), limit
+                ),
+            }
+            for item in misconception_rows
+        ],
+        "claim_boundary": {
+            "authoritative_for_runtime_grading": boundary.get(
+                "authoritative_for_runtime_grading"
+            )
+            is True,
+            "independently_verified_by_system": False,
+            "model_memory_is_authoritative_when_absent": False,
+        },
+    }
+
+
+def _teaching_memory_layer(
+    session: Mapping[str, Any],
+    *,
+    content_limit: int,
+    evidence_excerpt_limit: int,
+    evidence: list[dict[str, Any]],
+    compact: bool = False,
+) -> dict[str, Any] | None:
+    """Return the bounded long-horizon memory and register every evidence ref."""
+
+    memory = session.get("teaching_memory")
+    if not isinstance(memory, Mapping):
+        return None
+    validate_teaching_memory(memory)
+    projection = project_teaching_memory(memory, content_limit=content_limit)
+    if compact:
+        compact_groups: dict[str, list[dict[str, Any]]] = {}
+        for group, text_field, maximum in (
+            ("active_preferences", "statement", 3),
+            ("unresolved_questions", "question", 3),
+            ("pending_teacher_commitments", "statement", 2),
+            ("active_referents", "description", 2),
+        ):
+            rows = projection.get(group, [])
+            if not isinstance(rows, list):
+                rows = []
+            compact_rows: list[dict[str, Any]] = []
+            for item in rows:
+                if not isinstance(item, Mapping):
+                    continue
+                if (
+                    group == "active_preferences"
+                    and item.get("status") == "confirmed_teacher_profile"
+                ):
+                    # The immutable profile already carries these preferences.
+                    continue
+                compact_item = {
+                    "memory_id": item.get("memory_id"),
+                    text_field: _bounded_text(item.get(text_field, ""), content_limit),
+                    "status": item.get("status"),
+                    "evidence_refs": list(item.get("evidence_refs", []))[-2:],
+                }
+                if group == "active_preferences":
+                    compact_item["kind"] = item.get("kind")
+                answer_refs = item.get("answer_evidence_refs")
+                if isinstance(answer_refs, list) and answer_refs:
+                    compact_item["answer_evidence_refs"] = list(answer_refs)[-2:]
+                compact_rows.append(compact_item)
+            compact_groups[group] = compact_rows[-maximum:]
+        projection = {
+            "schema": TEACHING_MEMORY_PROJECTION_SCHEMA,
+            "history_version": memory["history_version"],
+            "compaction_generation": memory["compaction_generation"],
+            "fixed_context_fingerprint": memory["fixed_context_fingerprint"],
+            **compact_groups,
+            "source": "deterministic_evidence_linked_rollout_projection",
+            "narrative_inference_added": False,
+            "model_may_mutate": False,
+        }
+        if int(memory["history_version"]) == 0 and not any(compact_groups.values()):
+            return None
+    groups = {
+        "active_preferences": ("student_preference", "statement"),
+        "unresolved_questions": ("learner_question", "question"),
+        "pending_teacher_commitments": ("teacher_commitment", "statement"),
+        "active_referents": ("teacher_named_alternatives", "description"),
+    }
+    for group, (source, text_field) in groups.items():
+        rows = projection.get(group, [])
+        if not isinstance(rows, list):
+            continue
+        for item in rows:
+            if not isinstance(item, Mapping):
+                continue
+            excerpt = _bounded_text(item.get(text_field, ""), evidence_excerpt_limit)
+            refs = item.get("evidence_refs", [])
+            if not isinstance(refs, list):
+                continue
+            for evidence_id in refs:
+                evidence_id = str(evidence_id)
+                if not evidence_id:
+                    continue
+                round_match = re.search(r":r(\d+):", evidence_id)
+                if round_match is None:
+                    round_match = re.search(r"_r(\d+)_", str(item.get("memory_id", "")))
+                round_number = int(round_match.group(1)) if round_match else 0
+                evidence.append(
+                    _evidence_record(
+                        evidence_id,
+                        source=source,
+                        field=f"teaching_memory.{group}.{text_field}",
+                        round_number=round_number,
+                        excerpt=excerpt,
+                    )
+                )
+            answer_refs = item.get("answer_evidence_refs", [])
+            if isinstance(answer_refs, list):
+                for evidence_id in answer_refs:
+                    evidence_id = str(evidence_id)
+                    if not evidence_id:
+                        continue
+                    round_match = re.search(r":r(\d+):", evidence_id)
+                    evidence.append(
+                        _evidence_record(
+                            evidence_id,
+                            source="teacher_or_learner_resolution_evidence",
+                            field="teaching_memory.question_resolution",
+                            round_number=(
+                                int(round_match.group(1)) if round_match else 0
+                            ),
+                            excerpt="",
+                        )
+                    )
+    return projection
 
 
 def _bounded_question_contract(value: Any, *, content_limit: int) -> dict[str, Any]:
@@ -1476,6 +2503,20 @@ def _layered_context_candidate(
     goal = session.get("goal", {})
     if not isinstance(goal, Mapping):
         goal = {}
+    teaching_memory = _teaching_memory_layer(
+        session,
+        content_limit=content_limit,
+        evidence_excerpt_limit=evidence_excerpt_limit,
+        evidence=evidence,
+    )
+    continuity_recall = _continuity_recall_layer(
+        session,
+        learner_response,
+        current_response_id=current_response_id,
+        content_limit=content_limit,
+        evidence_excerpt_limit=evidence_excerpt_limit,
+        evidence=evidence,
+    )
     fixed_context = {
         "teaching_goal": {
             "concept": _bounded_text(goal.get("concept", ""), min(240, content_limit)),
@@ -1495,6 +2536,17 @@ def _layered_context_candidate(
             }
             if isinstance(goal.get("materials", {}), Mapping)
             else {},
+            **(
+                {
+                    "knowledge_spec": _bounded_knowledge_spec(
+                        goal.get("knowledge_spec"), content_limit=content_limit
+                    )
+                }
+                if isinstance(goal.get("knowledge_spec"), Mapping)
+                and goal.get("knowledge_spec", {}).get("status")
+                == "teacher_provided"
+                else {}
+            ),
             "source": "teacher_input_normalized_locally",
             "mutable_by_model": False,
         },
@@ -1542,6 +2594,12 @@ def _layered_context_candidate(
             **deepcopy(relevant.get("earlier_summary", {})),
             "focus_checkpoints": focus_checkpoints,
             "teaching_checkpoints": teaching_checkpoints,
+            **({"teaching_memory": teaching_memory} if teaching_memory else {}),
+            **(
+                {"continuity_recall": continuity_recall}
+                if continuity_recall
+                else {}
+            ),
             "compression_method": (
                 "deterministic_aggregate_and_extractive_checkpoints_"
                 "no_model_generation"
@@ -1684,10 +2742,12 @@ def build_minimal_layered_context(
     if not isinstance(adaptive_summary, Mapping):
         adaptive_summary = {}
 
-    for response_limit in (512, 256, 128, 64, 48):
+    for response_limit in (4096, 3072, 2400, 2048, 1536, 1024, 768, 512, 256, 128, 64, 48):
         evidence: list[dict[str, Any]] = []
         current_response_id: str | None = None
-        current_response = _bounded_text(learner_response or "", response_limit)
+        current_response = _bounded_current_response(
+            learner_response or "", response_limit
+        )
         if learner_response is not None:
             current_response_id = (
                 f"current_response:r{int(session.get('round', 0)) + 1}"
@@ -1704,21 +2764,12 @@ def build_minimal_layered_context(
 
         mastery_view: list[dict[str, Any]] = []
         for dimension, value in list(mastery.items())[:4]:
-            evidence_id = f"student_state:knowledge_mastery:{dimension}"
             mastery_view.append(
                 {
                     "dimension": dimension,
                     "value": value,
                     "success_threshold": thresholds.get(dimension),
-                    "evidence_refs": [evidence_id],
                 }
-            )
-            evidence.append(
-                _evidence_record(
-                    evidence_id,
-                    source="deterministic_session_state",
-                    field=f"student_state.knowledge_mastery.{dimension}",
-                )
             )
 
         misconception_view: list[dict[str, Any]] = []
@@ -1768,17 +2819,11 @@ def build_minimal_layered_context(
         provided_history = profile.get("conversation_history", [])
         background_history = profile.get("background_history", [])
         known = profile.get("known_misconceptions", [])
-        initial_mastery = profile.get("initial_mastery", {})
         preferences = profile.get("preferences", [])
         accessibility = profile.get("accessibility_needs", [])
         components = goal.get("knowledge_components", [])
         if not isinstance(components, list):
             components = []
-        safe_goal_components = [
-            _bounded_text(item, 24)
-            for item in components[:4]
-            if _bounded_text(item, 24)
-        ]
         current_focus, raw_current_components = _current_focus_and_kcs(session)
         current_components = [
             _bounded_text(item, 24)
@@ -1791,6 +2836,27 @@ def build_minimal_layered_context(
                 for item in [_bounded_text(goal.get("concept", ""), 32)]
                 if item
             ]
+
+        teaching_memory = _teaching_memory_layer(
+            session,
+            content_limit=48,
+            evidence_excerpt_limit=48,
+            evidence=evidence,
+            compact=True,
+        )
+        continuity_recall = _continuity_recall_layer(
+            session,
+            learner_response,
+            current_response_id=current_response_id,
+            content_limit=96,
+            evidence_excerpt_limit=48,
+            evidence=evidence,
+        )
+        minimal_knowledge_spec = _minimal_knowledge_spec(
+            goal.get("knowledge_spec"),
+            current_components=current_components,
+            content_limit=56,
+        )
 
         context: dict[str, Any] = {
             "schema": LAYERED_CONTEXT_SCHEMA,
@@ -1806,11 +2872,15 @@ def build_minimal_layered_context(
                 "teaching_goal": {
                     "concept": _bounded_text(goal.get("concept", ""), 96),
                     "objective": _bounded_text(goal.get("objective", ""), 64),
-                    "knowledge_components": safe_goal_components,
+                    "knowledge_components": current_components,
                     "total_knowledge_component_count": len(components),
                     "success_thresholds": dict(thresholds),
                     "max_rounds": goal.get("max_rounds"),
-                    "materials": {},
+                    **(
+                        {"knowledge_spec": minimal_knowledge_spec}
+                        if minimal_knowledge_spec is not None
+                        else {}
+                    ),
                     "source": "teacher_input_normalized_locally",
                     "mutable_by_model": False,
                 },
@@ -1818,49 +2888,40 @@ def build_minimal_layered_context(
                     "learner_level": _bounded_text(
                         profile.get("learner_level", ""), 64
                     ),
-                    "preferences": [],
-                    "total_preference_count": (
-                        len(preferences) if isinstance(preferences, list) else 0
-                    ),
-                    "accessibility_needs": [],
-                    "total_accessibility_need_count": (
-                        len(accessibility)
-                        if isinstance(accessibility, list)
-                        else 0
-                    ),
-                    "initial_mastery": (
-                        dict(initial_mastery)
-                        if isinstance(initial_mastery, Mapping)
-                        else {}
-                    ),
-                    "declared_known_misconceptions": [],
-                    "total_declared_known_misconception_count": (
+                    "preferences": [
+                        _bounded_text(item, 48)
+                        for item in preferences[:3]
+                        if _bounded_text(item, 48)
+                    ]
+                    if isinstance(preferences, list)
+                    else [],
+                    "accessibility_needs": [
+                        _bounded_text(item, 48)
+                        for item in accessibility[:2]
+                        if _bounded_text(item, 48)
+                    ]
+                    if isinstance(accessibility, list)
+                    else [],
+                    "declared_known_misconception_count": (
                         len(known) if isinstance(known, list) else 0
                     ),
-                    "provided_prior_context": {
-                        "total_turn_count": (
-                            len(provided_history)
-                            if isinstance(provided_history, list)
-                            else 0
-                        )
-                        + (
-                            len(background_history)
-                            if isinstance(background_history, list)
-                            else 0
-                            ),
-                            "retained_turn_count": 0,
-                            "turns": [],
-                        },
+                    "provided_prior_turn_count": (
+                        len(provided_history)
+                        if isinstance(provided_history, list)
+                        else 0
+                    )
+                    + (
+                        len(background_history)
+                        if isinstance(background_history, list)
+                        else 0
+                    ),
                     "source": "teacher_input_normalized_locally",
                     "mutable_by_model": False,
                 },
             },
             "current_plan": {
-                "plan_schema": plan.get("schema"),
                 "plan_status": plan.get("status"),
-                "progress": {},
                 "active_step": plan.get("active_step"),
-                "step_statuses": [],
                 "current_action": {
                     "action_id": action.get("action_id"),
                     "primary_skill_id": primary.get("skill_id"),
@@ -1902,6 +2963,12 @@ def build_minimal_layered_context(
                 "turn_count": history_count,
                 "focus_checkpoints": [],
                 "teaching_checkpoints": [],
+                **({"teaching_memory": teaching_memory} if teaching_memory else {}),
+                **(
+                    {"continuity_recall": continuity_recall}
+                    if continuity_recall
+                    else {}
+                ),
                 "compression_method": (
                     "deterministic_aggregate_and_extractive_checkpoints_"
                     "no_model_generation"
@@ -1912,19 +2979,16 @@ def build_minimal_layered_context(
             "knowledge_state": {
                 "concept_mastery": mastery_view,
                 "misconceptions": misconception_view,
-                "total_misconception_count": len(raw_misconceptions),
                 "unresolved_issues": unresolved_view,
                 "current_understanding_signal": {
                     "label": signal.get("label"),
                     "confidence": signal.get("confidence"),
-                    "source": signal.get("source"),
                 },
                 "next_focus": {
                     "dimension": next_focus.get("dimension"),
                     "selected_skill_id": next_focus.get("selected_skill_id"),
                 },
                 "assessment_evidence": {
-                    "source": assessment.get("source"),
                     "needs_human_review": assessment.get("needs_human_review"),
                 },
                 "source": "deterministic_state_machine_over_labeled_observations",
@@ -2154,6 +3218,93 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
         or len(semantic["focus_checkpoints"]) > 4
     ):
         raise ValueError("layered context semantic summary is invalid")
+    teaching_memory = semantic.get("teaching_memory")
+    if teaching_memory is not None:
+        if (
+            not isinstance(teaching_memory, Mapping)
+            or teaching_memory.get("schema") != TEACHING_MEMORY_PROJECTION_SCHEMA
+            or teaching_memory.get("source")
+            != "deterministic_evidence_linked_rollout_projection"
+            or teaching_memory.get("narrative_inference_added") is not False
+            or teaching_memory.get("model_may_mutate") is not False
+            or isinstance(teaching_memory.get("history_version"), bool)
+            or not isinstance(teaching_memory.get("history_version"), int)
+            or teaching_memory.get("history_version", -1) < 0
+            or any(
+                not isinstance(teaching_memory.get(field), list)
+                for field in (
+                    "active_preferences",
+                    "unresolved_questions",
+                    "pending_teacher_commitments",
+                    "active_referents",
+                )
+            )
+            or len(teaching_memory.get("active_preferences", [])) > 6
+            or len(teaching_memory.get("unresolved_questions", [])) > 6
+            or len(teaching_memory.get("pending_teacher_commitments", [])) > 4
+            or len(teaching_memory.get("active_referents", [])) > 4
+        ):
+            raise ValueError("layered context teaching memory is invalid")
+    continuity_recall = semantic.get("continuity_recall")
+    if continuity_recall is not None:
+        if (
+            not isinstance(continuity_recall, Mapping)
+            or continuity_recall.get("schema") != CONTINUITY_RECALL_SCHEMA
+            or continuity_recall.get("cue_kind")
+            not in {
+                "explicit_round_reference",
+                "semantic_topic_reference",
+                "ordinal_reference",
+                "earliest_learner_instruction",
+                "earlier_unresolved_question",
+                "prior_agreement_or_agenda",
+            }
+            or not isinstance(continuity_recall.get("cue_excerpt"), str)
+            or not continuity_recall.get("cue_excerpt")
+            or not isinstance(continuity_recall.get("cue_evidence_refs"), list)
+            or not continuity_recall.get("cue_evidence_refs")
+            or continuity_recall.get("status")
+            not in {
+                "resolved_evidence_linked",
+                "unresolved_no_matching_evidence",
+            }
+            or not isinstance(continuity_recall.get("instruction"), str)
+            or not continuity_recall.get("instruction")
+            or not isinstance(continuity_recall.get("selection_policy"), str)
+            or not continuity_recall.get("selection_policy")
+            or continuity_recall.get("must_not_invent") is not True
+        ):
+            raise ValueError("layered context continuity recall is invalid")
+        recall_target = continuity_recall.get("target")
+        if continuity_recall["status"] == "unresolved_no_matching_evidence":
+            if recall_target is not None:
+                raise ValueError(
+                    "unresolved continuity recall must not contain a target"
+                )
+        elif (
+            not isinstance(recall_target, Mapping)
+            or recall_target.get("kind")
+            not in {
+                "historical_turn",
+                "learner_named_alternatives",
+                "teacher_named_alternatives",
+                "learner_instruction",
+                "unresolved_learner_question",
+                "learner_future_agenda",
+                "teacher_commitment",
+                "teacher_question",
+            }
+            or recall_target.get("speaker")
+            not in {"learner", "teacher", "teacher_profile"}
+            or isinstance(recall_target.get("source_round"), bool)
+            or not isinstance(recall_target.get("source_round"), int)
+            or recall_target.get("source_round", -1) < 0
+            or not isinstance(recall_target.get("excerpt"), str)
+            or not recall_target.get("excerpt")
+            or not isinstance(recall_target.get("evidence_refs"), list)
+            or not recall_target.get("evidence_refs")
+        ):
+            raise ValueError("resolved continuity recall target is invalid")
     teaching_checkpoints = semantic.get("teaching_checkpoints")
     allowed_checkpoint_kinds = {
         "unresolved_learning_signal",

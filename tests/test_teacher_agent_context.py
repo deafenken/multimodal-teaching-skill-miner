@@ -21,6 +21,10 @@ from teaching_skill_miner.teacher_agent import (
     advance_teacher_agent_session,
     start_teacher_agent_session,
 )
+from teaching_skill_miner.teacher_agent_memory import (
+    commit_teaching_memory_turn,
+    initialize_teaching_memory,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +96,259 @@ def _json_length(value: dict) -> int:
     )
 
 
+def test_layered_context_reinjects_explicit_memory_and_teacher_knowledge_spec() -> None:
+    session = _session()
+    session["goal"].update(
+        {
+            "objective": "解释状态转移并完成迁移",
+            "materials": {},
+            "success_thresholds": {},
+            "max_rounds": 12,
+            "knowledge_spec": {
+                "schema": "teaching_skill_miner.teacher_goal_knowledge_spec.v1",
+                "status": "teacher_provided",
+                "canonical_claims": [
+                    {
+                        "claim_id": "claim_state",
+                        "statement": "状态转移必须说明当前状态如何依赖已解决子问题。",
+                        "knowledge_components": ["状态转移"],
+                        "required": True,
+                        "source_ids": [],
+                    }
+                ],
+                "rubric_criteria": [],
+                "accepted_alternatives": [],
+                "reference_steps": [],
+                "misconception_catalog": [],
+                "sources": [],
+                "claim_boundary": {
+                    "authoritative_for_runtime_grading": True,
+                    "teacher_authored_or_imported": True,
+                    "independently_verified_by_system": False,
+                    "model_memory_is_authoritative_when_absent": False,
+                },
+            },
+        }
+    )
+    session["student_profile"] = {
+        "profile_ref": "synthetic",
+        "learner_level": "beginner",
+        "preferences": ["先看例子"],
+        "accessibility_needs": [],
+        "initial_mastery": {},
+        "known_misconceptions": [],
+        "conversation_history": [],
+        "background_history": [],
+    }
+    memory = initialize_teaching_memory(session["goal"], session["student_profile"])
+    session["teaching_memory"] = commit_teaching_memory_turn(
+        memory,
+        round_number=1,
+        learner_text="请先举例，不要直接上公式。",
+        teacher_action={"action_id": "turn_001", "message": "先看一个台阶例子。"},
+    )
+    context = build_layered_context(session, "第二种呢？", max_recent_turns=2)
+    validate_layered_context(context)
+
+    knowledge_spec = context["fixed_context"]["teaching_goal"]["knowledge_spec"]
+    assert knowledge_spec["status"] == "teacher_provided"
+    assert knowledge_spec["canonical_claims"][0]["claim_id"] == "claim_state"
+    memory_view = context["semantic_summary"]["teaching_memory"]
+    assert memory_view["history_version"] == 1
+    assert any(
+        "不要直接上公式" in item["statement"]
+        for item in memory_view["active_preferences"]
+    )
+    ledger_ids = {item["evidence_id"] for item in context["evidence_ledger"]}
+    assert {
+        ref
+        for item in memory_view["active_preferences"]
+        for ref in item["evidence_refs"]
+    } <= ledger_ids
+
+
+def _continuity_session() -> dict:
+    session = _session()
+    session["goal"].update(
+        {
+            "objective": "比较两种条件概率求法并能解释选择依据",
+            "materials": {},
+            "success_thresholds": {},
+            "max_rounds": 12,
+        }
+    )
+    profile = {
+        "profile_ref": "synthetic-continuity",
+        "learner_level": "beginner",
+        "preferences": [],
+        "accessibility_needs": [],
+        "initial_mastery": {},
+        "known_misconceptions": [],
+        "conversation_history": [],
+        "background_history": [],
+    }
+    session["student_profile"] = profile
+    turns = [
+        (
+            "我有两种方法：第一种画树状图，第二种直接用条件概率公式。",
+            "请先比较两种方法各自需要的信息。",
+        ),
+        (
+            "请先用骰子例子，之后再回到条件概率公式。",
+            "我们先看一个只有两个结果的骰子情境。",
+        ),
+        (
+            "为什么第二种可以直接除以条件事件的概率？",
+            "先说说分母代表哪个样本空间。",
+        ),
+    ]
+    memory = initialize_teaching_memory(session["goal"], profile)
+    history = []
+    for round_number, (learner_text, teacher_message) in enumerate(turns, 1):
+        memory = commit_teaching_memory_turn(
+            memory,
+            round_number=round_number,
+            learner_text=learner_text,
+            teacher_action={
+                "action_id": f"turn_{round_number:03d}",
+                "message": teacher_message,
+            },
+        )
+        history.append(
+            {
+                "round": round_number,
+                "learner_text": learner_text,
+                "learner_response": learner_text,
+                "action": {
+                    "action_id": f"turn_{round_number:03d}",
+                    "primary_skill": {
+                        "skill_id": "skill_socratic_understanding_check",
+                        "focus_dimension": "conceptual",
+                        "knowledge_components": ["条件概率"],
+                    },
+                    "teacher_action": {"message": teacher_message},
+                },
+                "structured_signal": {
+                    "label": "partial",
+                    "confidence": 0.8,
+                    "source": "test_fixture",
+                },
+            }
+        )
+    session["history"] = history
+    session["teaching_memory"] = memory
+    return session
+
+
+@pytest.mark.parametrize(
+    ("cue", "expected_kind", "expected_text"),
+    [
+        ("第二种呢？", "learner_named_alternatives", "第二种直接用条件概率公式"),
+        (
+            "可以继续，但请按我最开始说的方式讲。",
+            "learner_instruction",
+            "先用骰子例子",
+        ),
+        (
+            "回到一开始的问题。",
+            "unresolved_learner_question",
+            "为什么第二种可以直接除以条件事件的概率",
+        ),
+        (
+            "按刚才约定继续。",
+            "learner_future_agenda",
+            "之后再回到条件概率公式",
+        ),
+    ],
+)
+def test_layered_context_resolves_explicit_continuity_cues_from_evidence(
+    cue: str,
+    expected_kind: str,
+    expected_text: str,
+) -> None:
+    context = build_layered_context(
+        _continuity_session(), cue, max_recent_turns=1, max_chars=14_000
+    )
+    validate_layered_context(context)
+
+    recall = context["semantic_summary"]["continuity_recall"]
+    assert recall["status"] == "resolved_evidence_linked"
+    assert recall["target"]["kind"] == expected_kind
+    assert expected_text in recall["target"]["excerpt"]
+    ledger_ids = {item["evidence_id"] for item in context["evidence_ledger"]}
+    assert set(recall["cue_evidence_refs"]) <= ledger_ids
+    assert set(recall["target"]["evidence_refs"]) <= ledger_ids
+
+
+def test_layered_context_fails_closed_when_recall_cue_has_no_matching_record() -> None:
+    session = _session()
+    session["student_profile"] = {
+        "profile_ref": "synthetic-no-memory",
+        "learner_level": "beginner",
+        "preferences": [],
+        "accessibility_needs": [],
+        "initial_mastery": {},
+        "known_misconceptions": [],
+        "conversation_history": [],
+        "background_history": [],
+    }
+    session["history"] = []
+    session["teaching_memory"] = initialize_teaching_memory(
+        session["goal"], session["student_profile"]
+    )
+
+    context = build_layered_context(session, "第二种呢？", max_chars=14_000)
+    recall = context["semantic_summary"]["continuity_recall"]
+
+    assert recall["status"] == "unresolved_no_matching_evidence"
+    assert recall["target"] is None
+    assert recall["must_not_invent"] is True
+
+
+def test_continuity_recall_can_resolve_the_current_unanswered_teacher_action() -> None:
+    session = _session()
+    session["student_profile"] = {
+        "profile_ref": "synthetic-current-action",
+        "learner_level": "beginner",
+        "preferences": [],
+        "accessibility_needs": [],
+        "initial_mastery": {},
+        "known_misconceptions": [],
+        "conversation_history": [],
+        "background_history": [],
+    }
+    session["history"] = []
+    session["round"] = 0
+    session["current_action"] = {
+        "round": 1,
+        "primary_skill": {
+            "skill_id": "skill_conceptual",
+            "focus_dimension": "conceptual",
+            "knowledge_components": ["状态转移"],
+        },
+        "teacher_action": {
+            "question_id": "q_001",
+            "message": (
+                "第一种方法保留完整状态表，第二种方法只保留相邻状态。"
+                "你想先比较哪一种？"
+            ),
+        },
+    }
+    session["teaching_memory"] = initialize_teaching_memory(
+        session["goal"], session["student_profile"]
+    )
+
+    context = build_layered_context(session, "第二种呢？", max_chars=14_000)
+    recall = context["semantic_summary"]["continuity_recall"]
+
+    assert recall["status"] == "resolved_evidence_linked"
+    assert recall["target"]["kind"] == "teacher_named_alternatives"
+    assert recall["target"]["source_round"] == 1
+    assert recall["target"]["evidence_refs"] == [
+        "current_action:r1:teacher_action"
+    ]
+
+
 def test_redact_remote_text_covers_all_required_identifier_types() -> None:
     posix_path = "/" + "Users/alice/private/note.txt"
     source = (
@@ -133,6 +390,24 @@ def test_redaction_is_deterministic_preserves_safe_text_and_resolves_overlap() -
     assert redacted.count("[REDACTED_URL]") == 2
     assert [item["kind"] for item in findings] == ["url", "url"]
     assert "[REDACTED_LOCAL_PATH]" not in redacted
+
+
+def test_redaction_preserves_formula_division_but_still_removes_real_paths() -> None:
+    private_path = "/" + "Users" + "/alice/private/answer.png"
+    source = (
+        "比例 dp[i]/dp[i-1]、f(n)/g(n)、(a+b)/(c+d) 与 P(A)/P(B) 都是公式；"
+        f"本机证据位于 {private_path}。"
+    )
+
+    redacted, findings = redact_remote_text(source)
+
+    assert "dp[i]/dp[i-1]" in redacted
+    assert "f(n)/g(n)" in redacted
+    assert "(a+b)/(c+d)" in redacted
+    assert "P(A)/P(B)" in redacted
+    assert private_path not in redacted
+    assert redacted.count("[REDACTED_LOCAL_PATH]") == 1
+    assert [item["kind"] for item in findings] == ["local_path"]
 
 
 def test_redaction_respects_digit_boundaries_and_rejects_non_text() -> None:
@@ -182,6 +457,73 @@ def test_relevant_history_does_not_treat_every_goal_kc_as_current() -> None:
 
     assert context["current_knowledge_components"] == ["状态转移"]
     assert [item["round"] for item in context["recent_turns"]] == [4, 5, 7, 8]
+
+
+@pytest.mark.parametrize(
+    ("query", "max_recent_turns", "expected_rounds", "expected_cue_kind"),
+    [
+        (
+            "我想回到第1轮讲的递归",
+            3,
+            [1, 7, 8],
+            "explicit_round_reference",
+        ),
+        (
+            "重新解释一下递归与状态定义的关系",
+            4,
+            [1, 2, 7, 8],
+            "semantic_topic_reference",
+        ),
+        (
+            "刚才第三个边界条件问题",
+            3,
+            [3, 7, 8],
+            "semantic_topic_reference",
+        ),
+    ],
+)
+def test_query_aware_history_recalls_explicit_old_turns(
+    query: str,
+    max_recent_turns: int,
+    expected_rounds: list[int],
+    expected_cue_kind: str,
+) -> None:
+    session = _session()
+    session["student_profile"] = {
+        "profile_ref": "synthetic-query-recall",
+        "learner_level": "beginner",
+        "preferences": [],
+        "accessibility_needs": [],
+        "initial_mastery": {},
+        "known_misconceptions": [],
+        "conversation_history": [],
+        "background_history": [],
+    }
+    session["teaching_memory"] = initialize_teaching_memory(
+        session["goal"], session["student_profile"]
+    )
+
+    relevant = build_relevant_history(
+        session,
+        query,
+        max_recent_turns=max_recent_turns,
+        max_chars=8_000,
+    )
+    assert [item["round"] for item in relevant["recent_turns"]] == expected_rounds
+
+    layered = build_layered_context(
+        session,
+        query,
+        max_recent_turns=max_recent_turns,
+        max_chars=14_000,
+    )
+    validate_layered_context(layered)
+    recall = layered["semantic_summary"]["continuity_recall"]
+    assert recall["cue_kind"] == expected_cue_kind
+    assert recall["status"] == "resolved_evidence_linked"
+    assert recall["target"]["source_round"] in expected_rounds[:-2]
+    ledger_ids = {item["evidence_id"] for item in layered["evidence_ledger"]}
+    assert set(recall["target"]["evidence_refs"]) <= ledger_ids
 
 
 def test_correct_same_kc_clears_an_older_cross_focus_unresolved_event() -> None:
@@ -824,6 +1166,28 @@ def test_minimum_budget_retains_current_answer_for_large_legal_session_shape() -
     assert json.dumps(context, ensure_ascii=False).count(
         "UNIQUE_MINIMUM_CONTEXT_43c1"
     ) == 1
+
+
+def test_current_response_truncation_preserves_decisive_tail() -> None:
+    session = _session()
+    response = (
+        "我先解释思路："
+        + "中间推理" * 1200
+        + "；最终答案是 dp[i]=dp[i-1]+dp[i-2]。"
+    )
+
+    context = build_layered_context(
+        session,
+        response,
+        max_chars=6_000,
+        max_recent_turns=2,
+    )
+
+    retained = context["working_memory"]["current_learner_response"]
+    assert retained.startswith("我先解释思路")
+    assert "middle truncated" in retained
+    assert retained.endswith("最终答案是 dp[i]=dp[i-1]+dp[i-2]。")
+    assert context["budget"]["serialized_chars"] <= 6_000
 
 
 def test_maximum_legal_question_contract_is_bounded_at_minimum_budget() -> None:
