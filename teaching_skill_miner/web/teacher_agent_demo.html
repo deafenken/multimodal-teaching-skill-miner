@@ -195,6 +195,35 @@
           <button id="openMethodInspectorButton" type="button"><span>查看选择依据</span><b aria-hidden="true">→</b></button>
         </section>
 
+        <section id="agentTracePanel" class="agent-trace-panel" aria-labelledby="agentTraceTitle" hidden>
+          <details class="agent-trace-shell" open>
+            <summary>
+              <span class="trace-kicker">STRUCTURED RUN TRACE</span>
+              <strong id="agentTraceTitle">Agent 执行轨迹</strong>
+              <span id="agentTraceStatus" class="trace-status">等待开始</span>
+              <small id="agentTraceSummary">开始后展示计划、调用结果和最终教学动作</small>
+            </summary>
+            <div class="agent-trace-body">
+              <div class="agent-trace-grid">
+                <section class="agent-trace-card" aria-labelledby="agentTracePlanTitle">
+                  <header><span>PLAN</span><h3 id="agentTracePlanTitle">本轮计划与进度</h3></header>
+                  <ol id="agentTracePlan" class="agent-trace-plan"><li>尚未生成计划。</li></ol>
+                  <div class="trace-current-step"><span>当前步骤</span><strong id="agentTraceCurrentStep">—</strong><p id="agentTraceCurrentDetail">—</p></div>
+                </section>
+                <section class="agent-trace-card" aria-labelledby="agentTraceEventsTitle">
+                  <header><span>EVENTS</span><h3 id="agentTraceEventsTitle">调用与结果</h3></header>
+                  <ol id="agentTraceEvents" class="agent-trace-events"><li>尚无结构化事件。</li></ol>
+                </section>
+              </div>
+              <div class="agent-trace-outcome-grid">
+                <section class="trace-outcome-card"><span>STOP / ROUTE</span><strong id="agentTraceStop">继续等待学生</strong><p id="agentTraceStopDetail">模型停止建议只有在满足安全门槛后才会执行。</p></section>
+                <section class="trace-outcome-card final"><span>FINAL TEACHING ACTION</span><strong id="agentTraceActionType">—</strong><p id="agentTraceAction">—</p></section>
+              </div>
+              <p id="agentTraceBoundary" class="agent-trace-boundary">这里只展示可核验的结构化事件，不展示内部思考链、原始提示词或模型隐藏推理。</p>
+            </div>
+          </details>
+        </section>
+
         <div id="emptySession" class="empty-session">
           <div class="empty-mark" aria-hidden="true">T</div>
           <h2>今天想学会什么？</h2>

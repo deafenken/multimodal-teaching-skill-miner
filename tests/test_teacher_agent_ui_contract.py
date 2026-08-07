@@ -831,6 +831,52 @@ class TeacherAgentUiContractTests(unittest.TestCase):
         self.assertIn("actionProvenanceSummary(action)", history)
         self.assertIn("话语来源：", history)
 
+    def test_structured_agent_trace_exposes_public_plan_calls_and_outcome(self) -> None:
+        for element_id in (
+            "agentTracePanel",
+            "agentTracePlan",
+            "agentTraceCurrentStep",
+            "agentTraceEvents",
+            "agentTraceStop",
+            "agentTraceAction",
+            "agentTraceBoundary",
+        ):
+            with self.subTest(element_id=element_id):
+                self.parser.by_id(element_id)
+
+        trace_renderer = self.script.split(
+            "function renderAgentTrace(session, action)", 1
+        )[1].split("function renderRuntime", 1)[0]
+        for public_field in (
+            "request_kind",
+            "action_repair",
+            "continuity_enforcement",
+            "model_stop_recommendation",
+            "termination_reason",
+            "teacher_action",
+        ):
+            with self.subTest(public_field=public_field):
+                self.assertIn(public_field, trace_renderer)
+        self.assertIn("不展示内部思考链", self.html)
+        self.assertIn("renderAgentTrace(session, action)", self.script)
+        render_session = self.script.split("function renderSession()", 1)[1].split(
+            "function evaluationTimeline", 1
+        )[0]
+        self.assertIn("renderAgentTrace(session, action)", render_session)
+        self.assertIn("不展示内部思考链", self.html)
+
+    def test_structured_agent_trace_is_responsive_and_uses_status_tokens(self) -> None:
+        for selector in (
+            ".agent-trace-grid",
+            ".agent-trace-outcome-grid",
+            ".agent-trace-plan li[data-status=\"active\"]::before",
+            ".agent-trace-events li[data-status=\"warning\"]::before",
+        ):
+            self.assertIn(selector, self.style)
+        responsive = self.style.split("@media (max-width: 860px)", 1)[1]
+        self.assertIn(".agent-trace-grid, .agent-trace-outcome-grid", responsive)
+        self.assertIn("grid-template-columns: 1fr", responsive)
+
     def test_terminal_session_profile_switch_starts_fresh_without_question_guard(
         self,
     ) -> None:

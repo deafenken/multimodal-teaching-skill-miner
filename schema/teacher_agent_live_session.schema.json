@@ -120,7 +120,7 @@
     "teaching_memory": {"$ref": "#/$defs/teachingMemory"},
     "agent_runtime": {
       "type": "object",
-      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "action_only_repair_enabled", "state_first_route_adjudication_enabled", "fallback_count", "model_call_count", "action_repair_call_count", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "input_modalities", "raw_image_model_support", "local_visual_evidence_policy", "last_context_trace"],
+      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "action_only_repair_enabled", "state_first_route_adjudication_enabled", "agent_loop_enabled", "agent_loop_schema", "maximum_agent_steps", "maximum_agent_tool_calls_per_step", "maximum_agent_repeated_tool_calls", "agent_loop_model_retries", "fallback_count", "model_call_count", "action_repair_call_count", "agent_loop_run_count", "agent_loop_model_call_count", "agent_loop_tool_call_count", "agent_loop_retry_count", "last_agent_loop", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "input_modalities", "raw_image_model_support", "local_visual_evidence_policy", "last_context_trace"],
       "properties": {
         "schema": {"const": "teaching_skill_miner.deepseek_teacher_runtime.v1"},
         "mode": {"const": "deepseek_live"},
@@ -130,9 +130,25 @@
         "fallback_to_rules": {"type": "boolean"},
         "action_only_repair_enabled": {"type": "boolean"},
         "state_first_route_adjudication_enabled": {"type": "boolean"},
+        "agent_loop_enabled": {"type": "boolean"},
+        "agent_loop_schema": {"const": "teaching_skill_miner.teacher_agent_loop.v1"},
+        "maximum_agent_steps": {"type": "integer", "minimum": 2, "maximum": 16},
+        "maximum_agent_tool_calls_per_step": {"type": "integer", "minimum": 1, "maximum": 6},
+        "maximum_agent_repeated_tool_calls": {"type": "integer", "minimum": 1, "maximum": 4},
+        "agent_loop_model_retries": {"type": "integer", "minimum": 0, "maximum": 3},
         "fallback_count": {"type": "integer", "minimum": 0},
         "model_call_count": {"type": "integer", "minimum": 0},
         "action_repair_call_count": {"type": "integer", "minimum": 0},
+        "agent_loop_run_count": {"type": "integer", "minimum": 0},
+        "agent_loop_model_call_count": {"type": "integer", "minimum": 0},
+        "agent_loop_tool_call_count": {"type": "integer", "minimum": 0},
+        "agent_loop_retry_count": {"type": "integer", "minimum": 0},
+        "last_agent_loop": {
+          "anyOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/agentLoopTrace"}
+          ]
+        },
         "last_model_trace": {"type": ["object", "null"]},
         "last_error": {"type": ["string", "null"]},
         "remote_student_data_opt_in": {"const": true},
@@ -173,6 +189,49 @@
     }
   },
   "$defs": {
+    "agentLoopTrace": {
+      "type": "object",
+      "required": ["schema", "status", "termination_reason", "steps", "model_call_count", "tool_call_count", "retry_count", "selected_skill_id", "supporting_skill_ids", "next_focus", "deterministic_fallback", "events", "trace_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_agent_loop.v1"},
+        "status": {"type": "string", "minLength": 1},
+        "termination_reason": {"type": "string"},
+        "steps": {"type": "integer", "minimum": 0},
+        "model_call_count": {"type": "integer", "minimum": 0},
+        "tool_call_count": {"type": "integer", "minimum": 0},
+        "retry_count": {"type": "integer", "minimum": 0},
+        "selected_skill_id": {"type": "string"},
+        "supporting_skill_ids": {"type": "array", "maxItems": 2, "items": {"type": "string"}},
+        "next_focus": {"type": "string"},
+        "deterministic_fallback": {"type": "boolean"},
+        "events": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "required": ["type", "step"],
+            "properties": {
+              "type": {"type": "string", "minLength": 1},
+              "step": {"type": "integer", "minimum": 0},
+              "attempt": {"type": "integer", "minimum": 1},
+              "kind": {"type": "string"},
+              "trace": {"type": "object"},
+              "error_type": {"type": "string"},
+              "call_id": {"type": "string"},
+              "tool": {"type": "string"},
+              "ok": {"type": "boolean"},
+              "reason": {"type": "string"},
+              "skill_id": {"type": "string"},
+              "next_focus": {"type": "string"},
+              "message_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "trace_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
     "teachingMemory": {
       "type": "object",
       "required": ["schema", "history_version", "compaction_generation", "fixed_context_fingerprint", "last_observed_round", "preferences", "open_questions", "commitments", "referents", "claim_boundary"],

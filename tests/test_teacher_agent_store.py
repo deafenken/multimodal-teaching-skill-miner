@@ -16,6 +16,7 @@ from teaching_skill_miner.teacher_agent_dashboard import (
     build_teacher_agent_dashboard_snapshot,
 )
 from teaching_skill_miner.teacher_agent_live import LiveAgentOptions
+from teaching_skill_miner.teacher_agent_store import TeacherAgentStoreError
 
 
 class _OfflineLiveClient:
@@ -580,6 +581,109 @@ class TeacherAgentStoreTests(unittest.TestCase):
                     client=_OfflineLiveClient(),
                     live_options=options,
                 )
+
+    def test_store_rejects_terminal_turn_without_a_started_turn(self) -> None:
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent.jsonl"
+            snapshot = self._snapshot(store_path)
+            started = snapshot.start(self._start_body(snapshot, "lifecycle-start-001"))
+            record = snapshot.sessions[started["session_id"]]
+            with self.assertRaisesRegex(
+                TeacherAgentStoreError, "terminal turn event has no active turn"
+            ):
+                snapshot.store.append_batch(
+                    [
+                        snapshot._event_specification(
+                            "turn_committed",
+                            started["session_id"],
+                            record,
+                            idempotency_key="lifecycle-turn-001",
+                            request_fingerprint="fingerprint",
+                            turn_id="never-started",
+                            data={"record": {}},
+                        )
+                    ]
+                )
+
+    def test_store_cannot_resurrect_a_replaced_session_with_a_late_checkpoint(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent.jsonl"
+            snapshot = self._snapshot(store_path)
+            started = snapshot.start(self._start_body(snapshot, "lifecycle-start-002"))
+            record = snapshot.sessions[started["session_id"]]
+            snapshot.store.append_batch(
+                [
+                    snapshot._event_specification(
+                        "session_stopped",
+                        started["session_id"],
+                        record,
+                        idempotency_key="lifecycle-stop-001",
+                        request_fingerprint="fingerprint",
+                        data={"remove_session": True},
+                    )
+                ]
+            )
+            with self.assertRaisesRegex(
+                TeacherAgentStoreError, "event follows a removed session"
+            ):
+                snapshot.store.append_batch(
+                    [
+                        snapshot._checkpoint_specification(
+                            started["session_id"],
+                            record,
+                            idempotency_key=None,
+                            request_fingerprint=None,
+                            reason="late_checkpoint",
+                        )
+                    ]
+                )
+
+    def test_store_allows_only_inflight_abort_after_profile_replacement(self) -> None:
+        """A late remote response must be receipted, never committed or revived."""
+
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent.jsonl"
+            snapshot = self._snapshot(store_path)
+            started = snapshot.start(self._start_body(snapshot, "lifecycle-start-003"))
+            record = snapshot.sessions[started["session_id"]]
+            turn_id = "inflight-before-replacement"
+            snapshot.store.append_batch(
+                [
+                    snapshot._event_specification(
+                        "turn_started",
+                        started["session_id"],
+                        record,
+                        idempotency_key="lifecycle-inflight-001",
+                        request_fingerprint="fingerprint",
+                        turn_id=turn_id,
+                        data={"remote_model_call_may_follow": True},
+                    ),
+                    snapshot._event_specification(
+                        "session_stopped",
+                        started["session_id"],
+                        record,
+                        idempotency_key="lifecycle-replace-001",
+                        request_fingerprint="fingerprint",
+                        data={"remove_session": True},
+                    ),
+                    snapshot._event_specification(
+                        "turn_aborted",
+                        started["session_id"],
+                        record,
+                        idempotency_key="lifecycle-inflight-001",
+                        request_fingerprint="fingerprint",
+                        turn_id=turn_id,
+                        data={"reason": "explicit_session_replacement"},
+                    ),
+                ]
+            )
+            restarted = self._snapshot(store_path)
+            with self.assertRaisesRegex(
+                TeacherAgentDashboardError, "no longer available"
+            ):
+                restarted.resume({"session_id": started["session_id"]})
 
 
 if __name__ == "__main__":

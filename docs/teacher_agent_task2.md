@@ -68,11 +68,43 @@ Skill Runtime：安全模型动作通过全部门禁则保留；仅动作不匹�
 
 因此，“实时”在本项目中指学生每回答一次，后端才计算一次下一步；浏览器不会提前得到后续完整对话。学生可以提交文字、答案图片或两者。答案图片不是直接交给 DeepSeek：服务端先校验格式和大小，在本机临时目录生成原图、灰度增强和高对比度二值等有界 OCR 路线；受支持的 macOS 主机优先调用 Apple Vision，并在需要交叉核对时运行 Tesseract，其他平台在安装 Tesseract 后使用 Tesseract。OCR 文本最多保留有界长度，并与普通学生文字一起经过常见直接标识符模式替换后进入 `teaching_context`；原图及派生图随后删除且不会发送给远程模型。这是 OCR 辅助的文本证据链，不是 DeepSeek 原生图像理解，也不表示流式摄像头或实时音视频识别。
 
+### 2.1 生产路径的真实 Agent Loop
+
+生产 Dashboard（`tsm teacher-agent-dashboard --agent-backend deepseek`）在每个首轮或学生回合先运行 `teaching_skill_miner.teacher_agent_loop.v1`。当前生产提示与路由契约为 **V14**。这是实际的多步规划—工具—结果回传循环：
+
+```text
+有界、脱敏的 teaching_context
+        ↓
+DeepSeek 规划 JSON（只可提出 allowlisted 工具调用）
+        ↓
+本地确定性工具执行：状态 / 历史 / Skill 检索与选择 / 关注点 / 终止检查
+        ↓
+工具结果回传 DeepSeek，继续规划（最多 6 步）
+        ↓
+route_ready：主 Skill 与 next_focus 均已由服务端校验
+        ↓
+最终动作规划器（一次本轮动作候选）
+        ↓
+现有 Skill、问题契约、提问性、防答案泄露和 Session 版本门禁
+        ↓
+一个下一教学动作，或确定性安全 fallback / 转人工
+```
+
+Loop 的工具白名单固定为 6 个：`inspect_student_state`、`inspect_recent_history`、`search_skills`、`select_skills`、`set_next_focus` 和 `evaluate_termination`。模型不能执行代码、访问任意文件、增加 Skill、直接修改学生状态或绕过服务端门禁。每步最多执行 3 个工具调用；同一调用超过 2 次会触发重复保护；模型计划格式最多重试 1 次，达到步数、调用或重复上限则进入明确标记的 `deterministic_safety_fallback`。Loop 的公共 receipt 只记录事件类型、步骤、工具名、Skill/关注点、错误类别、计数、响应元数据和消息哈希，不保留 Prompt、思维链、学生原文、原图或密钥。
+
+`route_ready` 不是最终教师话语，而是“路由已准备好”的边界事件。它要求至少完成 `select_skills` 与 `set_next_focus`；随后最终动作规划器才生成本轮一个 `teacher_action`。动作仍必须通过生产已有的 Skill/action-type、问题契约、提问性、防答案泄露、支持 Skill allowlist、重复上限和 Session commit fence。模型输出无效、工具异常、路由非法或门禁失败时，系统会重试或使用同合同的确定性 materializer；没有安全可执行 Skill 时停止并转人工。直接库调用的 `LiveAgentOptions()` 为兼容性默认关闭 Loop，而生产 CLI 显式开启。
+
+显式开启 `--session-store` 后，Loop receipt 随会话 checkpoint 进入本机 append-only JSONL。每条事件有连续序号、`previous_hash` 和自身 SHA-256；`turn_started`、`turn_committed`、`turn_aborted` 的生命周期会在恢复时重放，崩溃留下的未完成 turn 会被补记为 aborted。恢复还要精确匹配无密钥 `runtime_policy_contract`、Session/画像版本和幂等缓存，任何篡改或政策漂移都 fail-closed。哈希链是完整性检测，不是加密、身份认证、访问控制或跨设备同步。
+
+这套结构是受 Codex/Claude Code 等可靠 Agent 的边界、事件和恢复思想启发的原创实现，不能表述为复制其内部代码或功能等价。当前本机真实 DeepSeek 验收返回 HTTP 200；两轮真实教学均到达 `route_ready`，首轮 6 步 / 8 次工具调用，第二轮 5 步 / 7 次工具调用，并发生诊断提问 Skill → 苏格拉底理解检查 Skill 的动态切换。浏览器验收同时验证画像切换后继续作答、刷新恢复 Loop 摘要和当前动作、`/stop` 终止后的恢复一致性。上述证据证明的是工程链路可运行，不是开放学生群体的诊断准确率、学习增益、跨 session 泛化或部署质量。
+
 OCR 链路把“转写可靠”与“答案正确”严格分开。高置信、无实质冲突且由多引擎或足够多独立预处理路线一致支持的公式，可写入 `formula_transcription_established=true` 并免去“请先抄写公式”的确认；`formula_accuracy_established` 仍固定为 `false`。只有可靠转写与当前 `question_contract` 中可判定的短概念/公式答案，或教师 `knowledge_spec` 中可建立正确性的规范陈述精确匹配时，控制器才能确定性判对。证据绑定允许空格、答案前缀、句末标点、等价乘除号，以及单个等式左右两侧交换这类可解释的排版差异，但不做模糊拼写修复、任意代数化简或运算符猜测；绑定后仍返回本机 OCR 原文。开放解释题中仅出现相关词、或只命中 rubric 的一块可接受证据，都不自动等于完整正确。低置信、无文字、OCR 路线冲突、键入/OCR 冲突，或公式缺少可靠转写佐证时仍要求学生确认。当前高对比度印刷文字可用于演示链路；手写、复杂版面、公式 OCR 和答案判分的部署准确率都没有建立。
 
 ## 3. DeepSeek 在 Agent 中具体做什么
 
-`deepseek-v4-flash` 每轮只接收一个经过最小化和校验的 `teaching_context`，以及有界的 Skill 执行契约。若本轮含答案图片，模型看到的是标有 OCR 状态、转写置信度、多路线佐证和“是否需学生确认”的 `[LOCAL_VISUAL_EVIDENCE]` 文字包络，不是原图；低置信、无文字、路线/键入冲突或未获佐证的公式证据必须保守请求确认。首轮在发送前只保留允许 `not_observed` 的主 Skill 与支持 Skill，避免在没有学生回答时跳过诊断门禁；普通回合发送会话内允许的 Library（可能是 `allowed_skill_ids` 生成的主 Skill 子集加全部 support），由模型提出候选，再由确定性控制器按本轮 Skill ID/角色、`applicable_signals`、纠错证据、高风险阶段/材料前置条件、材料存在性、`max_repeat`、主 Skill 的 support allowlist 及 support 自身门禁做最终校验或安全改路。该上下文把固定目标、教师画像、当前 Goal 步骤、当前问题契约、近期对话、较早历史检查点与 teaching memory、显式学生状态和未确认画像假设分层组织，再返回严格 JSON：
+`deepseek-v4-flash` 的生产回合现在包含两个职责不同的阶段，而不是声称“一轮只有一次模型调用”。第一阶段是上节的 bounded Agent Loop：每次规划请求只接收经过最小化和校验的 `teaching_context`、有界 Skill 视图和此前的有界工具结果；第二阶段在 `route_ready` 后调用最终动作规划器，返回本轮 diagnosis、decision 和一个当前动作候选。若动作候选不满足最终路由或动作合同，符合资格时还可能有至多一次 fixed-route action-only repair。因此，一个教学回合可以包含多次规划请求，但只能提交一个教师动作；所有模型调用、工具调用、重试和 fallback 分开计数并在 trace 中公开短审计信息。
+
+若本轮含答案图片，所有阶段看到的都只是标有 OCR 状态、转写置信度、多路线佐证和“是否需学生确认”的 `[LOCAL_VISUAL_EVIDENCE]` 文字包络，不是原图；低置信、无文字、路线/键入冲突或未获佐证的公式证据必须保守请求确认。首轮在发送前只保留允许 `not_observed` 的主 Skill 与支持 Skill，避免在没有学生回答时跳过诊断门禁；普通回合发送会话内允许的 Library（可能是 `allowed_skill_ids` 生成的主 Skill 子集加全部 support）。Loop 的路由是受工具结果支持的候选，最终动作规划器仍需完成相对当前问题的诊断并说明如何使用该候选；随后确定性控制器按本轮 Skill ID/角色、`applicable_signals`、纠错证据、高风险阶段/材料前置条件、材料存在性、`max_repeat`、主 Skill 的 support allowlist 及 support 自身门禁做最终校验或安全改路。该上下文把固定目标、教师画像、当前 Goal 步骤、当前问题契约、近期对话、较早历史检查点与 teaching memory、显式学生状态和未确认画像假设分层组织，最终动作阶段返回严格 JSON：
 
 - `diagnosis`：`correct / partial / misconception / confused / no_response`，以及相对本问的 `answer_alignment`、匹配/缺失概念、置信度、短证据、误解标签、回答质量、参与度和是否建议人工复核；
 - `decision`：一个主 Skill、最多两个支持 Skill、选择或切换理由、下一关注维度；
@@ -270,7 +302,7 @@ tsm teacher-agent-benchmark \
 
 仓库新增 `data/teacher_agent_multiturn_benchmark_v1.json`：20 个作者构造 episode、65 个学生回答回合和 1 次画像替换操作，覆盖长期偏好与未解决问题回忆、“第二种呢”等指代恢复、教师承诺、图片证据确认/精确匹配、知识性错误纠正、Skill 切换、画像替换隔离、跑题恢复、提示注入式索取答案、达标终止和无进展转人工。fixture 至少覆盖 6 个知识主题/类别；每个评分 turn 的 gold 位于独立字段，runner 在构建发给执行器的 blind payload 时递归排除全部 gold key。
 
-runner 可以比较两个执行器，并保留旧名称兼容：`current` 明确是 `LiveAgentOptions(action_executor_mode="deterministic_legacy")` 对照臂；`safe_generative_executor` 精确使用生产默认的 integrated `safe_generative`。V14 state-first 每轮先由 1 次 DeepSeek plan 请求完成诊断、Skill 路由和动作候选，再经过服务端门禁。若候选动作不满足最终路由/动作契约，且 `action_only_repair_enabled=true`、执行器仍是 `safe_generative`、当前已回退为确定性 materializer 并通过 bounded eligibility，候选臂最多追加 1 次 fixed-route action-only repair；视觉确认强制 materializer、legacy 模式等不合格情形不会进入该支路。repair 响应只允许包含 `teacher_action`，不能修改 diagnosis、primary/support Skill、next focus、termination 或 route；任何越权、格式或动作门禁失败都会保留既有确定性动作。传输层重试仍属于相应请求，不形成额外教学动作。报告用 `request_topology` 区分 integrated single-plan 与 one-plan-plus-repair 路径，用 `action_provenance.executor_origin` 区分原始安全候选、action-only repair 和确定性 materializer，并分别记录 `validated_model_plan_count_delta` 与端到端 turn latency；repair 不是第二个 validated plan，latency 也不能单独证明调用次数。报告不保存学生正文、教师话语、prompt 或供应商响应体，只保存逐 episode/turn 哈希、聚合分数和有限审计字段。当前仓库已经验证 fixture、Schema、gold 隔离、失败计数和配对评分逻辑，但本公开文档不填报尚未完成或尚未审核的真实在线运行数值。
+runner 可以比较两个执行器，并保留旧名称兼容：`current` 明确是 `LiveAgentOptions(action_executor_mode="deterministic_legacy")` 对照臂；`safe_generative_executor` 精确使用生产默认的 integrated `safe_generative`。为保持 paired 评分的请求拓扑可解释，benchmark executor 当前沿用 `LiveAgentOptions` 的兼容默认 `agent_loop_enabled=false`，因此每轮先由 1 次 DeepSeek plan 请求完成诊断、Skill 路由和动作候选；这不是生产 Dashboard 的多步 Agent Loop 在线结果。若候选动作不满足最终路由/动作契约，且 `action_only_repair_enabled=true`、执行器仍是 `safe_generative`、当前已回退为确定性 materializer 并通过 bounded eligibility，候选臂最多追加 1 次 fixed-route action-only repair；视觉确认强制 materializer、legacy 模式等不合格情形不会进入该支路。repair 响应只允许包含 `teacher_action`，不能修改 diagnosis、primary/support Skill、next focus、termination 或 route；任何越权、格式或动作门禁失败都会保留既有确定性动作。传输层重试仍属于相应请求，不形成额外教学动作。报告用 `request_topology` 区分 integrated single-plan 与 one-plan-plus-repair 路径，用 `action_provenance.executor_origin` 区分原始安全候选、action-only repair 和确定性 materializer，并分别记录 `validated_model_plan_count_delta` 与端到端 turn latency；repair 不是第二个 validated plan，latency 也不能单独证明调用次数。报告不保存学生正文、教师话语、prompt 或供应商响应体，只保存逐 episode/turn 哈希、聚合分数和有限审计字段。当前仓库已经验证 fixture、Schema、gold 隔离、失败计数和配对评分逻辑，但本公开文档不填报尚未完成或尚未审核的真实在线运行数值。
 
 请求统计的分母固定为 `completed_committed_turns_only`。`validated_plan_request_total` 是通过计划校验的主 plan 数，`action_repair_request_total` 是实际发起的 action-only repair 数，`logical_model_request_total` 是二者之和；repair 不是第二个 validated plan，却确实是第二个 logical request。报告还分别给出每完成回合均值、repair 发起回合数、采用修复回合数和 `action_repair_adoption_rate`（采用数 / 实际发起数）。失败、取消或未提交的回合不进入这些请求分母，另由完成/失败计数报告；provenance 与计数不一致时验收 fail-closed。
 

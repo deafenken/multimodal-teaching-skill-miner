@@ -1082,6 +1082,15 @@ class TeacherAgentDashboardSnapshot:
                     "api_key_exposed": False,
                 }
             ),
+            "agent_runtime_policy": {
+                "agent_loop_enabled": bool(self.live_options.agent_loop_enabled),
+                "maximum_agent_steps": self.live_options.maximum_agent_steps,
+                "maximum_agent_tool_calls_per_step": (
+                    self.live_options.maximum_agent_tool_calls_per_step
+                ),
+                "recoverable_context": self.store is not None,
+                "structured_tool_allowlist": True,
+            },
             "neural_v1": deepcopy(self.neural_v1),
             "default_goal": deepcopy(self.demo_input["goal"]),
             "default_student_profile": deepcopy(self.demo_input["student_profile"]),
@@ -2344,6 +2353,9 @@ def teacher_agent_dashboard_self_check(
         "evaluation_passed": snapshot.evaluation["passed"],
         "one_action_per_turn": True,
         "real_time_skill_switching": True,
+        "structured_agent_loop_enabled": bool(
+            snapshot.live_options.agent_loop_enabled and snapshot.client is not None
+        ),
         "free_text_answer_grading_established": False,
         "real_learning_effectiveness_established": False,
     }

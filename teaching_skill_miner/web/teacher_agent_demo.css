@@ -701,6 +701,45 @@ h1, h2, h3, p, blockquote { margin-top: 0; }
 }
 .live-decision-strip > button:hover { border-color: var(--skill); color: var(--skill); }
 .live-decision-strip > button b { font: 800 15px/1 var(--body); }
+.agent-trace-panel { border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, var(--rail)); }
+.agent-trace-shell { max-width: 1180px; margin: 0 auto; }
+.agent-trace-shell > summary { display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); gap: 8px 12px; align-items: baseline; padding: 11px clamp(16px, 3vw, 28px); cursor: pointer; list-style: none; }
+.agent-trace-shell > summary::-webkit-details-marker { display: none; }
+.agent-trace-shell > summary::after { content: "＋"; color: var(--muted); font-size: 15px; }
+.agent-trace-shell[open] > summary::after { content: "−"; }
+.trace-kicker { color: var(--skill); font: 700 9px/1 var(--mono); letter-spacing: .08em; }
+.agent-trace-shell > summary > strong { font-size: 13px; }
+.trace-status { padding: 3px 7px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); font: 700 9px/1.2 var(--mono); white-space: nowrap; }
+.trace-status[data-status="active"] { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.trace-status[data-status="success"] { border-color: var(--success); background: var(--success-soft); color: var(--success); }
+.trace-status[data-status="warning"] { border-color: var(--warning); background: var(--warning-soft); color: var(--warning); }
+.agent-trace-shell > summary > small { min-width: 0; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-trace-body { display: grid; gap: 10px; padding: 0 clamp(16px, 3vw, 28px) 13px; border-top: 1px solid var(--line); }
+.agent-trace-grid, .agent-trace-outcome-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr); gap: 10px; }
+.agent-trace-card, .trace-outcome-card { min-width: 0; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
+.agent-trace-card > header { display: flex; align-items: baseline; gap: 7px; margin-bottom: 8px; }
+.agent-trace-card > header span, .trace-outcome-card > span { color: var(--muted); font: 700 8px/1 var(--mono); letter-spacing: .07em; }
+.agent-trace-card > header h3 { margin: 0; font-size: 12px; }
+.agent-trace-plan, .agent-trace-events { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.agent-trace-plan li, .agent-trace-events li { position: relative; min-width: 0; padding: 7px 8px 7px 28px; border-radius: 7px; background: var(--rail); }
+.agent-trace-plan li::before, .agent-trace-events li::before { content: ""; position: absolute; top: 10px; left: 11px; width: 8px; height: 8px; border: 2px solid var(--line-strong); border-radius: 50%; background: var(--surface); }
+.agent-trace-plan li[data-status="done"]::before, .agent-trace-events li[data-status="success"]::before { border-color: var(--success); background: var(--success); }
+.agent-trace-plan li[data-status="active"]::before, .agent-trace-events li[data-status="active"]::before { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.agent-trace-plan li[data-status="warning"]::before, .agent-trace-events li[data-status="warning"]::before { border-color: var(--warning); background: var(--warning-soft); }
+.agent-trace-plan li > div, .agent-trace-events li > div { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.agent-trace-plan strong, .agent-trace-events strong { min-width: 0; overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-trace-plan em, .agent-trace-events em { flex: 0 0 auto; color: var(--muted); font: normal 8px/1.2 var(--mono); }
+.agent-trace-plan p, .agent-trace-events p { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+.trace-current-step { margin-top: 8px; padding: 8px; border-left: 3px solid var(--accent); border-radius: 0 7px 7px 0; background: var(--accent-soft); }
+.trace-current-step > span { display: block; color: var(--accent); font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.trace-current-step strong { display: block; margin-top: 3px; font-size: 12px; }
+.trace-current-step p { margin: 3px 0 0; color: var(--muted); font-size: 10px; }
+.agent-trace-outcome-grid { grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); }
+.trace-outcome-card > strong { display: block; margin-top: 5px; font-size: 11px; }
+.trace-outcome-card > p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.trace-outcome-card.final { border-color: color-mix(in srgb, var(--accent) 35%, var(--line)); background: var(--accent-soft); }
+.trace-outcome-card.final > span { color: var(--accent); }
+.agent-trace-boundary { margin: 0; color: var(--muted); font-size: 9px; line-height: 1.4; }
 .chat-message.student .message-avatar.student-photo { width: 34px; height: 34px; overflow: hidden; padding: 0; background: var(--surface); }
 .student-photo img { width: 100%; height: 100%; object-fit: cover; }
 .teacher-audit-hint { margin-top: 10px; }
@@ -847,6 +886,9 @@ h1, h2, h3, p, blockquote { margin-top: 0; }
   .live-decision-strip { grid-template-columns: repeat(3, minmax(142px, 1fr)) auto; overflow-x: auto; scrollbar-width: thin; }
   .live-decision-strip > div { padding-inline: 12px; }
   .live-decision-strip > button { position: sticky; right: 0; background: var(--surface); box-shadow: -8px 0 16px color-mix(in srgb, var(--ink) 8%, transparent); }
+  .agent-trace-shell > summary { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .agent-trace-shell > summary > small { grid-column: 1 / -1; }
+  .agent-trace-grid, .agent-trace-outcome-grid { grid-template-columns: 1fr; }
   .conversation-scroll { padding-inline: 16px; }
   .response-card { width: calc(100% - 20px); margin-bottom: 10px; }
   .composer-footer > div > span { display: none; }

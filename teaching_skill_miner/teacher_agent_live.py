@@ -52,6 +52,12 @@ from .teacher_agent_memory import (
     rebuild_teaching_memory_from_rollout,
     validate_teaching_memory,
 )
+from .teacher_agent_loop import (
+    LOOP_SCHEMA as AGENT_LOOP_SCHEMA,
+    TeachingAgentLoopOptions,
+    public_agent_loop_trace,
+    run_teaching_agent_loop,
+)
 from .teacher_agent_semantics import diagnosis_taxonomy_prompt
 from .teacher_agent_vision import (
     MINIMUM_TRUSTED_OCR_CONFIDENCE,
@@ -440,6 +446,11 @@ class LiveAgentOptions:
     action_executor_mode: str = "safe_generative"
     action_only_repair_enabled: bool = False
     state_first_route_adjudication_enabled: bool = False
+    agent_loop_enabled: bool = False
+    maximum_agent_steps: int = 6
+    maximum_agent_tool_calls_per_step: int = 3
+    maximum_agent_repeated_tool_calls: int = 2
+    agent_loop_model_retries: int = 1
 
     def validated(self) -> "LiveAgentOptions":
         if not isinstance(self.fallback_to_rules, bool):
@@ -470,6 +481,42 @@ class LiveAgentOptions:
         if not isinstance(self.state_first_route_adjudication_enabled, bool):
             raise LiveTeacherAgentError(
                 "state_first_route_adjudication_enabled must be a JSON boolean"
+            )
+        if not isinstance(self.agent_loop_enabled, bool):
+            raise LiveTeacherAgentError(
+                "agent_loop_enabled must be a JSON boolean"
+            )
+        if (
+            isinstance(self.maximum_agent_steps, bool)
+            or not isinstance(self.maximum_agent_steps, int)
+            or not 2 <= self.maximum_agent_steps <= 16
+        ):
+            raise LiveTeacherAgentError(
+                "maximum_agent_steps must be an integer in [2, 16]"
+            )
+        if (
+            isinstance(self.maximum_agent_tool_calls_per_step, bool)
+            or not isinstance(self.maximum_agent_tool_calls_per_step, int)
+            or not 1 <= self.maximum_agent_tool_calls_per_step <= 6
+        ):
+            raise LiveTeacherAgentError(
+                "maximum_agent_tool_calls_per_step must be an integer in [1, 6]"
+            )
+        if (
+            isinstance(self.maximum_agent_repeated_tool_calls, bool)
+            or not isinstance(self.maximum_agent_repeated_tool_calls, int)
+            or not 1 <= self.maximum_agent_repeated_tool_calls <= 4
+        ):
+            raise LiveTeacherAgentError(
+                "maximum_agent_repeated_tool_calls must be an integer in [1, 4]"
+            )
+        if (
+            isinstance(self.agent_loop_model_retries, bool)
+            or not isinstance(self.agent_loop_model_retries, int)
+            or not 0 <= self.agent_loop_model_retries <= 3
+        ):
+            raise LiveTeacherAgentError(
+                "agent_loop_model_retries must be an integer in [0, 3]"
             )
         if (
             isinstance(self.maximum_context_chars, bool)
@@ -565,6 +612,11 @@ def live_runtime_policy_contract(
         "state_first_route_adjudication_enabled": (
             options.state_first_route_adjudication_enabled
         ),
+        "agent_loop_enabled": options.agent_loop_enabled,
+        "maximum_agent_steps": options.maximum_agent_steps,
+        "maximum_agent_tool_calls_per_step": options.maximum_agent_tool_calls_per_step,
+        "maximum_agent_repeated_tool_calls": options.maximum_agent_repeated_tool_calls,
+        "agent_loop_model_retries": options.agent_loop_model_retries,
     }
 
 
@@ -611,6 +663,11 @@ def validate_live_runtime_policy_contract(
         "remote_student_data_opt_in",
         "action_only_repair_enabled",
         "state_first_route_adjudication_enabled",
+        "agent_loop_enabled",
+        "maximum_agent_steps",
+        "maximum_agent_tool_calls_per_step",
+        "maximum_agent_repeated_tool_calls",
+        "agent_loop_model_retries",
     ):
         if runtime.get(field_name) != stored_value[field_name]:
             raise LiveTeacherAgentError(
@@ -1062,6 +1119,7 @@ fixed_context.teaching_goal.knowledge_spec 存在时，它是教师提供的运�
 判分规则：只有直接满足当前 question_contract 才是 correct/aligned；相关但没有回答本问是 partial/related_but_not_answer；明确说“不知道/没懂”才是 confused；只有学生明确陈述了错误命题且能给出 evidence_excerpt 时才是 misconception。一次相邻概念回答不足以确认误解。首轮 answer_alignment 必须是 not_applicable。
 问题契约规则：question_contract 必须描述 teacher_action.message 实际要求学生回答的内容，不能只复制总教学目标。若问题要求“任举一个前置概念/方法/例子”，target_concepts 应列可接受答案或写明开放范围，accepted_aliases 应包含常见同义说法，success_criteria 应逐项写出可直接检查的作答条件；询问前置概念时，禁止把总教学目标本身当作唯一 target_concept。
 Skill 执行规则：teacher_action.type 必须等于最终 primary Skill 的 action_type，message 必须执行该 Skill 的 message_template 所描述的教学行为，并满足其 preconditions / contraindications / direct_answer_prohibited；不能只更换 Skill 名称而继续输出无关的通用追问。
+若输入包含 agent_loop_route_hint，优先采用其中由 allowlisted 工具选择的 Skill；但若本轮诊断与 Skill 适用条件冲突，应在 selection_reason 中说明，服务端仍会执行最终契约校验和安全重定向。
 当证据不足时降低 confidence 并设 needs_human_review=true；不要假装知道学生没有表达的信息。"""
     )
 
@@ -1072,6 +1130,8 @@ def _remote_payload(
     context_memory: Mapping[str, Any],
     manual_skill_id: str | None,
     learner_evidence: Sequence[Mapping[str, Any]] | None = None,
+    agent_loop_trace: Mapping[str, Any] | None = None,
+    agent_loop_skill_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     validate_layered_context(context_memory)
     operation = context_memory["snapshot"]["operation"]
@@ -1086,6 +1146,18 @@ def _remote_payload(
         "operation": operation,
         "teaching_context": deepcopy(dict(context_memory)),
         "manual_primary_skill_id": manual_skill_id,
+        "agent_loop_route_hint": {
+            "selected_skill_id": agent_loop_skill_id,
+            "trace_schema": agent_loop_trace.get("schema")
+            if isinstance(agent_loop_trace, Mapping)
+            else None,
+            "tool_call_count": agent_loop_trace.get("tool_call_count", 0)
+            if isinstance(agent_loop_trace, Mapping)
+            else 0,
+            "selection_is_advisory": True,
+        }
+        if agent_loop_skill_id or agent_loop_trace
+        else None,
         "available_skills": available_skills,
         "constraints": {
             "exactly_one_teacher_action": True,
@@ -1095,6 +1167,7 @@ def _remote_payload(
             "initial_action_must_use_not_observed_skill": operation == "initial_action",
             "local_visual_evidence_is_ocr_not_raw_media": True,
             "low_confidence_visual_evidence_requires_confirmation": True,
+            "agent_loop_route_is_advisory_and_server_validated": True,
         },
     }
     privacy_layer = context_memory.get("privacy", {})
@@ -3645,6 +3718,7 @@ def _validated_plan(
     visual_confirmation_required: bool,
     image_only_response: bool,
     manual_skill_id: str | None,
+    agent_loop_skill_id: str | None,
     options: LiveAgentOptions,
     continuity_constraints: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -4030,6 +4104,18 @@ def _validated_plan(
                 "model did not honor the requested manual primary Skill"
             )
         selected_id = manual_skill_id
+    agent_loop_route_requested = bool(agent_loop_skill_id and not manual_skill_id)
+    if agent_loop_route_requested:
+        if (
+            agent_loop_skill_id not in skills
+            or skills[agent_loop_skill_id]["role"] not in PRIMARY_ROLES
+        ):
+            raise LiveTeacherAgentError(
+                "agent loop selected a missing or non-primary Skill"
+            )
+        selected_id = str(agent_loop_skill_id)
+        if model_selected_id != selected_id:
+            normalization_reasons.append("agent_loop_route_enforced")
     if selected_id not in skills or skills[selected_id]["role"] not in PRIMARY_ROLES:
         raise LiveTeacherAgentError("model selected an unknown or non-primary Skill")
     correction_guard_required = skills[selected_id]["role"] == "correction" and (
@@ -4182,6 +4268,7 @@ def _validated_plan(
     if (
         options.state_first_route_adjudication_enabled
         and not manual_skill_id
+        and not agent_loop_route_requested
         and not safe_retarget_required
         and action_retarget_kind is None
         and not visual_confirmation_required
@@ -4400,6 +4487,16 @@ def _validated_plan(
         selection_reason = (
             f"state-first 路由依据：{route_reason}；{selection_reason}"
         )[:600]
+    if agent_loop_route_requested:
+        route_outcome = (
+            "工具路由已采用"
+            if selected_id == agent_loop_skill_id
+            else "工具路由经 Skill 契约门禁后已安全调整"
+        )
+        selection_reason = (
+            f"Agent Loop {route_outcome}（{agent_loop_skill_id}）；"
+            f"{selection_reason}"
+        )[:600]
     if action_type != expected_action_type:
         raise LiveTeacherAgentError(
             "deterministic action materializer does not match the selected Skill"
@@ -4558,6 +4655,14 @@ def _validated_plan(
             dict.fromkeys([*action_normalization_reasons, *applied_safe_repairs])
         ),
         "route_adjudication": deepcopy(route_adjudication),
+        "agent_loop_route": {
+            "requested_skill_id": agent_loop_skill_id,
+            "applied": bool(
+                agent_loop_route_requested and selected_id == agent_loop_skill_id
+            ),
+            "final_skill_id": selected_id,
+            "server_contract_validated": True,
+        },
     }
     validated = {
         "schema": PLAN_SCHEMA,
@@ -4622,6 +4727,10 @@ def _validated_plan(
             "manual_override_requested": bool(manual_skill_id),
             "manual_override_applied": bool(
                 manual_skill_id and selected_id == manual_skill_id
+            ),
+            "agent_loop_selected_skill_id": agent_loop_skill_id,
+            "agent_loop_route_applied": bool(
+                agent_loop_route_requested and selected_id == agent_loop_skill_id
             ),
             "route_adjudication": deepcopy(route_adjudication),
             "action_provenance": deepcopy(action_provenance),
@@ -4699,9 +4808,79 @@ def _validated_plan(
     return validated
 
 
+def _agent_loop_options(options: LiveAgentOptions) -> TeachingAgentLoopOptions:
+    """Translate live policy limits to the bounded tool-loop runtime."""
+
+    return TeachingAgentLoopOptions(
+        max_steps=options.maximum_agent_steps,
+        max_tool_calls_per_step=options.maximum_agent_tool_calls_per_step,
+        max_repeated_tool_calls=options.maximum_agent_repeated_tool_calls,
+        model_retries=options.agent_loop_model_retries,
+        recent_history_limit=min(options.maximum_context_turns or 6, 12) or 1,
+    ).validated()
+
+
+def _record_agent_loop_trace(
+    session: dict[str, Any], trace: Mapping[str, Any]
+) -> None:
+    """Record only the public loop receipt and aggregate counters."""
+
+    runtime = session.get("agent_runtime")
+    if not isinstance(runtime, dict):
+        return
+    safe_trace = deepcopy(dict(trace))
+    runtime["last_agent_loop"] = safe_trace
+    runtime["agent_loop_run_count"] = int(runtime.get("agent_loop_run_count", 0)) + 1
+    runtime["agent_loop_model_call_count"] = int(
+        runtime.get("agent_loop_model_call_count", 0)
+    ) + int(safe_trace.get("model_call_count", 0) or 0)
+    runtime["agent_loop_tool_call_count"] = int(
+        runtime.get("agent_loop_tool_call_count", 0)
+    ) + int(safe_trace.get("tool_call_count", 0) or 0)
+    runtime["agent_loop_retry_count"] = int(
+        runtime.get("agent_loop_retry_count", 0)
+    ) + int(safe_trace.get("retry_count", 0) or 0)
+
+
+def _run_live_agent_loop(
+    client: DeepSeekClient,
+    session: dict[str, Any],
+    *,
+    context_memory: Mapping[str, Any],
+    options: LiveAgentOptions,
+    manual_skill_id: str | None,
+) -> tuple[str | None, dict[str, Any]]:
+    """Run the bounded route/tool phase before the final teaching planner."""
+
+    if not options.agent_loop_enabled:
+        return None, {}
+    result = run_teaching_agent_loop(
+        session,
+        client,
+        options=_agent_loop_options(options),
+        outbound_context=context_memory,
+    )
+    public_trace = public_agent_loop_trace(result)
+    selected = str(public_trace.get("selected_skill_id") or "").strip() or None
+    if selected is None and isinstance(result.get("action"), Mapping):
+        fallback_skill = result["action"].get("skill", {})
+        if isinstance(fallback_skill, Mapping):
+            selected = str(fallback_skill.get("skill_id") or "").strip() or None
+            if selected:
+                public_trace["selected_skill_id"] = selected
+                public_trace.pop("trace_sha256", None)
+                public_trace["trace_sha256"] = canonical_sha256(public_trace)
+    _record_agent_loop_trace(session, public_trace)
+    # A teacher's explicit /+skill lock always wins over model routing.  The
+    # loop still runs for observability, but its route is advisory in that case.
+    if manual_skill_id:
+        selected = None
+    return selected, public_trace
+
+
 def _request_plan(
     client: DeepSeekClient,
-    session: Mapping[str, Any],
+    session: dict[str, Any],
     *,
     learner_response: str | None,
     learner_text: str | None,
@@ -4713,11 +4892,25 @@ def _request_plan(
     continuity_constraints = _bounded_action_repair_continuity_constraints(
         context_memory
     )
+    agent_loop_skill_id, agent_loop_trace = _run_live_agent_loop(
+        client,
+        session,
+        context_memory=context_memory,
+        options=options,
+        manual_skill_id=manual_skill_id,
+    )
+    # The loop receipt is part of the session's auditable runtime metadata;
+    # refresh the integrity fence before any fallback path can validate/clone
+    # this candidate.
+    if agent_loop_trace:
+        _refresh_integrity(session)
     payload, privacy = _remote_payload(
         session,
         context_memory=context_memory,
         manual_skill_id=manual_skill_id,
         learner_evidence=learner_evidence,
+        agent_loop_trace=agent_loop_trace,
+        agent_loop_skill_id=agent_loop_skill_id,
     )
     raw, trace = client.chat_json(
         [
@@ -4757,6 +4950,7 @@ def _request_plan(
             session,
         ),
         manual_skill_id=manual_skill_id,
+        agent_loop_skill_id=agent_loop_skill_id,
         options=options,
         continuity_constraints=continuity_constraints,
     )
@@ -4773,6 +4967,8 @@ def _request_plan(
     )
     trace = {
         **deepcopy(dict(trace)),
+        "agent_loop": deepcopy(agent_loop_trace),
+        "agent_loop_route_hint": agent_loop_skill_id,
         "action_repair": action_repair,
         "continuity_enforcement": continuity_enforcement,
     }
@@ -4780,6 +4976,8 @@ def _request_plan(
         **deepcopy(dict(privacy)),
         "action_only_repair_context_sent": bool(action_repair["attempted"]),
         "action_only_repair_raw_media_sent": False,
+        "agent_loop_context_sent": bool(agent_loop_trace),
+        "agent_loop_raw_media_sent": False,
     }
     return plan, trace, privacy
 
@@ -4799,9 +4997,20 @@ def _runtime_metadata(
         "state_first_route_adjudication_enabled": (
             options.state_first_route_adjudication_enabled
         ),
+        "agent_loop_enabled": options.agent_loop_enabled,
+        "agent_loop_schema": AGENT_LOOP_SCHEMA,
+        "maximum_agent_steps": options.maximum_agent_steps,
+        "maximum_agent_tool_calls_per_step": options.maximum_agent_tool_calls_per_step,
+        "maximum_agent_repeated_tool_calls": options.maximum_agent_repeated_tool_calls,
+        "agent_loop_model_retries": options.agent_loop_model_retries,
         "fallback_count": 0,
         "model_call_count": 0,
         "action_repair_call_count": 0,
+        "agent_loop_run_count": 0,
+        "agent_loop_model_call_count": 0,
+        "agent_loop_tool_call_count": 0,
+        "agent_loop_retry_count": 0,
+        "last_agent_loop": None,
         "last_model_trace": None,
         "last_error": None,
         "remote_student_data_opt_in": public["remote_student_data_opt_in"],
@@ -4933,6 +5142,12 @@ def _action_from_plan(
         "focus_was_constrained": decision["focus_was_constrained"],
         "manual_override_requested": decision["manual_override_requested"],
         "manual_override_applied": decision["manual_override_applied"],
+        "agent_loop_selected_skill_id": decision.get(
+            "agent_loop_selected_skill_id"
+        ),
+        "agent_loop_route_applied": bool(
+            decision.get("agent_loop_route_applied", False)
+        ),
         "action_provenance": deepcopy(decision["action_provenance"]),
         "target_misconception_tags": target_misconception_tags,
         "teacher_action": {
@@ -5360,6 +5575,21 @@ def _record_fallback(
         runtime["last_context_trace"]["request_outcome"] = (
             "deterministic_safety_fallback"
         )
+
+
+def _attach_latest_agent_loop_summary(session: dict[str, Any]) -> None:
+    """Bind the public loop receipt to the learner turn it informed."""
+
+    history = session.get("history")
+    runtime = session.get("agent_runtime")
+    trace = runtime.get("last_agent_loop") if isinstance(runtime, Mapping) else None
+    if (
+        isinstance(history, list)
+        and history
+        and isinstance(history[-1], dict)
+        and isinstance(trace, Mapping)
+    ):
+        history[-1]["agent_loop_summary"] = deepcopy(dict(trace))
 
 
 def _mark_rule_fallback_observation(session: dict[str, Any]) -> None:
@@ -6070,6 +6300,9 @@ def advance_live_teacher_agent_session(
         request_outcome="prepared_not_yet_validated",
     )
     current = _refresh_integrity(current)
+    prior_agent_loop_runs = int(
+        current.get("agent_runtime", {}).get("agent_loop_run_count", 0)
+    )
     try:
         plan, trace, privacy = _request_plan(
             client,
@@ -6132,6 +6365,10 @@ def advance_live_teacher_agent_session(
             updated["history"][-1]["model_error"] = str(exc)[:240]
             updated["history"][-1]["learner_text"] = learner_text
             updated["history"][-1]["multimodal_evidence"] = deepcopy(visual_evidence)
+        if int(
+            updated.get("agent_runtime", {}).get("agent_loop_run_count", 0)
+        ) > prior_agent_loop_runs:
+            _attach_latest_agent_loop_summary(updated)
         _update_goal_plan_progress(updated)
         _commit_latest_teaching_memory_turn(updated, learner_text=learner_text)
         _synchronize_latest_event_state_snapshot(updated)
@@ -6186,6 +6423,8 @@ def advance_live_teacher_agent_session(
         }
         event["deepseek_assessment"] = deepcopy(diagnosis)
         event["model_trace"] = deepcopy(trace)
+        if isinstance(trace.get("agent_loop"), Mapping) and trace["agent_loop"]:
+            event["agent_loop_summary"] = deepcopy(trace["agent_loop"])
         event["privacy_trace"] = deepcopy(privacy)
         event["model_plan_sha256"] = canonical_sha256(plan)
         event["model_stop_recommendation"] = {

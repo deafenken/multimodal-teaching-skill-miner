@@ -42,7 +42,7 @@
 | 原始目标站点媒体/传感器到 strict feature bundle | 完成 | `extract-strict-features` 绑定 raw hashes/windows、代码、配置、运行时与工具 provenance；只提取不预测 |
 | 环境诊断 | 完成 | `tsm doctor` |
 | 发布隐私与证据新鲜度审计 | 完成工程检查 | `tsm release-audit` 检查公开边界；acceptance 的 verification scope 绑定完整 `teaching_skill_miner/` 源码、看板、测试、脚本、schema/config、README/治理文档与研究说明。`verify_project.sh` 在 TeachObs 私有输入存在时还会重验 annotation/caption/ASR receipt；四臂产物必须与冻结 bundle 同时通过。项目 receipt 记录本次用到的私有/公开证据 SHA，最终 acceptance 在发布前再次比较；这些都不等于完整去标识或不可重识别证明 |
-| CI 与隔离 wheel smoke | 当前本地发布验收通过；远端 CI 独立核验 | 直接本地全量测试为 **801 test cases、1,354 subtests**；同一 `build_release_acceptance.sh` 收据记录 2,155 个检查（801 个测试用例 + 1,354 个 subtests）全部通过、无跳过，并通过双次洁净构建、字节一致性、exact-wheel 安装/入口 smoke、发布审计与机器收据。验收 verification scope 内的 tracked 文件或绑定证据发生变化后，必须重新生成收据；scope 外文件不被这条机器绑定覆盖。GitHub Actions 只作为推送提交的独立远端检查，当前分支的新提交须以其自己的 CI run 为准；`remote_github_actions_run_verified=false` 表示远端状态不进入本地机器证明链 |
+| CI 与隔离 wheel smoke | 当前本地发布验收通过；远端 CI 独立核验 | 直接本地全量测试为 **822 test cases、1,367 subtests**；同一 `build_release_acceptance.sh` 收据记录 2,189 个检查（822 个测试用例 + 1,367 个 subtests）全部通过、无跳过，并通过双次洁净构建、字节一致性、exact-wheel 安装/入口 smoke、发布审计与机器收据。验收 verification scope 内的 tracked 文件或绑定证据发生变化后，必须重新生成收据；scope 外文件不被这条机器绑定覆盖。GitHub Actions 只作为推送提交的独立远端检查，当前分支的新提交须以其自己的 CI run 为准；`remote_github_actions_run_verified=false` 表示远端状态不进入本地机器证明链 |
 
 ## 项目内不能伪造完成的外部证据
 

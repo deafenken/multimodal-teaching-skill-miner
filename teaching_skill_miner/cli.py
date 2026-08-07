@@ -567,6 +567,7 @@ def command_teacher_agent_dashboard(args: argparse.Namespace) -> int:
             fallback_to_rules=not args.no_rule_fallback,
             action_only_repair_enabled=True,
             state_first_route_adjudication_enabled=True,
+            agent_loop_enabled=True,
         ),
         neural_v1_manifest_path=resolve_resource_path(args.neural_v1_manifest),
         learning_outcome_path=resolve_resource_path(args.learning_outcome),

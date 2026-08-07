@@ -2535,6 +2535,174 @@
     root.replaceChildren(...turns);
   }
 
+  // Public execution trace only: this deliberately projects durable, auditable
+  // fields and never renders prompts, raw provider responses, or hidden reasoning.
+  function traceEventStatusLabel(status) {
+    return {
+      success: "完成",
+      active: "当前",
+      warning: "需复核",
+      pending: "等待",
+      skipped: "未发生"
+    }[status] || "记录";
+  }
+
+  function traceRequestDetail(trace) {
+    const value = object(trace);
+    const requestKind = textValue(value.request_kind, "结构化模型请求");
+    const attempts = Math.max(0, Math.round(finite(value.attempt_count, 0)));
+    const latency = Number.isFinite(Number(value.latency_ms))
+      ? `${Number(value.latency_ms).toFixed(0)} ms`
+      : "延迟未记录";
+    const retryLabel = attempts > 1 ? ` · 重试 ${attempts - 1} 次` : "";
+    const result = value.fallback_used === true
+      ? "结果：安全回退"
+      : value.http_status === 200 || value.provider === "deepseek"
+        ? "结果：已返回结构化计划"
+        : "结果：规则路径";
+    return `${requestKind} · ${latency}${retryLabel} · ${result}`;
+  }
+
+  function renderAgentTrace(session, action) {
+    const panel = select("#agentTracePanel");
+    if (!panel) return;
+    if (!session) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const runtime = object(session.agent_runtime);
+    const history = array(session.history);
+    const event = object(history.at(-1));
+    const current = object(action);
+    const trace = object(current.model_trace || event.model_trace || runtime.last_model_trace);
+    const loopTrace = object(event.agent_loop_summary || trace.agent_loop || runtime.last_agent_loop);
+    const loopEvents = array(loopTrace.events);
+    const hasAgentLoop = Boolean(loopTrace.schema || loopEvents.length);
+    const contextTrace = object(runtime.last_context_trace);
+    const diagnosis = object(event.deepseek_assessment || session.initial_model_plan?.diagnosis || current.diagnosis);
+    const provenance = object(current.action_provenance);
+    const repair = object(trace.action_repair);
+    const continuity = object(trace.continuity_enforcement);
+    const privacy = object(event.privacy_trace || current.privacy_trace);
+    const teacher = object(current.teacher_action);
+    const active = session.status === "active";
+    const terminal = !active;
+    const routeChanged = current.skill_switched === true || current.primary_skill_was_retargeted === true || object(provenance.route_adjudication).changed === true;
+    const hasDiagnosis = Object.keys(diagnosis).length > 0 && Boolean(diagnosis.signal || diagnosis.assessment_source);
+    const hasModelCall = Boolean(trace.request_kind || trace.provider || trace.http_status);
+    const hasAction = Boolean(teacher.message || current.type || current.action_id);
+    const hasGuard = Object.keys(provenance).length > 0 || Object.keys(continuity).length > 0;
+    const planRows = [
+      {label: "装载目标与上下文", status: "done", detail: `R${Math.max(0, Math.round(finite(session.rounds_completed, session.round || 0)))} · ${contextTrace.request_outcome ? "上下文快照已绑定" : "会话上下文已建立"}`},
+      {label: "读取学生反馈并判断状态", status: hasDiagnosis ? "done" : "active", detail: hasDiagnosis ? `${signalLabels[normalizeSignal(diagnosis.signal)] || normalizeSignal(diagnosis.signal)} · ${probability(diagnosis.confidence, 0)}` : "等待学生回答后再诊断"},
+      {label: "Agent Loop 工具路由", status: hasAgentLoop ? (loopTrace.deterministic_fallback ? "warning" : "done") : "pending", detail: hasAgentLoop ? `${finite(loopTrace.steps, 0)} 步 · ${finite(loopTrace.tool_call_count, 0)} 次工具调用 · ${textValue(loopTrace.selected_skill_id, "未选出 Skill")}` : "兼容模式：未启用工具循环"},
+      {label: "选择 / 组合 Teaching Skill", status: current.primary_skill ? "done" : "active", detail: current.primary_skill ? `${textValue(current.primary_skill.name || skillName(current.primary_skill.skill_id))}${routeChanged ? " · 本轮发生路由调整" : ""}` : "尚未形成 Skill 决策"},
+      {label: "执行契约与安全校验", status: hasGuard ? (repair.attempted && !repair.succeeded ? "warning" : "done") : "pending", detail: repair.attempted ? (repair.succeeded ? "动作修复请求通过" : `修复未采用：${textValue(array(repair.failure_reasons).at(0), "原因未公开")}`) : "已按当前动作契约检查"},
+      {label: terminal ? "记录终止动作" : "生成教师下一步动作", status: hasAction ? "done" : "active", detail: hasAction ? (terminal ? "会话已进入终止状态" : "教师动作已生成，等待学生回应") : "尚未生成可展示动作"}
+    ];
+    const planRoot = select("#agentTracePlan");
+    planRoot.replaceChildren(...planRows.map((row) => {
+      const item = node("li", "");
+      item.dataset.status = row.status;
+      const line = node("div", "");
+      line.append(node("strong", "", row.label), node("em", "", traceEventStatusLabel(row.status)));
+      item.append(line, node("p", "", row.detail));
+      return item;
+    }));
+
+    let currentStep = terminal ? "终止判定已执行" : "等待学生回应";
+    let currentDetail = terminal
+      ? textValue(current.termination_reason || session.termination_reason, "会话已停止，不再生成下一步教学动作。")
+      : textValue(teacher.expected_signal, "教师动作已生成；系统将在收到回答后更新学情和 Skill。");
+    if (!hasAction) {
+      currentStep = "准备生成教师动作";
+      currentDetail = "当前会话尚未提供可核验的动作记录。";
+    }
+    select("#agentTraceCurrentStep").textContent = currentStep;
+    select("#agentTraceCurrentDetail").textContent = currentDetail;
+
+    const events = [];
+    if (contextTrace.request_outcome || Object.keys(contextTrace).length) {
+      events.push({label: "上下文快照", status: contextTrace.request_outcome === "deterministic_safety_fallback" ? "warning" : "success", detail: `${textValue(contextTrace.request_outcome, "已绑定")} · ${textValue(contextTrace.retained_recent_turns, "—")} 条近期轮次`});
+    }
+    if (array(event.multimodal_evidence).length) {
+      const evidence = array(event.multimodal_evidence);
+      const remoteSafe = evidence.every((item) => object(item).remote_media_sent === false || object(item).raw_media_retained === false);
+      events.push({label: "本地答案图片证据", status: remoteSafe ? "success" : "warning", detail: `${evidence.length} 个证据块 · ${remoteSafe ? "原图未发送" : "媒体发送状态需复核"}`});
+    }
+    if (hasModelCall) {
+      events.push({label: "DeepSeek 结构化计划请求", status: trace.fallback_used === true ? "warning" : "success", detail: traceRequestDetail(trace)});
+    } else {
+      events.push({label: "确定性 Skill 执行器", status: "success", detail: "未发生在线模型请求 · 使用可复现规则路径"});
+    }
+    if (hasAgentLoop) {
+      const loopStatus = loopTrace.deterministic_fallback === true ? "warning" : "success";
+      events.push({
+        label: "Agent Loop 总结",
+        status: loopStatus,
+        detail: `${finite(loopTrace.steps, 0)} 步 · ${finite(loopTrace.tool_call_count, 0)} 次工具调用 · ${finite(loopTrace.model_call_count, 0)} 次规划请求${finite(loopTrace.retry_count, 0) ? ` · 重试 ${finite(loopTrace.retry_count, 0)} 次` : ""}`
+      });
+      loopEvents.slice(-10).forEach((entry) => {
+        const type = textValue(object(entry).type, "event");
+        const tool = textValue(object(entry).tool, "");
+        const skill = textValue(object(entry).skill_id, "");
+        const reason = textValue(object(entry).reason, "");
+        const detail = tool
+          ? `${tool}${object(entry).ok === false ? " · 工具错误" : " · 本地执行"}`
+          : skill
+            ? `${skill}${reason ? ` · ${reason}` : ""}`
+            : reason || type;
+        events.push({label: `Loop R${finite(object(entry).step, 0)} · ${type}`, status: object(entry).ok === false ? "warning" : "success", detail});
+      });
+    }
+    if (repair.attempted) {
+      const repairTrace = object(repair.request_trace);
+      events.push({label: "动作修复请求", status: repair.succeeded ? "success" : "warning", detail: `${repair.succeeded ? "结果：修复采用" : "结果：修复未采用"} · ${traceRequestDetail(repairTrace)}`});
+    }
+    if (continuity.deterministic_guard_applied === true) {
+      events.push({label: "连续性约束校验", status: "warning", detail: "模型动作未直接丢失本轮指代，已按可公开上下文约束校正"});
+    }
+    if (hasGuard && !continuity.deterministic_guard_applied && !repair.attempted) {
+      const reasons = [...array(provenance.model_action_validation_reasons), ...array(provenance.normalization_reasons)].filter(Boolean);
+      events.push({label: "动作契约校验", status: reasons.length ? "warning" : "success", detail: reasons.length ? `已记录 ${reasons.length} 项公开校正原因` : "Skill、等待回应和答案边界检查通过"});
+    }
+    const routeDetail = current.primary_skill
+      ? `${textValue(current.primary_skill.name || skillName(current.primary_skill.skill_id))} · ${textValue(current.selection_reason, "选择理由未返回")}`
+      : "尚未形成路由结果";
+    events.push({label: "Skill 路由结果", status: routeChanged ? "active" : "success", detail: routeDetail});
+    events.push({label: terminal ? "终止动作" : "教师教学动作", status: hasAction ? "success" : "active", detail: hasAction ? `${textValue(teacher.type || current.type)} · ${compactText(teacher.message, 180)}` : "等待可展示动作"});
+    const eventRoot = select("#agentTraceEvents");
+    eventRoot.replaceChildren(...events.map((entry) => {
+      const item = node("li", "");
+      item.dataset.status = entry.status;
+      const line = node("div", "");
+      line.append(node("strong", "", entry.label), node("em", "", traceEventStatusLabel(entry.status)));
+      item.append(line, node("p", "", entry.detail));
+      return item;
+    }));
+
+    const stopRecommendation = object(event.model_stop_recommendation || current.stop_recommendation);
+    const stopShould = stopRecommendation.should_stop === true;
+    const stopHonored = stopRecommendation.honored === true || terminal;
+    const stopLabel = terminal
+      ? (session.status === "succeeded" ? "教学目标达标" : "停止并转人工")
+      : stopShould ? "模型建议停止 · 等待安全门槛" : "继续等待学生";
+    select("#agentTraceStop").textContent = stopLabel;
+    select("#agentTraceStopDetail").textContent = terminal
+      ? textValue(current.termination_reason || session.termination_reason, "终止原因未记录")
+      : stopShould
+        ? `${textValue(stopRecommendation.reason, "模型请求人工复核")} · ${stopHonored ? "已执行" : "尚未执行"}`
+        : "当前没有满足终止条件；收到学生回答后继续更新。";
+    select("#agentTraceActionType").textContent = textValue(teacher.type || current.type, terminal ? "terminate" : "—");
+    select("#agentTraceAction").textContent = textValue(teacher.message, terminal ? "会话已停止。" : "尚未生成教师动作。");
+    const statusNode = select("#agentTraceStatus");
+    const statusKey = terminal ? (session.status === "succeeded" ? "success" : "warning") : "active";
+    statusNode.dataset.status = statusKey;
+    statusNode.textContent = terminal ? (session.status === "succeeded" ? "已完成" : "已停止") : `R${Math.max(0, Math.round(finite(session.rounds_completed, 0)))} · 进行中`;
+    select("#agentTraceSummary").textContent = `${events.length} 个公开事件 · ${history.length} 轮已记录 · 仅结构化审计信息`;
+  }
+
   function renderRuntime(session, action) {
     const runtime = object(session.agent_runtime);
     const trace = object(action.model_trace || runtime.last_model_trace || latestTrace());
@@ -2654,6 +2822,7 @@
     renderContextMemory(session);
     renderTeachingMemory(session);
     renderHistory(array(session.history));
+    renderAgentTrace(session, action);
     renderRuntime(session, action);
     syncControls();
     if (followLatest) {

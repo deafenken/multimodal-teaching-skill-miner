@@ -18,6 +18,11 @@ import stat
 import threading
 from typing import Any, Mapping, Sequence
 
+try:  # ``flock`` gives the opt-in store a process, not merely thread, fence.
+    import fcntl
+except ImportError:  # pragma: no cover - Teaching Agent durable mode is POSIX-only.
+    fcntl = None  # type: ignore[assignment]
+
 
 EVENT_SCHEMA = "teaching_skill_miner.teacher_agent_rollout_event.v1"
 ALLOWED_EVENT_TYPES = frozenset(
@@ -116,55 +121,200 @@ class TeacherAgentStore:
                 "teacher Agent rollout store must be a regular non-symlink file"
             )
         try:
-            raw = self.path.read_bytes()
+            stream = self.path.open("r+b")
         except OSError as exc:
             raise TeacherAgentStoreError(
                 "teacher Agent rollout store cannot be read"
             ) from exc
-        final_newline = raw.rfind(b"\n")
-        valid_size = final_newline + 1 if final_newline >= 0 else 0
-        complete = raw[:valid_size]
-        previous_hash: str | None = None
-        expected_seq = 1
-        events: list[dict[str, Any]] = []
-        for line_number, raw_line in enumerate(complete.splitlines(), 1):
-            if not raw_line:
-                raise TeacherAgentStoreError(
-                    f"teacher Agent rollout line {line_number} is empty"
+        try:
+            self._lock_stream(stream)
+            raw = stream.read()
+            final_newline = raw.rfind(b"\n")
+            valid_size = final_newline + 1 if final_newline >= 0 else 0
+            complete = raw[:valid_size]
+            previous_hash: str | None = None
+            expected_seq = 1
+            events: list[dict[str, Any]] = []
+            for line_number, raw_line in enumerate(complete.splitlines(), 1):
+                if not raw_line:
+                    raise TeacherAgentStoreError(
+                        f"teacher Agent rollout line {line_number} is empty"
+                    )
+                try:
+                    event = json.loads(raw_line)
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise TeacherAgentStoreError(
+                        f"teacher Agent rollout line {line_number} is invalid JSON"
+                    ) from exc
+                if not isinstance(event, dict):
+                    raise TeacherAgentStoreError(
+                        f"teacher Agent rollout line {line_number} is not an object"
+                    )
+                self._validate_loaded_event(
+                    event,
+                    expected_seq=expected_seq,
+                    previous_hash=previous_hash,
+                    line_number=line_number,
                 )
-            try:
-                event = json.loads(raw_line)
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise TeacherAgentStoreError(
-                    f"teacher Agent rollout line {line_number} is invalid JSON"
-                ) from exc
-            if not isinstance(event, dict):
-                raise TeacherAgentStoreError(
-                    f"teacher Agent rollout line {line_number} is not an object"
-                )
-            self._validate_loaded_event(
-                event,
-                expected_seq=expected_seq,
-                previous_hash=previous_hash,
-                line_number=line_number,
-            )
-            events.append(event)
-            previous_hash = event["hash"]
-            expected_seq += 1
-        if valid_size != len(raw):
-            try:
-                with self.path.open("r+b") as stream:
-                    stream.truncate(valid_size)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except OSError as exc:
-                raise TeacherAgentStoreError(
-                    "teacher Agent rollout truncated tail cannot be repaired"
-                ) from exc
+                events.append(event)
+                previous_hash = event["hash"]
+                expected_seq += 1
+            self._validate_event_lifecycle(events)
+            if valid_size != len(raw):
+                stream.seek(valid_size)
+                stream.truncate(valid_size)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            raise TeacherAgentStoreError(
+                "teacher Agent rollout truncated tail cannot be repaired"
+            ) from exc
+        finally:
+            self._unlock_stream(stream)
+            stream.close()
         self._events = events
         self._last_hash = previous_hash
         self._next_seq = expected_seq
         self._file_size = valid_size
+
+    @staticmethod
+    def _require_process_locking() -> None:
+        """Fail closed if this host cannot provide a process-level store fence.
+
+        The store is deliberately an opt-in durability feature.  A Python
+        ``threading.Lock`` protects only one dashboard process; without an OS
+        lock two dashboard processes can both append a valid next sequence
+        number and corrupt the event log.  Do not silently downgrade that
+        guarantee on unsupported hosts.
+        """
+
+        if fcntl is None:
+            raise TeacherAgentStoreError(
+                "teacher Agent durable store requires POSIX process locking"
+            )
+
+    @classmethod
+    def _lock_stream(cls, stream: Any) -> None:
+        cls._require_process_locking()
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        except OSError as exc:
+            raise TeacherAgentStoreError(
+                "teacher Agent rollout store process lock cannot be acquired"
+            ) from exc
+
+    @staticmethod
+    def _unlock_stream(stream: Any) -> None:
+        if fcntl is None:
+            return
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            # The descriptor is about to close.  A failed unlock cannot make a
+            # successfully flushed append less durable and should not mask its
+            # original outcome.
+            pass
+
+    @staticmethod
+    def _validate_event_lifecycle(events: Sequence[Mapping[str, Any]]) -> None:
+        """Reject hash-valid but semantically impossible event histories.
+
+        A hash chain detects accidental edits, but it cannot by itself express
+        the Agent's state machine.  In particular, an old ``turn_committed``
+        must never resurrect a session after profile replacement.  This
+        lightweight replay keeps the event log authoritative for recovery
+        without persisting any model secrets or raw remote request payloads.
+        """
+
+        states: dict[str, dict[str, Any]] = {}
+        for event in events:
+            session_id = str(event["session_id"])
+            event_type = str(event["event_type"])
+            state = states.setdefault(
+                session_id,
+                {
+                    "started": False,
+                    "retired": False,
+                    "terminal": False,
+                    "active_turn_ids": set(),
+                    "seen_turn_ids": set(),
+                },
+            )
+            turn_id = event.get("turn_id")
+
+            if event_type == "session_started":
+                if state["started"]:
+                    raise TeacherAgentStoreError(
+                        "teacher Agent rollout session_started is duplicated"
+                    )
+                state["started"] = True
+                continue
+
+            if not state["started"]:
+                raise TeacherAgentStoreError(
+                    "teacher Agent rollout event precedes session_started"
+                )
+
+            # A replacement/eviction is final.  The sole permitted trailing
+            # event is an abort of a turn which began *before* replacement;
+            # this is how an in-flight remote model call is safely receipted.
+            if state["retired"]:
+                if (
+                    event_type == "turn_aborted"
+                    and isinstance(turn_id, str)
+                    and turn_id in state["active_turn_ids"]
+                ):
+                    state["active_turn_ids"].remove(turn_id)
+                    continue
+                raise TeacherAgentStoreError(
+                    "teacher Agent rollout event follows a removed session"
+                )
+
+            if event_type == "turn_started":
+                if state["terminal"]:
+                    raise TeacherAgentStoreError(
+                        "teacher Agent rollout turn starts after session stop"
+                    )
+                if not isinstance(turn_id, str):
+                    raise TeacherAgentStoreError(
+                        "teacher Agent rollout turn_started lacks turn_id"
+                    )
+                if turn_id in state["seen_turn_ids"]:
+                    raise TeacherAgentStoreError(
+                        "teacher Agent rollout turn_id is reused"
+                    )
+                state["seen_turn_ids"].add(turn_id)
+                state["active_turn_ids"].add(turn_id)
+                continue
+
+            if event_type in {"turn_committed", "turn_aborted"}:
+                if not isinstance(turn_id, str) or turn_id not in state[
+                    "active_turn_ids"
+                ]:
+                    raise TeacherAgentStoreError(
+                        "teacher Agent rollout terminal turn event has no active turn"
+                    )
+                if event_type == "turn_committed" and state["terminal"]:
+                    raise TeacherAgentStoreError(
+                        "teacher Agent rollout turn commits after session stop"
+                    )
+                state["active_turn_ids"].remove(turn_id)
+                continue
+
+            if event_type == "session_stopped":
+                state["terminal"] = True
+                if event.get("data", {}).get("remove_session") is True:
+                    state["retired"] = True
+                continue
+
+            if event_type == "context_checkpoint":
+                # Checkpoints may follow a normal commit, a stop receipt, or
+                # an interrupted-turn recovery.  They never change liveness.
+                continue
+
+            raise TeacherAgentStoreError(
+                "teacher Agent rollout event lifecycle is unsupported"
+            )
 
     def _validate_loaded_event(
         self,
@@ -333,25 +483,30 @@ class TeacherAgentStore:
                         0o600,
                     )
                     with os.fdopen(descriptor, "r+b") as stream:
-                        stream.seek(0, os.SEEK_END)
-                        original_size = stream.tell()
-                        if original_size != self._file_size:
-                            raise TeacherAgentStoreError(
-                                "teacher Agent rollout store has another active writer"
-                            )
+                        self._lock_stream(stream)
                         try:
-                            stream.write(payload)
-                            self._flush(stream)
-                        except OSError as exc:
-                            last_error = exc
-                            try:
-                                self._rollback(stream, original_size)
-                            except OSError as rollback_exc:
-                                self._poisoned = True
+                            stream.seek(0, os.SEEK_END)
+                            original_size = stream.tell()
+                            if original_size != self._file_size:
                                 raise TeacherAgentStoreError(
-                                    "teacher Agent rollout barrier and rollback both failed"
-                                ) from rollback_exc
-                            continue
+                                    "teacher Agent rollout store has another active writer"
+                                )
+                            self._validate_event_lifecycle([*self._events, *events])
+                            try:
+                                stream.write(payload)
+                                self._flush(stream)
+                            except OSError as exc:
+                                last_error = exc
+                                try:
+                                    self._rollback(stream, original_size)
+                                except OSError as rollback_exc:
+                                    self._poisoned = True
+                                    raise TeacherAgentStoreError(
+                                        "teacher Agent rollout barrier and rollback both failed"
+                                    ) from rollback_exc
+                                continue
+                        finally:
+                            self._unlock_stream(stream)
                     self._events.extend(events)
                     self._last_hash = previous_hash
                     self._next_seq = seq
