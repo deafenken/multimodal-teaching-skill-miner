@@ -652,6 +652,55 @@ h1, h2, h3, p, blockquote { margin-top: 0; }
 .conversation-student span { display: grid; }
 .conversation-student small { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .conversation-student strong { font-size: 12px; }
+.live-decision-strip {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(150px, 1.05fr) minmax(145px, .9fr) minmax(150px, 1fr) auto;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--rail) 68%, var(--surface));
+}
+.live-decision-strip > div {
+  min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 3px;
+  padding: 9px clamp(12px, 2vw, 22px);
+  border-right: 1px solid var(--line);
+}
+.live-decision-strip > div > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.live-decision-strip > div > strong {
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.live-decision-strip > div:first-child > strong { color: var(--skill); }
+.live-decision-strip > div:nth-child(2) > strong[data-switched="true"] { color: var(--accent); }
+.live-decision-strip > button {
+  min-width: 126px;
+  min-height: 44px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin: 7px 10px;
+  padding: 6px 10px;
+  border-color: var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 800;
+}
+.live-decision-strip > button:hover { border-color: var(--skill); color: var(--skill); }
+.live-decision-strip > button b { font: 800 15px/1 var(--body); }
 .chat-message.student .message-avatar.student-photo { width: 34px; height: 34px; overflow: hidden; padding: 0; background: var(--surface); }
 .student-photo img { width: 100%; height: 100%; object-fit: cover; }
 .teacher-audit-hint { margin-top: 10px; }
@@ -795,6 +844,9 @@ h1, h2, h3, p, blockquote { margin-top: 0; }
   .app-shell.sidebar-open .setup-panel { transform: translateX(0); }
   .app-shell.sidebar-open .drawer-backdrop { display: block !important; }
   .conversation-head { padding-inline: 16px; }
+  .live-decision-strip { grid-template-columns: repeat(3, minmax(142px, 1fr)) auto; overflow-x: auto; scrollbar-width: thin; }
+  .live-decision-strip > div { padding-inline: 12px; }
+  .live-decision-strip > button { position: sticky; right: 0; background: var(--surface); box-shadow: -8px 0 16px color-mix(in srgb, var(--ink) 8%, transparent); }
   .conversation-scroll { padding-inline: 16px; }
   .response-card { width: calc(100% - 20px); margin-bottom: 10px; }
   .composer-footer > div > span { display: none; }
@@ -825,6 +877,11 @@ h1, h2, h3, p, blockquote { margin-top: 0; }
   .conversation-student img { width: 30px; height: 30px; }
   .conversation-student small { display: none; }
   .conversation-student strong { max-width: 68px; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .live-decision-strip { min-height: 54px; grid-template-columns: repeat(3, minmax(128px, 1fr)) auto; }
+  .live-decision-strip > div > span { font-size: 9px; }
+  .live-decision-strip > div > strong { font-size: 11px; }
+  .live-decision-strip > button { min-width: 108px; margin: 5px 7px; }
+  .live-decision-strip > button span { font-size: 10px; }
   .session-state { display: none; }
   .empty-rules { display: grid; }
   .chat-bubble p { font-size: 14px; }

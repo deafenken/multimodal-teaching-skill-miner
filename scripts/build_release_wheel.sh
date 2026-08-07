@@ -4,6 +4,18 @@ set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 python_command=${PYTHON:-python3}
+# The clean build changes into a temporary source tree below.  Resolve a
+# caller-supplied relative interpreter path while we are still in the
+# caller's working directory, otherwise e.g. ``PYTHON=.venv/bin/python``
+# would be looked up relative to the temporary tree and fail mid-build.
+case "$python_command" in
+  */*)
+    case "$python_command" in
+      /*) ;;
+      *) python_command="$(pwd)/$python_command" ;;
+    esac
+    ;;
+esac
 output_dir=${1:-"$repo_root/dist"}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1784592000}
 export SOURCE_DATE_EPOCH

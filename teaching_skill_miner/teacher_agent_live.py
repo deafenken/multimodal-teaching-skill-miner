@@ -60,6 +60,7 @@ from .teacher_agent_vision import (
     assess_typed_visual_consistency,
     compose_visual_evidence_text,
     contains_formula_like_text,
+    transcriptions_format_equivalent,
 )
 
 
@@ -385,6 +386,18 @@ _ACTION_TYPE_REPAIR_CUE_GROUPS = {
 _ACTION_ELICITATION_RE = re.compile(
     r"[?？]|请|你能|能否|试着|尝试|写出|说明|解释|指出|判断|给出|"
     r"比较|总结|回忆|选择|回答|修正"
+)
+_ORDINAL_CONTINUITY_MARKER_RE = re.compile(
+    r"第\s*[一二三四五六七八九十\d]+\s*(?:种|个|步|轮)|"
+    r"(?:方法|方案|路径)\s*[一二三四五六七八九十A-Ea-e1-9]"
+)
+_MISSING_CONTINUITY_DISCLOSURE_RE = re.compile(
+    r"(?:没有|没能|未能|无法|暂时没有).{0,12}(?:找到|定位|确认|检索到)|"
+    r"(?:找不到|查不到|没有记录|无匹配记录)"
+)
+_CONTINUITY_RESTATE_REQUEST_RE = re.compile(
+    r"(?:请|能否|可以).{0,12}(?:重述|再说|重新说明|说明你指|补充你指)|"
+    r"(?:重述|再说一遍|重新说明)"
 )
 _WAIT_CONTRACT_RE = re.compile(
     r"(?:请先)?只回答(?:这|当前|本)一问.{0,32}"
@@ -1463,6 +1476,228 @@ def _bounded_action_repair_continuity_constraints(
     return result
 
 
+def _action_continuity_validation_reasons(
+    message: str,
+    continuity_constraints: Mapping[str, Any] | None,
+) -> list[str]:
+    """Fail closed for the two continuity cues that can be checked exactly.
+
+    Most pedagogical continuity is semantic and remains model-authored.  An
+    ordinal reference such as ``第二种呢`` and a fail-closed missing-history
+    response, however, have observable surface contracts.  Enforcing those
+    contracts prevents an otherwise valid generic action from silently
+    discarding the student's explicit reference.
+    """
+
+    if not isinstance(continuity_constraints, Mapping):
+        return []
+    recall = continuity_constraints.get("continuity_recall")
+    if not isinstance(recall, Mapping):
+        return []
+    status = str(recall.get("status", ""))
+    if status == "unresolved_no_matching_evidence":
+        reasons: list[str] = []
+        if not _MISSING_CONTINUITY_DISCLOSURE_RE.search(message):
+            reasons.append("continuity_missing_disclosure")
+        if not _CONTINUITY_RESTATE_REQUEST_RE.search(message):
+            reasons.append("continuity_missing_restate_request")
+        return reasons
+    if status != "resolved_evidence_linked":
+        return ["continuity_status_invalid"]
+    if recall.get("cue_kind") != "ordinal_reference":
+        return []
+    cue_excerpt = str(recall.get("cue_excerpt", ""))
+    requested_markers = {
+        re.sub(r"\s+", "", marker)
+        for marker in _ORDINAL_CONTINUITY_MARKER_RE.findall(cue_excerpt)
+    }
+    if not requested_markers:
+        return ["continuity_ordinal_marker_missing_from_cue"]
+    normalized_message = re.sub(r"\s+", "", message)
+    if not any(marker in normalized_message for marker in requested_markers):
+        return ["continuity_ignored_ordinal_reference"]
+    return []
+
+
+def _continuity_binding(
+    continuity_constraints: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return an excerpt-free evidence binding for the visible action trace."""
+
+    if not isinstance(continuity_constraints, Mapping):
+        return None
+    recall = continuity_constraints.get("continuity_recall")
+    if not isinstance(recall, Mapping):
+        return None
+    target = recall.get("target")
+    target_mapping = target if isinstance(target, Mapping) else {}
+    return {
+        "schema": "teaching_skill_miner.action_continuity_binding.v1",
+        "status": str(recall.get("status", ""))[:64],
+        "cue_kind": str(recall.get("cue_kind", ""))[:64],
+        "cue_evidence_refs": [
+            str(item)[:160]
+            for item in recall.get("cue_evidence_refs", [])[:2]
+            if str(item)
+        ],
+        "target_source_round": target_mapping.get("source_round"),
+        "target_evidence_refs": [
+            str(item)[:160]
+            for item in target_mapping.get("evidence_refs", [])[:4]
+            if str(item)
+        ],
+        "target_excerpt_persisted_in_action_trace": False,
+        "evidence_linked": (
+            recall.get("status") == "resolved_evidence_linked"
+            and bool(target_mapping.get("evidence_refs"))
+        ),
+    }
+
+
+def _deterministically_enforce_action_continuity(
+    plan: Mapping[str, Any],
+    continuity_constraints: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Ensure explicit recall cues survive repair-disabled and repair-failure paths.
+
+    DeepSeek gets the evidence-linked recall layer first.  This final server-side
+    fence handles the two surface contracts that are exactly checkable: an
+    ordinal such as ``第二种`` remains visible, and missing recall is disclosed
+    before the learner is asked to restate it.  No target excerpt is copied into
+    the action trace or invented by this materializer.
+    """
+
+    result = deepcopy(dict(plan))
+    teacher_action = result.get("teacher_action", {})
+    decision = result.get("decision", {})
+    binding = _continuity_binding(continuity_constraints)
+    if (
+        binding is None
+        or not isinstance(teacher_action, dict)
+        or not isinstance(decision, dict)
+    ):
+        return result, {
+            "schema": "teaching_skill_miner.action_continuity_enforcement.v1",
+            "continuity_present": False,
+            "deterministic_guard_applied": False,
+            "validation_reasons_before": [],
+            "validation_reasons_after": [],
+        }
+
+    message = str(teacher_action.get("message", ""))
+    reasons_before = _action_continuity_validation_reasons(
+        message, continuity_constraints
+    )
+    provenance = decision.get("action_provenance", {})
+    if not isinstance(provenance, dict):
+        provenance = {}
+    decision["action_provenance"] = provenance
+    provenance["continuity_binding"] = binding
+    if not reasons_before:
+        return result, {
+            "schema": "teaching_skill_miner.action_continuity_enforcement.v1",
+            "continuity_present": True,
+            "status": binding["status"],
+            "cue_kind": binding["cue_kind"],
+            "deterministic_guard_applied": False,
+            "validation_reasons_before": [],
+            "validation_reasons_after": [],
+            "target_excerpt_copied": False,
+        }
+
+    recall = continuity_constraints.get("continuity_recall", {})
+    status = str(recall.get("status", "")) if isinstance(recall, Mapping) else ""
+    original_origin = str(provenance.get("executor_origin", "unknown"))
+    guard_kind = "ordinal_reference_prefix"
+    primary_execution_deferred = False
+    if status == "unresolved_no_matching_evidence":
+        guard_kind = "missing_evidence_restate"
+        primary_execution_deferred = True
+        teacher_action["message"] = (
+            "我暂时没有找到与你这次指代匹配的历史记录，请用一句话重述你指的"
+            "方案、约定、问题或讲解方式；我确认后再继续当前教学步骤。"
+        )
+        teacher_action["expected_signal"] = (
+            "学生用一句话重述所指的方案、约定、问题或讲解方式。"
+        )
+        teacher_action["question_contract"] = {
+            "answer_type": "open",
+            "target_concepts": ["所指的历史方案、约定、问题或讲解方式"],
+            "accepted_aliases": [],
+            "success_criteria": ["用一句话重述所指内容"],
+            "grading_scope": "current_question_only",
+        }
+        decision["supporting_skill_ids"] = []
+        decision["support_execution"] = {}
+        decision["selection_reason"] = (
+            str(decision.get("selection_reason", ""))
+            + "；连续性证据不足，本轮暂缓执行主 Skill，先请求学生重述。"
+        )[:600]
+    else:
+        cue_excerpt = str(recall.get("cue_excerpt", ""))
+        markers = [
+            re.sub(r"\s+", "", marker)
+            for marker in _ORDINAL_CONTINUITY_MARKER_RE.findall(cue_excerpt)
+            if marker
+        ]
+        if not markers:
+            raise LiveTeacherAgentError(
+                "resolved ordinal continuity lacks an observable cue marker"
+            )
+        teacher_action["message"] = _safe_text(
+            f"你问的是刚才已记录的{markers[0]}。沿用这条已引证记录，{message}",
+            field="continuity_guard_teacher_action.message",
+            maximum=1400,
+        )
+
+    provenance.update(
+        {
+            "executor_origin": "deterministic_continuity_guard",
+            "model_teacher_action_used": False,
+            "message_preserved_verbatim": False,
+            "expected_signal_preserved_verbatim": not primary_execution_deferred,
+            "question_contract_preserved": not primary_execution_deferred,
+            "continuity_guard_applied": True,
+            "continuity_guard_kind": guard_kind,
+            "continuity_original_executor_origin": original_origin,
+            "primary_skill_execution_deferred": primary_execution_deferred,
+            "normalization_reasons": list(
+                dict.fromkeys(
+                    [
+                        *[
+                            str(item)
+                            for item in provenance.get("normalization_reasons", [])
+                            if str(item)
+                        ],
+                        *reasons_before,
+                        "deterministic_continuity_guard_applied",
+                    ]
+                )
+            ),
+        }
+    )
+    reasons_after = _action_continuity_validation_reasons(
+        str(teacher_action.get("message", "")), continuity_constraints
+    )
+    if reasons_after:
+        raise LiveTeacherAgentError(
+            "deterministic continuity guard failed its surface contract: "
+            + ", ".join(reasons_after)
+        )
+    return result, {
+        "schema": "teaching_skill_miner.action_continuity_enforcement.v1",
+        "continuity_present": True,
+        "status": binding["status"],
+        "cue_kind": binding["cue_kind"],
+        "deterministic_guard_applied": True,
+        "guard_kind": guard_kind,
+        "primary_skill_execution_deferred": primary_execution_deferred,
+        "validation_reasons_before": reasons_before,
+        "validation_reasons_after": [],
+        "target_excerpt_copied": False,
+    }
+
+
 def _action_only_repair_payload(
     session: Mapping[str, Any],
     plan: Mapping[str, Any],
@@ -1585,6 +1820,7 @@ def _validated_action_only_repair(
     *,
     session: Mapping[str, Any],
     plan: Mapping[str, Any],
+    continuity_constraints: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Validate a fresh action without allowing diagnosis or route mutation."""
 
@@ -1623,6 +1859,11 @@ def _validated_action_only_repair(
     )
     if candidate is None:
         return None, [f"action_repair:{reason}" for reason in reasons]
+    continuity_reasons = _action_continuity_validation_reasons(
+        str(candidate["message"]), continuity_constraints
+    )
+    if continuity_reasons:
+        return None, continuity_reasons
     support_ids = [
         str(item)
         for item in decision.get("supporting_skill_ids", [])
@@ -1729,6 +1970,9 @@ def _attempt_action_only_repair(
             "failure_reasons": [],
         }
     payload = _action_only_repair_payload(session, plan, context_memory)
+    continuity_constraints = payload.get("bounded_teaching_context", {}).get(
+        "continuity_constraints"
+    )
     try:
         raw, repair_trace = client.chat_json(
             [
@@ -1744,6 +1988,11 @@ def _attempt_action_only_repair(
             raw,
             session=session,
             plan=plan,
+            continuity_constraints=(
+                continuity_constraints
+                if isinstance(continuity_constraints, Mapping)
+                else None
+            ),
         )
         if repaired is None:
             return deepcopy(dict(plan)), {
@@ -1938,13 +2187,14 @@ def _grounded_model_excerpt(
     proposed_excerpt: str,
     trusted_sources: Sequence[str],
 ) -> str | None:
-    """Return an exact source span when the model only normalized whitespace.
+    """Return an exact source span after harmless OCR-format normalization.
 
     OCR commonly separates printed lines with newlines while a model quotes the
-    same text as one space-separated sentence.  Treating that formatting-only
-    difference as fabricated evidence caused correct image answers to be
-    downgraded.  The returned value is still copied from the trusted source, so
-    punctuation changes, paraphrases, insertions, and omissions do not pass.
+    same text with collapsed whitespace or normalized multiplication/division
+    glyphs.  Treating those presentation-only differences as fabricated
+    evidence caused correct image answers to be downgraded.  The returned value
+    is still copied from the trusted source, so paraphrases, insertions,
+    omissions, or operator changes do not pass.
     """
 
     tokens = [item for item in re.split(r"\s+", proposed_excerpt.strip()) if item]
@@ -1955,6 +2205,8 @@ def _grounded_model_excerpt(
         match = pattern.search(source)
         if match:
             return match.group(0)[:240]
+        if transcriptions_format_equivalent(proposed_excerpt, source):
+            return str(source)[:240]
     return None
 
 
@@ -3394,6 +3646,7 @@ def _validated_plan(
     image_only_response: bool,
     manual_skill_id: str | None,
     options: LiveAgentOptions,
+    continuity_constraints: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(raw, Mapping) or raw.get("schema") != PLAN_SCHEMA:
         raise LiveTeacherAgentError(f"model plan schema must be {PLAN_SCHEMA}")
@@ -4055,6 +4308,14 @@ def _validated_plan(
         },
         goal_concept=str(session.get("goal", {}).get("concept", "当前概念")),
     )
+    if isinstance(safe_candidate, Mapping):
+        continuity_reasons = _action_continuity_validation_reasons(
+            str(safe_candidate.get("message", "")), continuity_constraints
+        )
+        if continuity_reasons:
+            candidate_reasons.extend(continuity_reasons)
+            safe_candidate = None
+    candidate_reasons = list(dict.fromkeys(candidate_reasons))
     candidate_safe_repairs = (
         list(safe_candidate.get("safe_repairs", []))
         if isinstance(safe_candidate, Mapping)
@@ -4449,6 +4710,9 @@ def _request_plan(
     manual_skill_id: str | None,
     options: LiveAgentOptions,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    continuity_constraints = _bounded_action_repair_continuity_constraints(
+        context_memory
+    )
     payload, privacy = _remote_payload(
         session,
         context_memory=context_memory,
@@ -4494,6 +4758,7 @@ def _request_plan(
         ),
         manual_skill_id=manual_skill_id,
         options=options,
+        continuity_constraints=continuity_constraints,
     )
     plan, action_repair = _attempt_action_only_repair(
         client,
@@ -4502,7 +4767,15 @@ def _request_plan(
         context_memory=context_memory,
         options=options,
     )
-    trace = {**deepcopy(dict(trace)), "action_repair": action_repair}
+    plan, continuity_enforcement = _deterministically_enforce_action_continuity(
+        plan,
+        continuity_constraints,
+    )
+    trace = {
+        **deepcopy(dict(trace)),
+        "action_repair": action_repair,
+        "continuity_enforcement": continuity_enforcement,
+    }
     privacy = {
         **deepcopy(dict(privacy)),
         "action_only_repair_context_sent": bool(action_repair["attempted"]),

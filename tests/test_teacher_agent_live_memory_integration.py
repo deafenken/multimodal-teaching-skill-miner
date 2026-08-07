@@ -355,7 +355,10 @@ def test_evidence_linked_memory_survives_nine_turn_bounded_context() -> None:
         options=options,
     )
     responses = [
-        "请先举例，不要直接上公式。第二种为什么更省空间？",
+        (
+            "第一种保留完整表，第二种只保留相邻状态。"
+            "请先举例，不要直接上公式。第二种为什么更省空间？"
+        ),
         *[
             f"第 {round_number} 轮我继续比较两个状态，但暂时只说出其中一点。"
             for round_number in range(2, 10)

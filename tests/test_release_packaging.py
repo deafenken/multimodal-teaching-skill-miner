@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 import io
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -180,6 +182,29 @@ class ReleasePackagingTests(unittest.TestCase):
                 "unreviewed public JSON resources",
                 completed.stdout + completed.stderr,
             )
+
+    def test_clean_wheel_build_resolves_relative_python_before_source_cd(self) -> None:
+        """A relative PYTHON path must survive the clean source-tree build."""
+
+        project_root = Path(__file__).resolve().parents[1]
+        build_script = project_root / "scripts/build_release_wheel.sh"
+        python_executable = Path(sys.executable).resolve()
+        relative_python = os.path.relpath(python_executable, project_root)
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory) / "dist"
+            environment = os.environ.copy()
+            environment["PYTHON"] = relative_python
+            completed = subprocess.run(
+                ["sh", str(build_script), str(output_dir)],
+                cwd=project_root,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+            wheels = sorted(output_dir.glob("*.whl"))
+            self.assertEqual(len(wheels), 1, completed.stdout + completed.stderr)
 
     def test_release_audit_rejects_private_caption_and_model_weight_members(
         self,

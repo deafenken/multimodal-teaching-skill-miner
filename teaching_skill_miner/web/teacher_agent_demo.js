@@ -2563,6 +2563,12 @@
     select("#selectedSkillId").textContent = textValue(action.action_id, "terminal");
     select("#switchBadge").textContent = "终止动作";
     select("#switchBadge").classList.add("switched");
+    const terminalSkillLabel = succeeded ? "教学目标达标" : "停止并转人工";
+    select("#liveSkillName").textContent = terminalSkillLabel;
+    select("#liveSkillName").title = terminalSkillLabel;
+    select("#liveSwitchLabel").textContent = "会话终止";
+    select("#liveSwitchLabel").title = "会话终止";
+    select("#liveSwitchLabel").dataset.switched = "true";
     select("#selectionReason").textContent = textValue(action.termination_reason || session.termination_reason, "会话已进入停止状态。");
     renderSupportingSkills({});
     select("#actionType").textContent = textValue(object(action.teacher_action).type || action.type, "stop");
@@ -2576,6 +2582,9 @@
     select("#selectedSkillName").textContent = textValue(skill.name || skillName(skill.skill_id));
     select("#selectedSkillRole").textContent = roleLabels[skill.role] || textValue(skill.role);
     select("#selectedSkillId").textContent = textValue(skill.skill_id);
+    const liveSkillLabel = textValue(skill.name || skillName(skill.skill_id));
+    select("#liveSkillName").textContent = liveSkillLabel;
+    select("#liveSkillName").title = liveSkillLabel;
     const switchBadge = select("#switchBadge");
     if (action.skill_switched) {
       switchBadge.textContent = `从 ${skillName(action.previous_primary_skill_id)} 切换`;
@@ -2585,6 +2594,9 @@
       switchBadge.textContent = "首个 Skill";
     }
     switchBadge.classList.toggle("switched", action.skill_switched === true);
+    select("#liveSwitchLabel").textContent = switchBadge.textContent;
+    select("#liveSwitchLabel").title = switchBadge.textContent;
+    select("#liveSwitchLabel").dataset.switched = String(action.skill_switched === true);
     renderSupportingSkills(action);
     const modelProposedSkill = textValue(action.model_proposed_primary_skill_id, "");
     const finalReason = textValue(action.selection_reason, "后端未返回最终执行理由。");
@@ -2609,6 +2621,7 @@
     const active = session.status === "active";
     select("#emptySession").hidden = true;
     select("#activeSession").hidden = false;
+    select("#liveDecisionStrip").hidden = false;
     const status = select("#sessionStatus");
     status.textContent = active
       ? `进行中 · 已完成 ${finite(session.rounds_completed, 0)} 轮`
@@ -2631,6 +2644,9 @@
     const focus = object(studentState.next_focus);
     select("#nextFocus").textContent = dimensionLabels[focus.dimension] || textValue(focus.dimension);
     select("#nextFocusReason").textContent = textValue(focus.reason, "后端未返回下一重点依据。");
+    const liveFocusLabel = dimensionLabels[focus.dimension] || textValue(focus.dimension, "等待下一轮判断");
+    select("#liveNextFocus").textContent = liveFocusLabel;
+    select("#liveNextFocus").title = liveFocusLabel;
     renderMisconceptions(studentState);
     renderAdaptiveStudentProfile(session);
     renderRanking(active ? action : {});
@@ -3513,6 +3529,13 @@
       if (open && window.matchMedia("(max-width: 860px)").matches) setSidebar(false);
       if (open) app.lastDrawerTrigger = select("#inspectorToggle");
       setInspector(open);
+    });
+    select("#openMethodInspectorButton").addEventListener("click", () => {
+      if (window.matchMedia("(max-width: 860px)").matches) setSidebar(false);
+      app.lastDrawerTrigger = select("#openMethodInspectorButton");
+      setInspectorTab("method");
+      setInspector(true);
+      select("#methodTab").focus();
     });
     select("#inspectorClose").addEventListener("click", () => {
       closeDrawers({restoreFocus: true});

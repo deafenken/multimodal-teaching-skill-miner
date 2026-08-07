@@ -49,7 +49,7 @@
 | 环境与依赖自检 | 完成 | 资源、Python、工具、recognition、API 安全 | `tsm doctor` |
 | wheel 非 editable 安装 | 完成验收入口 | 干净双构建字节一致、bundled data/schema/config/governance、核心隔离 smoke、recognition/签名入口及 exact release wheel 验收 | `verify_project.sh`、`build_release_wheel.sh`、`verify_release_wheel.sh` |
 | 发布与隐私 | 完成工程边界 | private paths、0600/0700、aggregate export、release audit；acceptance 的 verification scope 绑定完整包源码、看板、测试、脚本、schema/config、README/治理文档与研究说明。当 TeachObs 私有输入可用时还校验 annotation/caption/ASR receipts；四臂 result、public receipt 和冻结 JSON+NPZ bundle 必须同时通过。本次证据文件 SHA 写入项目 receipt并在生成 acceptance 时重算；仍需人工披露风险审查 | `PRIVACY.md`、`tsm release-audit`、`scripts/verify_project.sh` |
-| CI | 当前本地发布验收通过；远端 CI 独立核验 | 直接本地全量测试为 791 passed、1,354 subtests；发布 acceptance 记录 791 个测试用例（786 passed、5 个 sandbox loopback 环境跳过），并通过双次洁净构建与 exact-wheel 验收。GitHub Actions 只作为当前推送提交的独立检查；`remote_github_actions_run_verified=false` 表示本地 acceptance 不把外部 run 状态写入证明链 | `.github/workflows/ci.yml`、`artifacts/release_acceptance_1.2.0.json` |
+| CI | 当前本地发布验收通过；远端 CI 独立核验 | 直接本地全量测试为 801 test cases、1,354 subtests；当前发布 acceptance 记录 2,155 个检查（801 个测试用例 + 1,354 个 subtests）全部通过、无跳过，并通过双次洁净构建与 exact-wheel 验收。验收 verification scope 内的 tracked 文件或绑定证据变化后需重生成；scope 外文件不进入该机器证明链。GitHub Actions 只作为当前推送提交的独立检查；`remote_github_actions_run_verified=false` 表示本地 acceptance 不把外部 run 状态写入证明链 | `.github/workflows/ci.yml`、`artifacts/release_acceptance_1.2.0.json` |
 
 ## 答辩时必须主动说明
 

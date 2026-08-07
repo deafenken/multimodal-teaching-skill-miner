@@ -23,8 +23,11 @@ from teaching_skill_miner.teacher_agent_live import (
     LiveAgentOptions,
     LiveTeacherAgentError,
     _action_only_repair_payload,
+    _action_continuity_validation_reasons,
+    _deterministically_enforce_action_continuity,
     _apply_support_skill_modifiers,
     _contract_safe_retarget_action,
+    _grounded_model_excerpt,
     _learner_evidence_validation_context,
     _materialize_contract_safe_fallback_action,
     _safe_generative_action_candidate,
@@ -51,6 +54,27 @@ ACTION_TYPES = {
 
 
 class LearnerVisualEvidenceContractTests(unittest.TestCase):
+    def test_model_formula_quote_binds_across_harmless_ocr_formatting(self) -> None:
+        grounded = _grounded_model_excerpt(
+            "dp[i]=2*dp[i-1]",
+            ["dp[i] = 2 · dp[i-1]"],
+        )
+
+        self.assertEqual(grounded, "dp[i] = 2 · dp[i-1]")
+        self.assertEqual(
+            _grounded_model_excerpt(
+                "dp[i-1]+dp[i-2]=dp[i]",
+                ["dp[i] = dp[i-1] + dp[i-2]"],
+            ),
+            "dp[i] = dp[i-1] + dp[i-2]",
+        )
+        self.assertIsNone(
+            _grounded_model_excerpt(
+                "dp[i]=2*dp[i-1]",
+                ["dp[i] = 2 · dp[i-2]"],
+            )
+        )
+
     def test_formula_audit_metadata_survives_bounded_validation(self) -> None:
         evidence = _validated_learner_evidence(
             [
@@ -1243,6 +1267,241 @@ class LiveTeacherAgentTests(unittest.TestCase):
         )
         self.assertNotIn("recent_turns", json.dumps(payload, ensure_ascii=False))
         self.assertLess(len(json.dumps(constraints, ensure_ascii=False)), 5000)
+
+        ignored = _action_continuity_validation_reasons(
+            "请继续举一个直观例子，并说明你的观察。",
+            constraints,
+        )
+        self.assertEqual(
+            ignored,
+            ["continuity_ignored_ordinal_reference"],
+        )
+        self.assertEqual(
+            _action_continuity_validation_reasons(
+                "沿用刚才的第二种方法，请用一个例子说明它的第一步。",
+                constraints,
+            ),
+            [],
+        )
+
+    def test_action_only_repair_missing_history_requires_disclosure_and_restate(self) -> None:
+        constraints = {
+            "continuity_recall": {
+                "status": "unresolved_no_matching_evidence",
+                "cue_kind": "prior_agreement_or_agenda",
+                "cue_excerpt": "按之前约定继续",
+                "target": None,
+            }
+        }
+
+        self.assertEqual(
+            _action_continuity_validation_reasons(
+                "我们继续之前的安排，请回答这个问题。",
+                constraints,
+            ),
+            [
+                "continuity_missing_disclosure",
+                "continuity_missing_restate_request",
+            ],
+        )
+        self.assertEqual(
+            _action_continuity_validation_reasons(
+                "我暂时没有找到匹配记录，请用一句话重述你指的约定。",
+                constraints,
+            ),
+            [],
+        )
+
+    def test_continuity_guard_covers_repair_disabled_materialization(self) -> None:
+        plan = _plan(
+            signal="partial",
+            confidence=0.7,
+            skill_id="skill_concrete_example_bridge",
+            message="请继续举一个直观例子，并说明你的观察。",
+        )
+        ordinal_constraints = {
+            "continuity_recall": {
+                "status": "resolved_evidence_linked",
+                "cue_kind": "ordinal_reference",
+                "cue_excerpt": "第二种呢？",
+                "cue_evidence_refs": ["response:r2"],
+                "target": {
+                    "source_round": 1,
+                    "excerpt": "第一种用递归树，第二种用状态表。",
+                    "evidence_refs": ["current_action:r1:teacher_action"],
+                },
+            }
+        }
+
+        guarded, trace = _deterministically_enforce_action_continuity(
+            plan, ordinal_constraints
+        )
+        self.assertTrue(trace["deterministic_guard_applied"])
+        self.assertIn("第二种", guarded["teacher_action"]["message"])
+        self.assertEqual(
+            guarded["decision"]["action_provenance"]["executor_origin"],
+            "deterministic_continuity_guard",
+        )
+        self.assertFalse(
+            guarded["decision"]["action_provenance"]["model_teacher_action_used"]
+        )
+
+    def test_continuity_guard_fails_closed_when_history_is_missing(self) -> None:
+        plan = _plan(
+            signal="partial",
+            confidence=0.7,
+            skill_id="skill_concrete_example_bridge",
+            message="请继续举一个直观例子，并说明你的观察。",
+        )
+        missing_constraints = {
+            "continuity_recall": {
+                "status": "unresolved_no_matching_evidence",
+                "cue_kind": "prior_agreement_or_agenda",
+                "cue_excerpt": "按之前约定继续",
+                "cue_evidence_refs": ["response:r2"],
+                "target": None,
+            }
+        }
+
+        guarded, trace = _deterministically_enforce_action_continuity(
+            plan, missing_constraints
+        )
+        message = guarded["teacher_action"]["message"]
+        self.assertTrue(trace["deterministic_guard_applied"])
+        self.assertIn("没有找到", message)
+        self.assertIn("重述", message)
+        self.assertEqual(guarded["decision"]["supporting_skill_ids"], [])
+        self.assertTrue(
+            guarded["decision"]["action_provenance"][
+                "primary_skill_execution_deferred"
+            ]
+        )
+
+    def test_main_plan_path_rejects_ordinal_action_that_ignores_context(self) -> None:
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+            message=(
+                "开始学习动态规划前，请先说出一个前置概念，并比较第一种和第二种方法；"
+                "你想先从哪一种开始？"
+            ),
+            question_contract={
+                "answer_type": "comparison",
+                "target_concepts": ["前置概念", "第一种和第二种方法"],
+                "accepted_aliases": [],
+                "success_criteria": ["说出前置概念并选择一种方法比较"],
+            },
+        )
+        initial["decision"]["next_focus"] = "prerequisite"
+        next_plan = _plan(
+            signal="partial",
+            confidence=0.7,
+            skill_id="skill_concrete_example_bridge",
+            message="请继续举一个直观例子，并说明你的观察。",
+            matched_concepts=["第二种方法"],
+            question_contract={
+                "answer_type": "example",
+                "target_concepts": ["例子中的关键部分"],
+                "accepted_aliases": [],
+                "success_criteria": ["指出例子中的关键部分并说明联系"],
+            },
+        )
+        next_plan["diagnosis"]["evidence_excerpt"] = "第二种呢"
+        client = _client([initial, next_plan])
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], self.demo["student_profile"], self.library, client
+        )
+
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="第二种呢？",
+            client=client,
+        )
+        action = updated["current_action"]
+        self.assertIn("第二种", action["teacher_action"]["message"])
+        self.assertNotEqual(
+            action["action_provenance"]["executor_origin"],
+            "deepseek_safe_generative",
+        )
+        self.assertTrue(
+            action["model_trace"]["continuity_enforcement"][
+                "deterministic_guard_applied"
+            ]
+        )
+
+    def test_failed_action_repair_cannot_drop_ordinal_continuity(self) -> None:
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+            message=(
+                "开始学习动态规划前，请先说出一个前置概念。"
+                "第一种方法用递归树，第二种方法用状态表；你想先比较哪一种？"
+            ),
+            question_contract={
+                "answer_type": "comparison",
+                "target_concepts": ["前置概念", "第一种方法", "第二种方法"],
+                "accepted_aliases": [],
+                "success_criteria": ["说出前置概念并选择一种方法比较"],
+            },
+        )
+        initial["decision"]["next_focus"] = "prerequisite"
+        next_plan = _plan(
+            signal="partial",
+            confidence=0.7,
+            skill_id="skill_concrete_example_bridge",
+            message="请继续举一个直观例子，并说明你的观察。",
+            matched_concepts=["第二种方法"],
+            question_contract={
+                "answer_type": "example",
+                "target_concepts": ["例子中的关键部分"],
+                "accepted_aliases": [],
+                "success_criteria": ["指出例子中的关键部分并说明联系"],
+            },
+        )
+        next_plan["diagnosis"]["evidence_excerpt"] = "第二种呢"
+        invalid_repair = {
+            "schema": ACTION_REPAIR_SCHEMA,
+            "teacher_action": {
+                "type": "present_minimal_example",
+                "message": "请继续举一个直观例子，并说明你的观察。",
+                "expected_signal": "学生指出例子中的关键部分并说明联系。",
+                "question_contract": {
+                    "answer_type": "example",
+                    "target_concepts": ["例子中的关键部分"],
+                    "accepted_aliases": [],
+                    "success_criteria": ["指出例子中的关键部分并说明联系"],
+                },
+            },
+        }
+        client = _client([initial, next_plan, invalid_repair])
+        options = LiveAgentOptions(action_only_repair_enabled=True)
+        session = start_live_teacher_agent_session(
+            self.demo["goal"],
+            self.demo["student_profile"],
+            self.library,
+            client,
+            options=options,
+        )
+
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="第二种呢？",
+            client=client,
+            options=options,
+        )
+        action = updated["current_action"]
+        repair = action["model_trace"]["action_repair"]
+        self.assertTrue(repair["attempted"])
+        self.assertFalse(repair["succeeded"])
+        self.assertIn("continuity_ignored_ordinal_reference", repair["failure_reasons"])
+        self.assertIn("第二种", action["teacher_action"]["message"])
+        self.assertTrue(
+            action["model_trace"]["continuity_enforcement"][
+                "deterministic_guard_applied"
+            ]
+        )
 
     def test_action_only_repair_cannot_mutate_fixed_route(self) -> None:
         mismatch = _plan(

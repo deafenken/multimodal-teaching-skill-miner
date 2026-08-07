@@ -160,6 +160,10 @@ def _canonical_transcription(value: str) -> str:
                 "﹣": "-",
                 "×": "*",
                 "÷": "/",
+                "·": "*",
+                "⋅": "*",
+                "∙": "*",
+                "⁄": "/",
             }
         )
     )
@@ -195,6 +199,40 @@ def _answer_variants(value: str) -> set[str]:
             values.add(_canonical_transcription(answer))
     values.discard("")
     return values
+
+
+def transcriptions_format_equivalent(left: str, right: str) -> bool:
+    """Compare complete transcriptions after harmless OCR formatting cleanup.
+
+    This deliberately does not perform algebra or fuzzy spelling repair.  It
+    only ignores Unicode presentation differences, whitespace, common answer
+    prefixes, terminal punctuation, and visually interchangeable
+    multiplication/division glyphs.  For a single equality it also permits a
+    strict swap of the two sides, which changes presentation but not the
+    equality itself.  The function is safe for binding a model quote back to
+    the exact local OCR source without claiming that the quoted answer is
+    correct.
+    """
+
+    return bool(
+        _symmetric_equation_variants(left)
+        & _symmetric_equation_variants(right)
+    )
+
+
+def _symmetric_equation_variants(value: str) -> set[str]:
+    """Return equality-side variants without attempting algebraic rewriting."""
+
+    result = set(_answer_variants(value))
+    for candidate in tuple(result):
+        if (
+            candidate.count("=") == 1
+            and not any(operator in candidate for operator in ("!=", "<=", ">=", "=="))
+        ):
+            left, right = candidate.split("=", 1)
+            if left and right:
+                result.add(f"{right}={left}")
+    return result
 
 
 def assess_typed_visual_consistency(
@@ -268,7 +306,7 @@ def align_ocr_text_to_answer_references(
     a merely related phrase to a correct answer.
     """
 
-    text_variants = _answer_variants(recognized_text)
+    text_variants = _symmetric_equation_variants(recognized_text)
     contract = question_contract if isinstance(question_contract, Mapping) else {}
     answer_type = str(contract.get("answer_type", "open"))
     raw_contract_references: list[tuple[str, str]] = []
@@ -283,7 +321,7 @@ def align_ocr_text_to_answer_references(
         references: Iterable[tuple[str, str]],
     ) -> tuple[str, str] | None:
         for source, reference in references:
-            if _canonical_transcription(reference) in text_variants:
+            if _symmetric_equation_variants(reference) & text_variants:
                 return source, reference
         return None
 
@@ -359,7 +397,7 @@ def align_ocr_text_to_answer_references(
                 )
     teacher_match: tuple[str, str, bool] | None = None
     for source, reference, establishes_correctness in teacher_references:
-        if _canonical_transcription(reference) in text_variants:
+        if _symmetric_equation_variants(reference) & text_variants:
             teacher_match = (source, reference, establishes_correctness)
             break
     if teacher_match is not None:

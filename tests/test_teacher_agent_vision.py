@@ -17,6 +17,7 @@ from teaching_skill_miner.teacher_agent_vision import (
     assess_typed_visual_consistency,
     compose_visual_evidence_text,
     extract_local_visual_evidence,
+    transcriptions_format_equivalent,
 )
 
 
@@ -105,6 +106,26 @@ class TeacherAgentVisionTests(unittest.TestCase):
 
         self.assertEqual(consistency["relation"], "exact_agreement")
         self.assertFalse(consistency["possible_conflict"])
+
+    def test_complete_ocr_quote_allows_harmless_formula_glyph_differences(self) -> None:
+        self.assertTrue(
+            transcriptions_format_equivalent(
+                "答案是 dp[i] = 2 · dp[i-1]。",
+                "dp[i]=2*dp[i-1]",
+            )
+        )
+        self.assertFalse(
+            transcriptions_format_equivalent(
+                "dp[i]=dp[i-1]+dp[i-2]",
+                "dp[i]=dp[i-1]-dp[i-2]",
+            )
+        )
+        self.assertTrue(
+            transcriptions_format_equivalent(
+                "dp[i] = dp[i-1] + dp[i-2]",
+                "dp[i-1]+dp[i-2]=dp[i]",
+            )
+        )
 
     def test_one_conflicting_attachment_cannot_be_hidden_by_one_matching_image(
         self,
@@ -386,6 +407,34 @@ class TeacherAgentVisionTests(unittest.TestCase):
         )
         self.assertTrue(alignment["deterministic_correctness_established"])
         self.assertTrue(alignment["requires_reliable_transcription"])
+
+    def test_symmetric_equation_matches_worked_step_contract(self) -> None:
+        alignment = align_ocr_text_to_answer_references(
+            "dp[i-1] + dp[i-2] = dp[i]",
+            {
+                "answer_type": "worked_step",
+                "target_concepts": ["dp[i]=dp[i-1]+dp[i-2]"],
+                "accepted_aliases": [],
+                "success_criteria": ["写出状态转移式"],
+            },
+        )
+
+        self.assertEqual(alignment["alignment"], "exact_contract_match")
+        self.assertTrue(alignment["deterministic_correctness_established"])
+
+    def test_wrong_operator_does_not_match_worked_step_contract(self) -> None:
+        alignment = align_ocr_text_to_answer_references(
+            "dp[i]=dp[i-1]-dp[i-2]",
+            {
+                "answer_type": "worked_step",
+                "target_concepts": ["dp[i]=dp[i-1]+dp[i-2]"],
+                "accepted_aliases": [],
+                "success_criteria": ["写出状态转移式"],
+            },
+        )
+
+        self.assertEqual(alignment["alignment"], "not_established")
+        self.assertFalse(alignment["deterministic_correctness_established"])
 
     def test_related_open_target_is_not_promoted_to_deterministically_correct(
         self,

@@ -188,6 +188,13 @@
           <div class="session-state"><i></i><span id="sessionStatus">等待开始</span></div>
         </header>
 
+        <section id="liveDecisionStrip" class="live-decision-strip" aria-label="当前教学决策" aria-live="polite" hidden>
+          <div><span>本轮方法</span><strong id="liveSkillName">等待开始</strong></div>
+          <div><span>策略变化</span><strong id="liveSwitchLabel">—</strong></div>
+          <div><span>下一关注</span><strong id="liveNextFocus">—</strong></div>
+          <button id="openMethodInspectorButton" type="button"><span>查看选择依据</span><b aria-hidden="true">→</b></button>
+        </section>
+
         <div id="emptySession" class="empty-session">
           <div class="empty-mark" aria-hidden="true">T</div>
           <h2>今天想学会什么？</h2>
