@@ -474,6 +474,7 @@ class TeacherAgentLoopIntegrationTests(unittest.TestCase):
         )
         options = LiveAgentOptions(
             agent_loop_enabled=True,
+            state_first_route_adjudication_enabled=True,
             maximum_agent_steps=4,
             agent_loop_model_retries=0,
         )
@@ -519,6 +520,65 @@ class TeacherAgentLoopIntegrationTests(unittest.TestCase):
         # The learner response remains in the normal teaching history, but is
         # not duplicated into the loop's durable public receipt.
         self.assertEqual(updated["history"][-1]["learner_text"], learner_text)
+
+    def test_inapplicable_loop_route_is_repaired_by_state_first_stage(self) -> None:
+        """A loop route for an initial-only Skill must not become the final action."""
+
+        options = LiveAgentOptions(
+            agent_loop_enabled=True,
+            state_first_route_adjudication_enabled=True,
+            maximum_agent_steps=4,
+            agent_loop_model_retries=0,
+        )
+        initial_client = _deepseek_script_client(
+            [
+                _selection_plan(),
+                _route_ready(),
+                _live_plan(
+                    signal="not_observed",
+                    skill_id="skill_diagnostic_questioning",
+                    action_type="probe_prior_knowledge",
+                    message="请先说出一个前置概念。",
+                ),
+            ]
+        )
+        session = start_live_teacher_agent_session(
+            deepcopy(self.demo["goal"]),
+            deepcopy(self.demo["student_profile"]),
+            deepcopy(self.library),
+            initial_client,
+            options=options,
+        )
+        followup_client = _deepseek_script_client(
+            [
+                _selection_plan(primary_skill_id="skill_diagnostic_questioning"),
+                _route_ready("已读取状态；当前回答已进入部分理解阶段。"),
+                _live_plan(
+                    signal="partial",
+                    skill_id="skill_diagnostic_questioning",
+                    action_type="probe_prior_knowledge",
+                    message="请再说一个前置概念。",
+                ),
+            ]
+        )
+
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="我知道状态会保存结果，但还说不清转移怎么来。",
+            client=followup_client,
+            options=options,
+        )
+        action = updated["current_action"]
+        audit = action["action_provenance"]["route_adjudication"]
+        self.assertTrue(audit["enabled"])
+        self.assertNotEqual(
+            action["primary_skill"]["skill_id"], "skill_diagnostic_questioning"
+        )
+        self.assertIn(
+            "agent_loop_route_repaired_by_state_first",
+            updated["history"][-1]["deepseek_assessment"]["normalization_reasons"],
+        )
+        self.assertFalse(action["agent_loop_route_applied"])
 
     def test_live_final_planner_failure_keeps_loop_receipt_on_rule_fallback(self) -> None:
         client = _deepseek_script_client(

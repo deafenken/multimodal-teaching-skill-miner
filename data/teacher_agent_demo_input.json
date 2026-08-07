@@ -103,9 +103,13 @@
         }
       ],
       "misconception_catalog": [
-        {
-          "tag": "missing_second_transition",
-          "description": "只考虑最后走 1 级，遗漏最后走 2 级的合法路径。",
+    {
+      "tag": "missing_second_transition",
+      "aliases": [
+        "dp_transition_only_one_step",
+        "dp_transition_ignores_two_steps"
+      ],
+      "description": "只考虑最后走 1 级，遗漏最后走 2 级的合法路径。",
           "contradicts_claim_ids": ["claim_stair_transition"],
           "corrective_principle": "按最后一步的所有互斥可能分类，逐项检查是否遗漏。"
         },

@@ -34,6 +34,7 @@ from teaching_skill_miner.teacher_agent_live import (
     _skill_prompt_view,
     _system_prompt,
     _update_adaptive_student_profile_candidates,
+    _validated_action_only_repair,
     _validated_learner_evidence,
     advance_live_teacher_agent_session,
     live_runtime_policy_contract,
@@ -1209,6 +1210,60 @@ class LiveTeacherAgentTests(unittest.TestCase):
         self.assertTrue(repair_trace["succeeded"])
         self.assertFalse(repair_trace["provider_response_body_persisted"])
 
+    def test_action_only_repair_preserves_fixed_route_audit_fields(self) -> None:
+        plan = _plan(
+            signal="partial",
+            confidence=0.8,
+            skill_id="skill_concrete_example_bridge",
+            action_type="present_minimal_example",
+            message="请看这个例子。",
+        )
+        plan["decision"]["action_provenance"] = {
+            "executor_origin": "deterministic_materializer",
+            "route_adjudication": {
+                "schema": "teaching_skill_miner.state_first_route_adjudication.v1",
+                "enabled": True,
+                "selected_skill_id": "skill_concrete_example_bridge",
+                "changed": True,
+            },
+            "agent_loop_route": {
+                "requested_skill_id": "skill_diagnostic_questioning",
+                "applied": False,
+                "final_skill_id": "skill_concrete_example_bridge",
+                "server_contract_validated": True,
+            },
+        }
+        repaired = {
+            "schema": ACTION_REPAIR_SCHEMA,
+            "teacher_action": {
+                "type": "present_minimal_example",
+                "message": "请用一个两步小例子说明状态如何变化。",
+                "expected_signal": "学生说明状态变化的依据。",
+                "question_contract": {
+                    "answer_type": "open",
+                    "target_concepts": ["状态转移"],
+                    "accepted_aliases": [],
+                    "success_criteria": ["说明状态变化的依据"],
+                },
+            },
+        }
+        updated, reasons = _validated_action_only_repair(
+            repaired,
+            session={
+                "goal": self.demo["goal"],
+                "skill_library": self.library,
+            },
+            plan=plan,
+        )
+        self.assertEqual(reasons, [])
+        self.assertIsNotNone(updated)
+        provenance = updated["decision"]["action_provenance"]
+        self.assertEqual(
+            provenance["route_adjudication"]["selected_skill_id"],
+            "skill_concrete_example_bridge",
+        )
+        self.assertFalse(provenance["agent_loop_route"]["applied"])
+
     def test_action_only_repair_receives_bounded_continuity_constraints(self) -> None:
         initial = _plan(
             signal="not_observed",
@@ -1310,6 +1365,109 @@ class LiveTeacherAgentTests(unittest.TestCase):
                 constraints,
             ),
             [],
+        )
+
+    def test_completion_status_continuity_requires_open_work_marker(self) -> None:
+        constraints = {
+            "continuity_recall": {
+                "status": "resolved_evidence_linked",
+                "cue_kind": "prior_agreement_or_agenda",
+                "cue_excerpt": "按我们之前约定的方式继续，并提醒我哪里还没完成。",
+                "cue_evidence_refs": ["response:r4"],
+                "target": {
+                    "source_round": 3,
+                    "excerpt": "我还不确定边界应该怎么定。",
+                    "evidence_refs": ["session_history:r3:learner_response"],
+                },
+            }
+        }
+        self.assertEqual(
+            _action_continuity_validation_reasons("请继续用一个小例子。", constraints),
+            ["continuity_completion_status_missing"],
+        )
+        self.assertEqual(
+            _action_continuity_validation_reasons(
+                "按之前约定的小例子继续；当前还未完成的是边界确认，下一步先检查它。",
+                constraints,
+            ),
+            [],
+        )
+
+    def test_completion_status_continuity_guard_adds_bounded_next_step(self) -> None:
+        plan = _plan(
+            signal="partial",
+            confidence=0.7,
+            skill_id="skill_concrete_example_bridge",
+            message="请继续用一个小例子，并说明你的观察。",
+        )
+        constraints = {
+            "continuity_recall": {
+                "status": "resolved_evidence_linked",
+                "cue_kind": "prior_agreement_or_agenda",
+                "cue_excerpt": "按我们之前约定的方式继续，并提醒我哪里还没完成。",
+                "cue_evidence_refs": ["response:r4"],
+                "target": {
+                    "source_round": 3,
+                    "excerpt": "我还不确定边界应该怎么定。",
+                    "evidence_refs": ["session_history:r3:learner_response"],
+                },
+            }
+        }
+
+        guarded, trace = _deterministically_enforce_action_continuity(
+            plan, constraints
+        )
+        message = guarded["teacher_action"]["message"]
+        self.assertTrue(trace["deterministic_guard_applied"])
+        self.assertEqual(trace["guard_kind"], "completion_status_prefix")
+        self.assertIn("约定", message)
+        self.assertIn("未完成", message)
+        self.assertIn("下一步", message)
+        self.assertEqual(
+            _action_continuity_validation_reasons(message, constraints), []
+        )
+        self.assertNotIn("边界应该怎么定", message)
+
+    def test_completion_status_guard_preserves_evidence_linked_preference_category(
+        self,
+    ) -> None:
+        plan = _plan(
+            signal="partial",
+            confidence=0.7,
+            skill_id="skill_retrieval_review",
+            message="请先说明你判断的依据，再给出一个边界。",
+        )
+        constraints = {
+            "continuity_recall": {
+                "status": "resolved_evidence_linked",
+                "cue_kind": "prior_agreement_or_agenda",
+                "cue_excerpt": "按我们之前约定的方式继续，并提醒我哪里还没完成。",
+                "cue_evidence_refs": ["response:r4"],
+                "target": {
+                    "source_round": 3,
+                    "evidence_refs": ["session_history:r3:learner_response"],
+                },
+            },
+            "teaching_memory": {
+                "active_preferences": [
+                    {
+                        "kind": "prefer_examples",
+                        "status": "explicit_learner_instruction",
+                        "evidence_refs": ["session_history:r1:learner_response"],
+                    }
+                ]
+            },
+        }
+        guarded, trace = _deterministically_enforce_action_continuity(
+            plan, constraints
+        )
+        message = guarded["teacher_action"]["message"]
+        self.assertTrue(trace["continuity_preference_marker_used"])
+        self.assertIn("小例子", message)
+        self.assertIn("未完成", message)
+        self.assertIn("下一步", message)
+        self.assertEqual(
+            _action_continuity_validation_reasons(message, constraints), []
         )
 
     def test_continuity_guard_covers_repair_disabled_materialization(self) -> None:
@@ -2555,6 +2713,7 @@ class LiveTeacherAgentTests(unittest.TestCase):
             client=client,
         )
 
+        validate_session(updated)
         assessment = updated["history"][-1]["deepseek_assessment"]
         self.assertEqual(assessment["model_raw_signal"], "partial")
         self.assertEqual(assessment["signal"], "correct")
@@ -3191,6 +3350,144 @@ class LiveTeacherAgentTests(unittest.TestCase):
             "visual_evidence_requires_student_confirmation",
             assessment["normalization_reasons"],
         )
+
+    def test_exact_image_claim_repairs_provider_not_observed_signal(self) -> None:
+        canonical_claim = self.demo["goal"]["knowledge_spec"]["canonical_claims"][
+            1
+        ]["statement"]
+        contract = {
+            "answer_type": "open",
+            "target_concepts": ["状态转移"],
+            "accepted_aliases": [],
+            "success_criteria": ["说明两个前驱状态为何相加"],
+        }
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+            message="请说明这个状态转移为什么成立。",
+            question_contract=contract,
+        )
+        provider_plan = _plan(
+            signal="partial",
+            confidence=0.45,
+            skill_id="skill_socratic_understanding_check",
+            answer_alignment="partially_aligned",
+        )
+        provider_plan["diagnosis"]["signal"] = "not_observed"
+        provider_plan["diagnosis"]["evidence_excerpt"] = canonical_claim
+        client = _client([initial, provider_plan])
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], self.demo["student_profile"], self.library, client
+        )
+        _install_server_question_contract(
+            session,
+            contract,
+            message="请说明这个状态转移为什么成立。",
+            expected_signal="学生说明两个前驱状态与相加理由。",
+        )
+
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="",
+            learner_evidence=[
+                _visual_evidence(
+                    canonical_claim,
+                    confidence=0.96,
+                    transcription_confidence=0.97,
+                    formula_like_text_detected=True,
+                    formula_transcription_established=True,
+                    ocr_transcription_corroborated=True,
+                    ocr_candidate_count=5,
+                    ocr_agreement_count=4,
+                    ocr_independent_engine_count=2,
+                    ocr_preprocessing_count=3,
+                )
+            ],
+            client=client,
+        )
+
+        assessment = updated["history"][-1]["deepseek_assessment"]
+        self.assertEqual(assessment["model_raw_signal"], "not_observed")
+        self.assertEqual(assessment["signal"], "correct")
+        self.assertEqual(assessment["answer_alignment"], "aligned")
+        self.assertEqual(
+            assessment["assessment_source"],
+            "teacher_knowledge_spec_exact_match",
+        )
+        self.assertIn(
+            "unsupported_model_signal_repaired_by_server_evidence",
+            assessment["normalization_reasons"],
+        )
+        self.assertEqual(updated["agent_runtime"]["fallback_count"], 0)
+
+    def test_trusted_image_not_observed_without_contract_match_is_conservative(
+        self,
+    ) -> None:
+        """A non-initial OCR turn must not fail the whole session on ``not_observed``.
+
+        DeepSeek occasionally emits the initial-only ``not_observed`` label for
+        an image-only answer.  Once the local OCR evidence has passed its trust
+        gate, the server may continue to deterministic adjudication; when no
+        teacher contract matches, it must remain a reviewable partial signal
+        rather than claiming correctness or dropping to a transport fallback.
+        """
+
+        contract = {
+            "answer_type": "open",
+            "target_concepts": ["边界与计算顺序"],
+            "accepted_aliases": [],
+            "success_criteria": ["给出边界并说明计算顺序"],
+        }
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+            message="请给出边界并说明计算顺序。",
+            question_contract=contract,
+        )
+        provider_plan = _plan(
+            signal="partial",
+            confidence=0.0,
+            skill_id="skill_socratic_understanding_check",
+            answer_alignment="not_applicable",
+        )
+        provider_plan["diagnosis"]["signal"] = "not_observed"
+        provider_plan["diagnosis"]["answer_alignment"] = "not_applicable"
+        provider_plan["diagnosis"]["evidence_excerpt"] = ""
+        client = _client([initial, provider_plan])
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], self.demo["student_profile"], self.library, client
+        )
+        _install_server_question_contract(
+            session,
+            contract,
+            message="请给出边界并说明计算顺序。",
+            expected_signal="学生给出与状态定义一致的边界并说明依赖顺序。",
+        )
+
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="",
+            learner_evidence=[
+                _visual_evidence(
+                    "完全无关的图片文字",
+                    confidence=0.98,
+                    transcription_confidence=0.98,
+                )
+            ],
+            client=client,
+        )
+
+        assessment = updated["history"][-1]["deepseek_assessment"]
+        self.assertEqual(assessment["model_raw_signal"], "not_observed")
+        self.assertEqual(assessment["signal"], "partial")
+        self.assertIn(
+            "unsupported_model_signal_repaired_by_server_evidence",
+            assessment["normalization_reasons"],
+        )
+        self.assertTrue(assessment["needs_human_review"])
+        self.assertEqual(updated["agent_runtime"]["fallback_count"], 0)
 
     def test_image_only_answer_about_other_component_cannot_receive_credit(
         self,
@@ -4407,6 +4704,254 @@ class LiveTeacherAgentTests(unittest.TestCase):
         self.assertEqual(statuses, {"m1": "resolved", "m2": "active"})
         self.assertEqual(assessment["resolved_misconception_tags"], ["m1"])
         self.assertEqual(assessment["rejected_resolved_misconception_tags"], ["m2"])
+
+    def test_exact_correction_target_is_resolved_when_model_omits_tag(self) -> None:
+        profile = deepcopy(self.demo["student_profile"])
+        profile["known_misconceptions"] = [
+            {"tag": "m1", "description": "误解一", "confidence": 0.8}
+        ]
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+        )
+        correction = _plan(
+            signal="misconception",
+            confidence=0.9,
+            skill_id="skill_misconception_contrast",
+            misconception_tag="m1",
+        )
+        correction["diagnosis"]["evidence_excerpt"] = "状态一定只看前一步"
+        verified = _plan(
+            signal="correct",
+            confidence=0.95,
+            skill_id="skill_concept_mapping",
+            answer_alignment="aligned",
+        )
+        verified["diagnosis"]["evidence_excerpt"] = "需要比较全部合法前驱"
+        # The model omits the exact tag; the server can still bind the answer
+        # to the sole active correction target and resolve it safely.
+        client = _client([initial, correction, verified])
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], profile, self.library, client
+        )
+        session = advance_live_teacher_agent_session(
+            session,
+            learner_response="状态一定只看前一步。",
+            client=client,
+        )
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="需要比较全部合法前驱。",
+            client=client,
+        )
+
+        status = next(
+            item["status"]
+            for item in updated["student_state"]["misconceptions"]
+            if item["tag"] == "m1"
+        )
+        assessment = updated["history"][-1]["deepseek_assessment"]
+        assert status == "resolved"
+        assert assessment["resolved_misconception_tags"] == ["m1"]
+        assert (
+            "active_correction_target_resolved_from_contract"
+            in assessment["normalization_reasons"]
+        )
+
+    def test_teacher_misconception_alias_is_canonicalized_before_state_update(self) -> None:
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+        )
+        correction = _plan(
+            signal="misconception",
+            confidence=0.9,
+            skill_id="skill_misconception_contrast",
+            misconception_tag="dp_transition_only_one_step",
+        )
+        correction["diagnosis"]["evidence_excerpt"] = (
+            "dp[i] 只需要等于 dp[i-1]，因为最后只走一步"
+        )
+        client = _client([initial, correction])
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], self.demo["student_profile"], self.library, client
+        )
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="我认为 dp[i] 只需要等于 dp[i-1]，因为最后只走一步。",
+            client=client,
+        )
+        active_tags = [
+            str(item["tag"])
+            for item in updated["student_state"]["misconceptions"]
+            if item["status"] == "active"
+        ]
+        assert active_tags == ["missing_second_transition"]
+        assert (
+            "misconception_tag_canonicalized_from_teacher_taxonomy"
+            in updated["history"][-1]["deepseek_assessment"]["normalization_reasons"]
+        )
+
+    def test_teacher_contract_can_verify_a_bound_correction_when_model_is_conservative(
+        self,
+    ) -> None:
+        profile = deepcopy(self.demo["student_profile"])
+        plans = [
+            _plan(
+                signal="not_observed",
+                confidence=0.0,
+                skill_id="skill_diagnostic_questioning",
+            ),
+            _plan(
+                signal="misconception",
+                confidence=0.9,
+                skill_id="skill_misconception_contrast",
+                misconception_tag="dp_transition_only_one_step",
+            ),
+            _plan(
+                signal="partial",
+                confidence=0.6,
+                skill_id="skill_socratic_understanding_check",
+                answer_alignment="partially_aligned",
+                question_contract={
+                    "answer_type": "explanation",
+                    "target_concepts": ["状态转移"],
+                    "accepted_aliases": ["dp[i-1] 和 dp[i-2]", "走两级"],
+                    "success_criteria": ["说明两类最后一步来源"],
+                },
+            ),
+            _plan(
+                signal="partial",
+                confidence=0.4,
+                skill_id="skill_self_explanation",
+                answer_alignment="partially_aligned",
+                question_contract={
+                    "answer_type": "explanation",
+                    "target_concepts": ["状态转移"],
+                    "accepted_aliases": ["dp[i-1] 和 dp[i-2]", "走两级"],
+                    "success_criteria": ["说明两类最后一步来源"],
+                },
+            ),
+        ]
+        plans[1]["diagnosis"]["evidence_excerpt"] = (
+            "我认为 dp[i] 只需要等于 dp[i-1]，因为最后只走一步。"
+        )
+        plans[2]["diagnosis"]["evidence_excerpt"] = (
+            "先让我检查遗漏的最后一步。"
+        )
+        plans[3]["diagnosis"]["evidence_excerpt"] = (
+            "还要考虑最后走两级，所以是 dp[i-1] 和 dp[i-2] 两类相加。"
+        )
+        client = _client(plans)
+        options = LiveAgentOptions(
+            state_first_route_adjudication_enabled=True,
+            agent_loop_enabled=False,
+        )
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], profile, self.library, client, options=options
+        )
+        for response in (
+            "我认为 dp[i] 只需要等于 dp[i-1]，因为最后只走一步。",
+            "先让我检查遗漏的最后一步。",
+            "还要考虑最后走两级，所以是 dp[i-1] 和 dp[i-2] 两类相加。",
+        ):
+            session = advance_live_teacher_agent_session(
+                session, learner_response=response, client=client, options=options
+            )
+        m1 = next(
+            item
+            for item in session["student_state"]["misconceptions"]
+            if item["tag"] == "missing_second_transition"
+        )
+        assert m1["status"] == "resolved"
+        assessment = session["history"][-1]["deepseek_assessment"]
+        assert assessment["signal"] == "correct"
+        assert "correction_target_contract_exact_match" in assessment[
+            "normalization_reasons"
+        ]
+
+    def test_correction_target_survives_intermediate_skill_switch(self) -> None:
+        profile = deepcopy(self.demo["student_profile"])
+        profile["known_misconceptions"] = [
+            {"tag": "m1", "description": "误解一", "confidence": 0.8}
+        ]
+        plans = [
+            _plan(
+                signal="not_observed",
+                confidence=0.0,
+                skill_id="skill_diagnostic_questioning",
+            ),
+            _plan(
+                signal="misconception",
+                confidence=0.9,
+                skill_id="skill_misconception_contrast",
+                misconception_tag="m1",
+            ),
+            _plan(
+                signal="partial",
+                confidence=0.7,
+                skill_id="skill_socratic_understanding_check",
+                answer_alignment="partially_aligned",
+            ),
+            _plan(
+                signal="correct",
+                confidence=0.9,
+                skill_id="skill_self_explanation",
+                answer_alignment="aligned",
+            ),
+        ]
+        plans[1]["diagnosis"]["evidence_excerpt"] = "状态一定只看前一步"
+        plans[2]["diagnosis"]["evidence_excerpt"] = "忽略第二步"
+        plans[3]["diagnosis"]["evidence_excerpt"] = "dp[i-1]和dp[i-2]"
+        client = _client(plans)
+        options = LiveAgentOptions(state_first_route_adjudication_enabled=True)
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], profile, self.library, client, options=options
+        )
+        session = advance_live_teacher_agent_session(
+            session,
+            learner_response="状态一定只看前一步。",
+            client=client,
+            options=options,
+        )
+        session = advance_live_teacher_agent_session(
+            session,
+            learner_response="忽略第二步。",
+            client=client,
+            options=options,
+        )
+        # The active correction target must survive the state-first route
+        # adjudicator and move into a verification Skill, rather than being
+        # silently replaced by an unrelated retrieval/example action.  The
+        # bounded materializer also must not echo a canonical answer formula.
+        assert session["current_action"]["primary_skill"]["skill_id"] in {
+            "skill_socratic_understanding_check",
+            "skill_self_explanation",
+        }
+        # For a teacher taxonomy tag, all contradicted claim components are
+        # retained; an unknown synthetic tag falls back to the previous bound
+        # component rather than inventing a neighbouring one.
+        assert "递归分解" in session["current_action"]["knowledge_components"]
+        assert "dp[i]=dp[i-1]+dp[i-2]" not in session["current_action"][
+            "teacher_action"
+        ]["message"].replace(" ", "")
+        assert session["current_action"]["target_misconception_binding"] == (
+            "prior_correction_chain"
+        )
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="dp[i-1]和dp[i-2]",
+            client=client,
+            options=options,
+        )
+
+        assert next(
+            item["status"]
+            for item in updated["student_state"]["misconceptions"]
+            if item["tag"] == "m1"
+        ) == "resolved"
 
     def test_response_presence_and_alignment_are_normalized_consistently(self) -> None:
         cases = (
@@ -6061,6 +6606,39 @@ class LiveTeacherAgentTests(unittest.TestCase):
             "guarded_model_escalation",
         )
         self.assertTrue(session["history"][-1]["model_stop_recommendation"]["honored"])
+
+    def test_live_session_schema_accepts_evidence_linked_continuity_recall(self) -> None:
+        """A generated continuity layer must remain valid at the session boundary."""
+
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+        )
+        session = start_live_teacher_agent_session(
+            self.demo["goal"], self.demo["student_profile"], self.library, _client([initial])
+        )
+        session["teaching_memory"] = commit_teaching_memory_turn(
+            session["teaching_memory"],
+            round_number=1,
+            learner_text="我希望先用小例子，再写公式。",
+            teacher_action={
+                "action_id": "action_001",
+                "message": "接下来我会先确认边界。",
+            },
+        )
+        _refresh_integrity(session)
+        context = build_layered_context(
+            session,
+            "按我们之前约定的方式继续，并提醒我哪里还没完成。",
+        )
+        recall = context["semantic_summary"]["continuity_recall"]
+        self.assertEqual(recall["status"], "resolved_evidence_linked")
+        self.assertEqual(recall["target"]["kind"], "teacher_commitment")
+        session["context_memory"] = context
+        _refresh_integrity(session)
+        schema = read_json(ROOT / "schema/teacher_agent_live_session.schema.json")
+        jsonschema.Draft202012Validator(schema).validate(session)
 
 
 if __name__ == "__main__":

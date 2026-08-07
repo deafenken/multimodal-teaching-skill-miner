@@ -16,6 +16,7 @@ from copy import deepcopy
 from hashlib import sha256
 import json
 import math
+import re
 from typing import Any, Mapping
 
 
@@ -69,6 +70,12 @@ def canonical_sha256(value: Any) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return sha256(payload).hexdigest()
+
+
+def _canonical_short_identifier(value: Any) -> str:
+    """Normalize a bounded taxonomy identifier for collision checks."""
+
+    return re.sub(r"[\s\W_]+", "", str(value)).casefold()
 
 
 def _finite_probability(value: Any, *, field: str) -> float:
@@ -376,6 +383,14 @@ def _normalize_knowledge_spec(
                     ),
                     maximum_items=12,
                 ),
+                "aliases": _optional_string_list(
+                    item.get("aliases", []),
+                    field=(
+                        "goal.knowledge_spec.misconception_catalog"
+                        f"[{index}].aliases"
+                    ),
+                    maximum_items=8,
+                ),
                 "corrective_principle": str(
                     item.get("corrective_principle", "")
                 ).strip()[:800],
@@ -435,6 +450,16 @@ def _normalize_knowledge_spec(
             raise TeacherAgentError(
                 f"misconception {row['tag']} references unknown claims: {sorted(unknown)}"
             )
+    misconception_aliases: dict[str, str] = {}
+    for row in misconception_catalog:
+        for alias in [row["tag"], *row.get("aliases", [])]:
+            key = _canonical_short_identifier(alias)
+            owner = misconception_aliases.get(key)
+            if owner is not None and owner != row["tag"]:
+                raise TeacherAgentError(
+                    "misconception catalog tags/aliases must be unambiguous"
+                )
+            misconception_aliases[key] = row["tag"]
     for row in reference_steps:
         unknown = set(row["depends_on"]) - step_ids
         if unknown:
@@ -1165,7 +1190,11 @@ def _validate_adaptive_student_profile(
         normalization_reasons = evidence["normalization_reasons"]
         if (
             evidence["assessment_source"] not in allowed_assessment_sources
-            or evidence["model_raw_signal"] not in SIGNALS
+            # The provider may emit ``not_observed`` on a non-initial OCR-only
+            # turn.  The live controller records that raw label for audit but
+            # deterministically normalizes the final signal to a permitted
+            # outcome before updating student state.
+            or evidence["model_raw_signal"] not in SIGNALS | {"not_observed"}
             or evidence["final_signal"] not in SIGNALS
             or not isinstance(normalization_reasons, list)
             or len(normalization_reasons) > 12
@@ -1625,10 +1654,21 @@ def advance_teacher_agent_session(
             for item in current["student_state"]["misconceptions"]
             if isinstance(item, Mapping) and item.get("status") == "active"
         }
+        target_binding = str(
+            action_before.get("target_misconception_binding", "none")
+        )
+        correction_chain = (
+            isinstance(primary, Mapping)
+            and primary.get("role") in {"assessment", "metacognition", "review"}
+            and target_binding == "prior_correction_chain"
+        )
         if (
             signal != "correct"
             or not isinstance(primary, Mapping)
-            or primary.get("role") != "correction"
+            or (
+                primary.get("role") != "correction"
+                and not correction_chain
+            )
             or not isinstance(targets, list)
             or not resolved_tag_set <= set(str(item) for item in targets)
             or not resolved_tag_set <= active_tags

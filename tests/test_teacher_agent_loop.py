@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 from teaching_skill_miner.teacher_agent import start_teacher_agent_session
 from teaching_skill_miner.teacher_agent_loop import (
@@ -175,6 +176,29 @@ class TeachingAgentLoopTests(unittest.TestCase):
             any(
                 item["type"] == "guard"
                 and item["reason"] == "action_without_runtime_skill_selection"
+                for item in result["events"]
+            )
+        )
+
+    def test_malformed_validated_action_fails_closed_without_key_error(self) -> None:
+        model = _ScriptedModel([{"kind": "teaching_action"}])
+        malformed = {
+            "schema": PLAN_SCHEMA,
+            "kind": "teaching_action",
+            "message": "不完整动作",
+        }
+        with patch(
+            "teaching_skill_miner.teacher_agent_loop._validate_plan",
+            return_value=malformed,
+        ):
+            result = run_teaching_agent_loop(self._session(), model)
+
+        self.assertEqual(result["status"], "action_ready")
+        self.assertTrue(result["deterministic_fallback"])
+        self.assertTrue(
+            any(
+                item["type"] == "fallback"
+                and "action emitted before select_skills" in item["reason"]
                 for item in result["events"]
             )
         )

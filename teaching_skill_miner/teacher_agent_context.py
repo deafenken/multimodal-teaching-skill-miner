@@ -19,6 +19,7 @@ from .teacher_agent_memory import (
     project_teaching_memory,
     validate_teaching_memory,
 )
+from .student_model import project_student_model
 
 
 CONTEXT_SCHEMA = "teaching_skill_miner.teacher_agent_context.v1"
@@ -136,6 +137,11 @@ _PRIOR_AGREEMENT_CUE_RE = re.compile(
     r"(?:约定|说好|说的|安排).{0,12}(?:继续|来|做|讲|走)?|"
     r"(?:刚才|之前|前面|先前).{0,12}(?:约定|说好|安排).{0,12}"
     r"(?:继续|下一步|往下)",
+    re.IGNORECASE,
+)
+_CONTINUITY_COMPLETION_STATUS_CUE_RE = re.compile(
+    r"(?:未完成|还没完成|尚未|待完成|还差|下一步|还需要|遗漏|"
+    r"哪里.{0,8}(?:完成|遗漏|还差|需要))",
     re.IGNORECASE,
 )
 _ROUND_REFERENCE_CUE_RE = re.compile(
@@ -506,6 +512,18 @@ def _continuity_cue_kind(value: str) -> str | None:
     return None
 
 
+def _continuity_completion_status_requested(value: str) -> bool:
+    """Return whether a prior-agreement cue also asks for open-work status.
+
+    This is intentionally a narrow lexical gate.  It is only used after the
+    caller has classified the utterance as ``prior_agreement_or_agenda`` so a
+    standalone question containing ``下一步`` cannot steal an unrelated
+    continuity target.
+    """
+
+    return bool(_CONTINUITY_COMPLETION_STATUS_CUE_RE.search(str(value)))
+
+
 def _history_continuity_candidates(
     session: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
@@ -858,6 +876,25 @@ def _select_continuity_target(
             else None
         )
     if cue_kind == "prior_agreement_or_agenda":
+        if _continuity_completion_status_requested(learner_response):
+            # A request to be reminded what is unfinished should resolve to an
+            # evidence-linked open question or pending teacher commitment
+            # before falling back to a learner's old agenda/preference.  The
+            # latter describes how to teach, but not what remains to finish.
+            status_candidates = [
+                item
+                for item in candidates
+                if item.get("kind")
+                in {"unresolved_learner_question", "teacher_commitment"}
+            ]
+            if status_candidates:
+                return max(
+                    status_candidates,
+                    key=lambda item: (
+                        _safe_round(item.get("round"), 0),
+                        item.get("kind") == "unresolved_learner_question",
+                    ),
+                )
         eligible = [
             item
             for item in candidates
@@ -1590,6 +1627,13 @@ def _minimal_knowledge_spec(
         "misconception_catalog": [
             {
                 "tag": _bounded_text(item.get("tag", ""), 48),
+                "aliases": [
+                    _bounded_text(alias, 48)
+                    for alias in item.get("aliases", [])[:4]
+                    if _bounded_text(alias, 48)
+                ]
+                if isinstance(item.get("aliases"), list)
+                else [],
                 "description": _bounded_text(item.get("description", ""), limit),
                 "corrective_principle": _bounded_text(
                     item.get("corrective_principle", ""), limit
@@ -1929,6 +1973,20 @@ def _knowledge_state_layer(
     thresholds = session.get("goal", {}).get("success_thresholds", {})
     if not isinstance(thresholds, Mapping):
         thresholds = {}
+    calibrated_focus: dict[str, Any] | None = None
+    raw_estimate = state.get("student_model_projection") or state.get("student_model")
+    if isinstance(raw_estimate, Mapping):
+        try:
+            projected = project_student_model(raw_estimate)
+            if int(projected.get("overall", {}).get("evidence_count", 0)) > 0:
+                calibrated_focus = {
+                    "dimension": projected.get("recommended_focus", {}).get("dimension"),
+                    "confidence": projected.get("recommended_focus", {}).get("confidence", 0.0),
+                    "evidence_refs": list(projected.get("recommended_focus", {}).get("evidence_refs", []))[:2],
+                    "source": "deterministic_evidence_weighted_estimator",
+                }
+        except (TypeError, ValueError):
+            calibrated_focus = None
     mastery_view: list[dict[str, Any]] = []
     for dimension, value in mastery.items():
         matching = [
@@ -2044,7 +2102,7 @@ def _knowledge_state_layer(
                 ),
             ]
         )
-    return {
+    result = {
         "concept_mastery": mastery_view,
         "misconceptions": misconceptions,
         "unresolved_issues": unresolved,
@@ -2053,6 +2111,9 @@ def _knowledge_state_layer(
         "assessment_evidence": deepcopy(state.get("assessment_evidence", {})),
         "source": "deterministic_state_machine_over_labeled_observations",
     }
+    if calibrated_focus is not None:
+        result["calibrated_focus"] = calibrated_focus
+    return result
 
 
 def _candidate_memory_layer(

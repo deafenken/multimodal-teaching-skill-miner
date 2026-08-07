@@ -481,3 +481,20 @@ def test_live_session_view_exposes_projection_not_raw_memory_store() -> None:
         "claim_boundary",
     ):
         assert raw_store_field not in exposed
+
+
+def test_live_session_view_projects_student_model_parameters() -> None:
+    session = start_live_teacher_agent_session(
+        DEMO["goal"], DEMO["student_profile"], LIBRARY, _client([_initial_plan()])
+    )
+    raw_model = session["student_state"]["student_model"]
+    assert any("alpha" in row and "beta" in row for row in raw_model["dimensions"].values())
+
+    view = live_session_view(session)
+    projected = view["student_state"]["student_model"]
+    assert projected["source"] == "deterministic_evidence_weighted_estimator"
+    for row in projected["dimensions"].values():
+        assert "alpha" not in row
+        assert "beta" not in row
+    # The projection must not mutate the persisted replay state.
+    assert all("alpha" in row and "beta" in row for row in raw_model["dimensions"].values())

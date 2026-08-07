@@ -77,7 +77,8 @@
             "response_quality": {"enum": ["complete", "partial", "minimal", "off_topic", "empty"]}
           },
           "additionalProperties": false
-        }
+        },
+        "student_model": {"$ref": "#/$defs/studentModel"}
       },
       "additionalProperties": false
     },
@@ -189,6 +190,91 @@
     }
   },
   "$defs": {
+    "studentModel": {
+      "type": "object",
+      "required": ["schema", "version", "prior_strength", "dimensions", "overall", "last_update", "recommended_focus", "claim_boundary"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.student_state_estimate.v1"},
+        "version": {"const": 1},
+        "prior_strength": {"type": "number", "minimum": 2},
+        "dimensions": {
+          "type": "object",
+          "required": ["prerequisite", "conceptual", "procedural", "transfer"],
+          "properties": {
+            "prerequisite": {"$ref": "#/$defs/studentModelDimension"},
+            "conceptual": {"$ref": "#/$defs/studentModelDimension"},
+            "procedural": {"$ref": "#/$defs/studentModelDimension"},
+            "transfer": {"$ref": "#/$defs/studentModelDimension"}
+          },
+          "additionalProperties": false
+        },
+        "overall": {
+          "type": "object",
+          "required": ["p_mastery", "uncertainty", "evidence_count"],
+          "properties": {
+            "p_mastery": {"type": "number", "minimum": 0, "maximum": 1},
+            "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+            "evidence_count": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "last_update": {
+          "type": "object",
+          "required": ["round", "signal", "focus_dimension", "evidence_id", "source", "update_applied", "needs_human_review"],
+          "properties": {
+            "round": {"type": "integer", "minimum": 0},
+            "signal": {"enum": ["not_observed", "correct", "partial", "misconception", "confused", "no_response"]},
+            "focus_dimension": {"type": ["string", "null"]},
+            "evidence_id": {"type": ["string", "null"]},
+            "source": {"type": "string", "minLength": 1},
+            "update_applied": {"type": "boolean"},
+            "needs_human_review": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        },
+        "recommended_focus": {
+          "type": "object",
+          "required": ["dimension", "reason", "confidence", "evidence_refs"],
+          "properties": {
+            "dimension": {"enum": ["prerequisite", "conceptual", "procedural", "transfer"]},
+            "reason": {"type": "string", "minLength": 1},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1}}
+          },
+          "additionalProperties": false
+        },
+        "claim_boundary": {
+          "type": "object",
+          "required": ["is_ground_truth", "teacher_prior_overwritten", "free_text_accuracy_established", "uncertainty_is_calibrated_on_external_lockbox"],
+          "properties": {
+            "is_ground_truth": {"const": false},
+            "teacher_prior_overwritten": {"const": false},
+            "free_text_accuracy_established": {"const": false},
+            "uncertainty_is_calibrated_on_external_lockbox": {"const": false}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "studentModelDimension": {
+      "type": "object",
+      "required": ["p_mastery", "uncertainty", "alpha", "beta", "evidence_count", "positive_evidence", "negative_evidence", "last_signal", "last_round", "last_evidence_id", "source"],
+      "properties": {
+        "p_mastery": {"type": "number", "minimum": 0, "maximum": 1},
+        "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+        "alpha": {"type": "number", "exclusiveMinimum": 0},
+        "beta": {"type": "number", "exclusiveMinimum": 0},
+        "evidence_count": {"type": "integer", "minimum": 0},
+        "positive_evidence": {"type": "integer", "minimum": 0},
+        "negative_evidence": {"type": "integer", "minimum": 0},
+        "last_signal": {"enum": ["not_observed", "correct", "partial", "misconception", "confused", "no_response"]},
+        "last_round": {"type": "integer", "minimum": 0},
+        "last_evidence_id": {"type": ["string", "null"]},
+        "source": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
     "agentLoopTrace": {
       "type": "object",
       "required": ["schema", "status", "termination_reason", "steps", "model_call_count", "tool_call_count", "retry_count", "selected_skill_id", "supporting_skill_ids", "next_focus", "deterministic_fallback", "events", "trace_sha256"],
@@ -259,6 +345,95 @@
       },
       "additionalProperties": true
     },
+    "continuityRecallTarget": {
+      "type": "object",
+      "required": ["kind", "speaker", "source_round", "excerpt", "evidence_refs"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "historical_turn",
+            "learner_named_alternatives",
+            "teacher_named_alternatives",
+            "learner_instruction",
+            "unresolved_learner_question",
+            "learner_future_agenda",
+            "teacher_commitment",
+            "teacher_question"
+          ]
+        },
+        "speaker": {"enum": ["learner", "teacher", "teacher_profile"]},
+        "source_round": {"type": "integer", "minimum": 0},
+        "excerpt": {"type": "string", "minLength": 1, "maxLength": 400},
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {"type": "string", "minLength": 1, "maxLength": 160}
+        }
+      },
+      "additionalProperties": false
+    },
+    "continuityRecall": {
+      "type": "object",
+      "required": [
+        "schema",
+        "cue_kind",
+        "cue_excerpt",
+        "cue_evidence_refs",
+        "status",
+        "target",
+        "instruction",
+        "selection_policy",
+        "must_not_invent"
+      ],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_agent_continuity_recall.v1"},
+        "cue_kind": {
+          "enum": [
+            "explicit_round_reference",
+            "semantic_topic_reference",
+            "ordinal_reference",
+            "earliest_learner_instruction",
+            "earlier_unresolved_question",
+            "prior_agreement_or_agenda"
+          ]
+        },
+        "cue_excerpt": {"type": "string", "minLength": 1, "maxLength": 240},
+        "cue_evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {"type": "string", "minLength": 1, "maxLength": 160}
+        },
+        "status": {
+          "enum": ["resolved_evidence_linked", "unresolved_no_matching_evidence"]
+        },
+        "target": {
+          "anyOf": [
+            {"$ref": "#/$defs/continuityRecallTarget"},
+            {"type": "null"}
+          ]
+        },
+        "instruction": {"type": "string", "minLength": 1, "maxLength": 320},
+        "selection_policy": {"type": "string", "minLength": 1, "maxLength": 120},
+        "must_not_invent": {"const": true}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {"const": "resolved_evidence_linked"},
+            "target": {"$ref": "#/$defs/continuityRecallTarget"}
+          }
+        },
+        {
+          "properties": {
+            "status": {"const": "unresolved_no_matching_evidence"},
+            "target": {"type": "null"}
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
     "layeredContext": {
       "type": "object",
       "required": ["schema", "snapshot", "fixed_context", "current_plan", "working_memory", "semantic_summary", "knowledge_state", "candidate_long_term_memory", "evidence_ledger", "retrieval", "privacy", "budget", "claim_boundary"],
@@ -319,6 +494,7 @@
               },
               "additionalProperties": false
             },
+            "continuity_recall": {"$ref": "#/$defs/continuityRecall"},
             "compression_method": {"const": "deterministic_aggregate_and_extractive_checkpoints_no_model_generation"},
             "source": {"const": "omitted_local_session_history"},
             "narrative_inference_added": {"const": false}
@@ -416,7 +592,7 @@
               "excerpt": {"type": "string", "maxLength": 240},
               "confidence": {"type": "number", "minimum": 0, "maximum": 1},
               "assessment_source": {"enum": ["deepseek_v4_flash", "deepseek_v4_flash_constrained_by_deterministic_contract", "active_question_contract_exact_match"]},
-              "model_raw_signal": {"enum": ["correct", "partial", "misconception", "confused", "no_response"]},
+              "model_raw_signal": {"enum": ["not_observed", "correct", "partial", "misconception", "confused", "no_response"]},
               "final_signal": {"enum": ["correct", "partial", "misconception", "confused", "no_response"]},
               "normalization_reasons": {"type": "array", "maxItems": 12, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 120}},
               "grounding": {"enum": ["verified_current_response_substring", "empty_response_no_excerpt", "no_grounded_excerpt"]},

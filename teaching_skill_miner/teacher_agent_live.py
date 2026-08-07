@@ -52,12 +52,20 @@ from .teacher_agent_memory import (
     rebuild_teaching_memory_from_rollout,
     validate_teaching_memory,
 )
+from .student_model import (
+    initialize_student_model,
+    project_student_model,
+    recommend_focus,
+    update_student_model,
+    validate_student_model,
+)
 from .teacher_agent_loop import (
     LOOP_SCHEMA as AGENT_LOOP_SCHEMA,
     TeachingAgentLoopOptions,
     public_agent_loop_trace,
     run_teaching_agent_loop,
 )
+from .teacher_agent_orchestration import build_turn_lifecycle_receipt
 from .teacher_agent_semantics import diagnosis_taxonomy_prompt
 from .teacher_agent_vision import (
     MINIMUM_TRUSTED_OCR_CONFIDENCE,
@@ -77,7 +85,7 @@ LIVE_RUNTIME_POLICY_SCHEMA = (
 PLAN_SCHEMA = "teaching_skill_miner.deepseek_turn_plan.v1"
 ACTION_REPAIR_SCHEMA = "teaching_skill_miner.deepseek_action_repair.v1"
 LIVE_PROMPT_VERSION = (
-    "teaching_agent_assess_route_act_v14_state_first_route_adjudication"
+    "teaching_agent_assess_route_act_v15_correction_chain_taxonomy_contract"
 )
 
 _VISUAL_CONFIRMATION_PRIMARY_SKILL_IDS = (
@@ -405,6 +413,27 @@ _CONTINUITY_RESTATE_REQUEST_RE = re.compile(
     r"(?:请|能否|可以).{0,12}(?:重述|再说|重新说明|说明你指|补充你指)|"
     r"(?:重述|再说一遍|重新说明)"
 )
+_CONTINUITY_COMPLETION_STATUS_CUE_RE = re.compile(
+    r"(?:未完成|还没完成|尚未|待完成|还差|下一步|还需要|遗漏|"
+    r"哪里.{0,8}(?:完成|遗漏|还差|需要))",
+    re.IGNORECASE,
+)
+_CONTINUITY_COMPLETION_STATUS_OUTPUT_RE = re.compile(
+    # Keep the output contract canonical and easy to score across model
+    # phrasings.  ``还没完成`` remains a valid learner cue, but is not by
+    # itself a sufficient teacher marker: the deterministic guard should add
+    # the explicit ``未完成``/``下一步`` wording used by the audit receipt.
+    r"(?:未完成|尚未|待完成|下一步|还需要|还差|仍需|剩余)",
+    re.IGNORECASE,
+)
+_CONTINUITY_PREFERENCE_MARKER_BY_KIND = {
+    "prefer_examples": "先用小例子",
+    "prefer_stepwise": "按步骤",
+    "prefer_visual_explanation": "先用图示",
+    "prefer_concise": "保持简洁",
+    "prefer_detailed": "展开讲解",
+    "avoid_formula_first": "先不直接写公式",
+}
 _WAIT_CONTRACT_RE = re.compile(
     r"(?:请先)?只回答(?:这|当前|本)一问.{0,32}"
     r"(?:等你|等待你).{0,16}(?:回答后)?再继续"
@@ -1117,6 +1146,7 @@ fixed_context.teaching_goal.knowledge_spec 存在时，它是教师提供的运�
 }
 
 判分规则：只有直接满足当前 question_contract 才是 correct/aligned；相关但没有回答本问是 partial/related_but_not_answer；明确说“不知道/没懂”才是 confused；只有学生明确陈述了错误命题且能给出 evidence_excerpt 时才是 misconception。一次相邻概念回答不足以确认误解。首轮 answer_alignment 必须是 not_applicable。
+误解生命周期规则：如果要填写 resolved_misconception_tags，只能逐字复制 teaching_context.knowledge_state 中当前 active misconception 的 tag，并且必须同时满足本轮是针对该误解的 correction、证据片段来自学生本轮原话且回答达到 correct/aligned；不要把自然语言同义词、新标签或模型自造标签放进 resolved_misconception_tags，不确定时留空。
 问题契约规则：question_contract 必须描述 teacher_action.message 实际要求学生回答的内容，不能只复制总教学目标。若问题要求“任举一个前置概念/方法/例子”，target_concepts 应列可接受答案或写明开放范围，accepted_aliases 应包含常见同义说法，success_criteria 应逐项写出可直接检查的作答条件；询问前置概念时，禁止把总教学目标本身当作唯一 target_concept。
 Skill 执行规则：teacher_action.type 必须等于最终 primary Skill 的 action_type，message 必须执行该 Skill 的 message_template 所描述的教学行为，并满足其 preconditions / contraindications / direct_answer_prohibited；不能只更换 Skill 名称而继续输出无关的通用追问。
 若输入包含 agent_loop_route_hint，优先采用其中由 allowlisted 工具选择的 Skill；但若本轮诊断与 Skill 适用条件冲突，应在 selection_reason 中说明，服务端仍会执行最终契约校验和安全重定向。
@@ -1553,13 +1583,14 @@ def _action_continuity_validation_reasons(
     message: str,
     continuity_constraints: Mapping[str, Any] | None,
 ) -> list[str]:
-    """Fail closed for the two continuity cues that can be checked exactly.
+    """Fail closed for continuity cues with observable surface contracts.
 
     Most pedagogical continuity is semantic and remains model-authored.  An
     ordinal reference such as ``第二种呢`` and a fail-closed missing-history
-    response, however, have observable surface contracts.  Enforcing those
-    contracts prevents an otherwise valid generic action from silently
-    discarding the student's explicit reference.
+    response have exact contracts.  A prior-agreement request that explicitly
+    asks what remains unfinished must also acknowledge open work or a next
+    step.  Enforcing these contracts prevents an otherwise valid generic
+    action from silently discarding the student's explicit reference.
     """
 
     if not isinstance(continuity_constraints, Mapping):
@@ -1577,9 +1608,17 @@ def _action_continuity_validation_reasons(
         return reasons
     if status != "resolved_evidence_linked":
         return ["continuity_status_invalid"]
-    if recall.get("cue_kind") != "ordinal_reference":
-        return []
+    cue_kind = str(recall.get("cue_kind", ""))
     cue_excerpt = str(recall.get("cue_excerpt", ""))
+    if cue_kind == "prior_agreement_or_agenda":
+        if (
+            _CONTINUITY_COMPLETION_STATUS_CUE_RE.search(cue_excerpt)
+            and not _CONTINUITY_COMPLETION_STATUS_OUTPUT_RE.search(message)
+        ):
+            return ["continuity_completion_status_missing"]
+        return []
+    if cue_kind != "ordinal_reference":
+        return []
     requested_markers = {
         re.sub(r"\s+", "", marker)
         for marker in _ORDINAL_CONTINUITY_MARKER_RE.findall(cue_excerpt)
@@ -1627,6 +1666,39 @@ def _continuity_binding(
     }
 
 
+def _continuity_preference_marker(
+    continuity_constraints: Mapping[str, Any] | None,
+) -> str | None:
+    """Return a safe, evidence-backed marker for a remembered teaching preference.
+
+    Compound requests such as “按约定继续，并提醒我哪里还没完成” carry two
+    independent obligations: open-work status and the learner's requested way of
+    learning.  The recall object intentionally has one primary target, so the
+    deterministic guard projects only the preference *category* here.  It never
+    copies an arbitrary preference sentence into the action trace and therefore
+    cannot widen the remote-data or answer-grading boundary.
+    """
+
+    if not isinstance(continuity_constraints, Mapping):
+        return None
+    recall = continuity_constraints.get("continuity_recall")
+    if not isinstance(recall, Mapping) or recall.get("cue_kind") != "prior_agreement_or_agenda":
+        return None
+    memory = continuity_constraints.get("teaching_memory")
+    if not isinstance(memory, Mapping):
+        return None
+    rows = memory.get("active_preferences", [])
+    if not isinstance(rows, list):
+        return None
+    for row in reversed(rows):
+        if not isinstance(row, Mapping) or not row.get("evidence_refs"):
+            continue
+        marker = _CONTINUITY_PREFERENCE_MARKER_BY_KIND.get(str(row.get("kind", "")))
+        if marker:
+            return marker
+    return None
+
+
 def _deterministically_enforce_action_continuity(
     plan: Mapping[str, Any],
     continuity_constraints: Mapping[str, Any] | None,
@@ -1634,10 +1706,11 @@ def _deterministically_enforce_action_continuity(
     """Ensure explicit recall cues survive repair-disabled and repair-failure paths.
 
     DeepSeek gets the evidence-linked recall layer first.  This final server-side
-    fence handles the two surface contracts that are exactly checkable: an
-    ordinal such as ``第二种`` remains visible, and missing recall is disclosed
-    before the learner is asked to restate it.  No target excerpt is copied into
-    the action trace or invented by this materializer.
+    fence handles the surface contracts that are exactly checkable: an ordinal
+    such as ``第二种`` remains visible, missing recall is disclosed before the
+    learner is asked to restate it, and an explicit unfinished-work request is
+    answered with a bounded status/next-step marker.  No target excerpt is
+    copied into the action trace or invented by this materializer.
     """
 
     result = deepcopy(dict(plan))
@@ -1680,9 +1753,11 @@ def _deterministically_enforce_action_continuity(
 
     recall = continuity_constraints.get("continuity_recall", {})
     status = str(recall.get("status", "")) if isinstance(recall, Mapping) else ""
+    cue_kind = str(recall.get("cue_kind", "")) if isinstance(recall, Mapping) else ""
     original_origin = str(provenance.get("executor_origin", "unknown"))
     guard_kind = "ordinal_reference_prefix"
     primary_execution_deferred = False
+    preference_marker_used = False
     if status == "unresolved_no_matching_evidence":
         guard_kind = "missing_evidence_restate"
         primary_execution_deferred = True
@@ -1706,6 +1781,22 @@ def _deterministically_enforce_action_continuity(
             str(decision.get("selection_reason", ""))
             + "；连续性证据不足，本轮暂缓执行主 Skill，先请求学生重述。"
         )[:600]
+    elif cue_kind == "prior_agreement_or_agenda":
+        guard_kind = "completion_status_prefix"
+        preference_marker = _continuity_preference_marker(continuity_constraints)
+        preference_marker_used = bool(preference_marker)
+        preference_prefix = (
+            f"，{preference_marker}继续"
+            if preference_marker
+            else ""
+        )
+        teacher_action["message"] = _safe_text(
+            "按已记录的约定继续"
+            f"{preference_prefix}；当前仍未完成的是已记录事项的确认，"
+            f"下一步先完成这一项。{message}",
+            field="continuity_guard_teacher_action.message",
+            maximum=1400,
+        )
     else:
         cue_excerpt = str(recall.get("cue_excerpt", ""))
         markers = [
@@ -1732,6 +1823,7 @@ def _deterministically_enforce_action_continuity(
             "question_contract_preserved": not primary_execution_deferred,
             "continuity_guard_applied": True,
             "continuity_guard_kind": guard_kind,
+            "continuity_preference_marker_used": preference_marker_used,
             "continuity_original_executor_origin": original_origin,
             "primary_skill_execution_deferred": primary_execution_deferred,
             "normalization_reasons": list(
@@ -1764,6 +1856,7 @@ def _deterministically_enforce_action_continuity(
         "cue_kind": binding["cue_kind"],
         "deterministic_guard_applied": True,
         "guard_kind": guard_kind,
+        "continuity_preference_marker_used": preference_marker_used,
         "primary_skill_execution_deferred": primary_execution_deferred,
         "validation_reasons_before": reasons_before,
         "validation_reasons_after": [],
@@ -1995,7 +2088,7 @@ def _validated_action_only_repair(
     previous_normalizations = list(
         previous_provenance.get("normalization_reasons", [])
     )
-    repaired_decision["action_provenance"] = {
+    repaired_provenance = {
         "requested_executor_mode": "safe_generative",
         "executor_origin": "deepseek_action_only_repair",
         "model_teacher_action_used": True,
@@ -2022,6 +2115,14 @@ def _validated_action_only_repair(
         "initial_executor_origin": previous_provenance.get("executor_origin"),
         "initial_model_action_validation_reasons": previous_reasons,
     }
+    # Action-only repair is allowed to rewrite only the visible teacher action.
+    # Preserve the already-validated route and loop provenance beside it so the
+    # repaired action remains auditable; dropping these fields made a correct
+    # state-first reroute look as if no route decision had occurred.
+    for fixed_field in ("route_adjudication", "agent_loop_route"):
+        if fixed_field in previous_provenance:
+            repaired_provenance[fixed_field] = deepcopy(previous_provenance[fixed_field])
+    repaired_decision["action_provenance"] = repaired_provenance
     return repaired, []
 
 
@@ -2499,6 +2600,131 @@ def _has_active_misconception(session: Mapping[str, Any], *, signal: str) -> boo
     )
 
 
+def _active_correction_chain(session: Mapping[str, Any]) -> bool:
+    """Return whether the current action is carrying one live correction target.
+
+    An active misconception is not, by itself, enough to force a correction
+    action: a learner may have supplied a teacher-authored initial profile or
+    the system may be handling an unrelated concept.  The binding and the
+    previous primary role together are the server-owned provenance that says
+    this turn is still part of the same correction/verification chain.
+    """
+
+    active_tags = [
+        str(item.get("tag"))
+        for item in session.get("student_state", {}).get("misconceptions", [])
+        if isinstance(item, Mapping)
+        and item.get("status") == "active"
+        and str(item.get("tag", "")).strip()
+    ]
+    if len(active_tags) != 1:
+        return False
+    current_action = session.get("current_action", {})
+    if not isinstance(current_action, Mapping):
+        return False
+    target_tags = current_action.get("target_misconception_tags", [])
+    primary = current_action.get("primary_skill", {})
+    if not isinstance(target_tags, list) or [str(item) for item in target_tags] != active_tags:
+        return False
+    if not isinstance(primary, Mapping) or primary.get("role") not in {
+        "correction",
+        "assessment",
+        "metacognition",
+        "review",
+    }:
+        return False
+    return str(current_action.get("target_misconception_binding", "none")) in {
+        "current_active_misconception",
+        "prior_correction_chain",
+    }
+
+
+def _canonicalize_misconception_tag(
+    session: Mapping[str, Any], raw_tag: Any
+) -> tuple[str | None, bool]:
+    """Map a model tag through an optional teacher-owned misconception catalog.
+
+    The model may describe the same error with a local phrase.  If the teacher
+    supplied aliases, normalize that phrase to the catalog's canonical tag;
+    otherwise preserve the bounded model tag and keep the existing fail-closed
+    behaviour.  The boolean is exposed only for audit normalization reasons.
+    """
+
+    value = str(raw_tag or "").strip()[:120]
+    if not value:
+        return None, False
+    goal = session.get("goal", {})
+    spec = goal.get("knowledge_spec", {}) if isinstance(goal, Mapping) else {}
+    catalog = spec.get("misconception_catalog", []) if isinstance(spec, Mapping) else []
+    if not isinstance(catalog, list):
+        return value, False
+    key = _canonical_short_concept(value)
+    for row in catalog:
+        if not isinstance(row, Mapping):
+            continue
+        canonical = str(row.get("tag", "")).strip()[:120]
+        if not canonical:
+            continue
+        aliases = row.get("aliases", [])
+        aliases = aliases if isinstance(aliases, list) else []
+        if key in {
+            _canonical_short_concept(item)
+            for item in [canonical, *aliases]
+            if str(item).strip()
+        }:
+            return canonical, canonical != value
+    return value, False
+
+
+def _misconception_knowledge_components(
+    session: Mapping[str, Any], tags: Sequence[str]
+) -> list[str]:
+    """Return teacher-owned components contradicted by canonical misconception tags."""
+
+    requested = {str(item) for item in tags if str(item).strip()}
+    if not requested:
+        return []
+    goal = session.get("goal", {})
+    spec = goal.get("knowledge_spec", {}) if isinstance(goal, Mapping) else {}
+    if not isinstance(spec, Mapping) or spec.get("status") != "teacher_provided":
+        return []
+    catalog = spec.get("misconception_catalog", [])
+    claims = spec.get("canonical_claims", [])
+    if not isinstance(catalog, list) or not isinstance(claims, list):
+        return []
+    claim_ids = {
+        str(claim_id)
+        for row in catalog
+        if isinstance(row, Mapping) and str(row.get("tag")) in requested
+        for claim_id in (
+            row.get("contradicts_claim_ids", [])
+            if isinstance(row.get("contradicts_claim_ids"), list)
+            else []
+        )
+        if str(claim_id).strip()
+    }
+    components = {
+        str(component).strip()
+        for claim in claims
+        if isinstance(claim, Mapping) and str(claim.get("claim_id")) in claim_ids
+        for component in (
+            claim.get("knowledge_components", [])
+            if isinstance(claim.get("knowledge_components"), list)
+            else []
+        )
+        if str(component).strip()
+    }
+    ordered_goal_components = (
+        goal.get("knowledge_components", [])
+        if isinstance(goal, Mapping)
+        and isinstance(goal.get("knowledge_components"), list)
+        else []
+    )
+    ordered = [str(item) for item in ordered_goal_components if str(item) in components]
+    ordered.extend(sorted(components - set(ordered)))
+    return ordered[:8]
+
+
 def _consecutive_primary_repeat_count(session: Mapping[str, Any], skill_id: str) -> int:
     """Count consecutive materialized primary actions without double-counting IDs."""
 
@@ -2860,6 +3086,7 @@ def _state_first_route_adjudication(
         or float(profile.get("initial_mastery", {}).get("prerequisite", 0.0)) > 0
     )
     grounded_misconception = bool(signal == "misconception" and misconception_tag)
+    active_correction_chain = _active_correction_chain(session)
     substantive_claim = bool(
         response.strip()
         and not _is_question_response(response)
@@ -2903,6 +3130,13 @@ def _state_first_route_adjudication(
     elif grounded_misconception:
         preferred_roles = ("correction",)
         route_reason_codes = ["grounded_misconception_requires_correction"]
+    elif active_correction_chain:
+        # Keep one evidence-bound misconception attached until a high-quality
+        # verification turn can resolve it.  Retrieval/example routes may be
+        # valid in isolation, but they would orphan the correction target and
+        # make a later correct answer impossible to bind safely.
+        preferred_roles = ("assessment", "metacognition", "review")
+        route_reason_codes = ["active_correction_chain_requires_verification"]
     elif projected_no_progress >= 2 or engagement == "low":
         preferred_roles = ("engagement", "example", "review", "diagnostic")
         route_reason_codes = ["low_progress_or_engagement_requires_recovery"]
@@ -3591,6 +3825,144 @@ def _bounded_prerequisite_example_match(
     return matched
 
 
+def _correction_target_contract_match(
+    response: str, session: Mapping[str, Any]
+) -> dict[str, str] | None:
+    """Recognize a narrow, teacher-owned verification answer for one target.
+
+    This is not a general answer grader.  It only fires while a single active
+    misconception is bound to the current correction chain, when the teacher
+    supplied a knowledge specification, and when the learner's current answer
+    contains at least two distinct visible contract terms plus an explicit
+    claim.  The source excerpt remains the learner's own text and the ordinary
+    high-confidence evidence fence still applies afterward.
+    """
+
+    if not _active_correction_chain(session):
+        return None
+    text = str(response).strip()
+    if not text or _is_question_response(text) or not _contains_explicit_claim(text):
+        return None
+    current_action = session.get("current_action", {})
+    teacher_action = (
+        current_action.get("teacher_action", {})
+        if isinstance(current_action, Mapping)
+        else {}
+    )
+    contract = (
+        teacher_action.get("question_contract", {})
+        if isinstance(teacher_action, Mapping)
+        else {}
+    )
+    if not isinstance(contract, Mapping):
+        return None
+    raw_terms = [
+        *(
+            contract.get("target_concepts", [])
+            if isinstance(contract.get("target_concepts"), list)
+            else []
+        ),
+        *(
+            contract.get("accepted_aliases", [])
+            if isinstance(contract.get("accepted_aliases"), list)
+            else []
+        ),
+    ]
+    response_key = _canonical_short_concept(text)
+    matched_terms: list[str] = []
+    for raw_term in raw_terms:
+        term = str(raw_term).strip()
+        term_key = _canonical_short_concept(term)
+        if len(term_key) >= 2 and term_key in response_key and term not in matched_terms:
+            matched_terms.append(term)
+    goal = session.get("goal", {})
+    spec = goal.get("knowledge_spec", {}) if isinstance(goal, Mapping) else {}
+    if not isinstance(spec, Mapping) or spec.get("status") != "teacher_provided":
+        return None
+    active_tags = [
+        str(item.get("tag"))
+        for item in session.get("student_state", {}).get("misconceptions", [])
+        if isinstance(item, Mapping) and item.get("status") == "active"
+    ]
+    catalog = spec.get("misconception_catalog", [])
+    claims = spec.get("canonical_claims", [])
+    if len(active_tags) != 1 or not isinstance(catalog, list) or not isinstance(claims, list):
+        return None
+    catalog_row = next(
+        (
+            item
+            for item in catalog
+            if isinstance(item, Mapping) and str(item.get("tag")) == active_tags[0]
+        ),
+        None,
+    )
+    if not isinstance(catalog_row, Mapping):
+        return None
+    claim_ids = {
+        str(item)
+        for item in catalog_row.get("contradicts_claim_ids", [])
+        if str(item).strip()
+    }
+    current_components = {
+        str(item).strip()
+        for item in (
+            current_action.get("knowledge_components", [])
+            if isinstance(current_action, Mapping)
+            and isinstance(current_action.get("knowledge_components"), list)
+            else []
+        )
+        if str(item).strip()
+    }
+    if not any(
+        isinstance(claim, Mapping)
+        and str(claim.get("claim_id")) in claim_ids
+        and current_components
+        and current_components
+        & {
+            str(item).strip()
+            for item in claim.get("knowledge_components", [])
+            if str(item).strip()
+        }
+        for claim in claims
+    ):
+        return None
+    relevant_claims = [
+        claim
+        for claim in claims
+        if isinstance(claim, Mapping)
+        and str(claim.get("claim_id")) in claim_ids
+        and current_components
+        & {
+            str(item).strip()
+            for item in claim.get("knowledge_components", [])
+            if str(item).strip()
+        }
+    ]
+    # A deterministic materializer may have replaced the model's richer
+    # question contract.  Recover only short, teacher-owned formula/identifier
+    # fragments from the relevant claim; this still requires two independent
+    # fragments and an explicit learner claim below.
+    for claim in relevant_claims:
+        statement = str(claim.get("statement", ""))
+        fragments = [
+            *re.findall(r"[A-Za-z_]+\[[^\]]+\]", statement),
+            *re.findall(r"\b[A-Za-z_]\s*[-+]\s*\d+\b", statement),
+        ]
+        for fragment in fragments:
+            if (
+                _canonical_short_concept(fragment) in response_key
+                and fragment not in matched_terms
+            ):
+                matched_terms.append(fragment)
+    if len(matched_terms) < 2:
+        return None
+    return {
+        "reference": "；".join(matched_terms[:4])[:120],
+        "binding_source": "teacher_knowledge_spec_correction_contract_match",
+        "normalization_reason": "correction_target_contract_exact_match",
+    }
+
+
 def _exact_answer_reference_match(
     response: str,
     session: Mapping[str, Any],
@@ -3737,8 +4109,39 @@ def _validated_plan(
     signal = str(diagnosis_raw.get("signal", ""))
     model_raw_signal = signal
     allowed_signals = SIGNALS | ({"not_observed"} if initial else set())
+    preliminary_source_excerpt = str(evidence_source).strip()
+    preliminary_exact_sources = [
+        str(item).strip() for item in exact_match_sources if str(item).strip()
+    ]
+    server_exact_reference_match: dict[str, str] | None = None
+    if not initial and not visual_confirmation_required:
+        for candidate in preliminary_exact_sources:
+            server_exact_reference_match = _exact_answer_reference_match(
+                candidate,
+                session,
+            )
+            if server_exact_reference_match:
+                break
+    unsupported_model_signal_repaired = False
     if signal not in allowed_signals:
-        raise LiveTeacherAgentError("model diagnosis signal is unsupported")
+        # A text model may call an OCR-only answer ``not_observed`` or emit a
+        # synonymous label.  If local evidence already binds the answer to the
+        # current contract, use a safe placeholder and let deterministic
+        # adjudication below set the final signal.  Otherwise fail closed.
+        if (
+            not initial
+            and (
+                (
+                    signal == "not_observed"
+                    and bool(preliminary_source_excerpt or preliminary_exact_sources)
+                )
+                or server_exact_reference_match is not None
+            )
+        ):
+            signal = "partial"
+            unsupported_model_signal_repaired = True
+        else:
+            raise LiveTeacherAgentError("model diagnosis signal is unsupported")
     confidence = _strict_finite_probability(
         diagnosis_raw.get("confidence", 0.0),
         field="diagnosis.confidence",
@@ -3783,8 +4186,13 @@ def _validated_plan(
             "answer_alignment", _default_answer_alignment(signal, initial=initial)
         )
     )
+    unsupported_model_alignment_repaired = False
     if answer_alignment not in _ANSWER_ALIGNMENTS:
-        raise LiveTeacherAgentError("model answer_alignment is unsupported")
+        if server_exact_reference_match is not None:
+            answer_alignment = "partially_aligned"
+            unsupported_model_alignment_repaired = True
+        else:
+            raise LiveTeacherAgentError("model answer_alignment is unsupported")
     if initial:
         answer_alignment = "not_applicable"
     matched_concepts = _bounded_string_list(
@@ -3799,10 +4207,10 @@ def _validated_plan(
         maximum_items=6,
         maximum_chars=120,
     )
-    misconception_tag = (
-        str(diagnosis_raw.get("misconception_tag"))[:120]
-        if diagnosis_raw.get("misconception_tag")
-        else None
+    misconception_tag, misconception_tag_was_canonicalized = (
+        _canonicalize_misconception_tag(
+            session, diagnosis_raw.get("misconception_tag")
+        )
     )
     raw_needs_human_review = _strict_json_boolean(
         diagnosis_raw.get("needs_human_review", False),
@@ -3813,6 +4221,18 @@ def _validated_plan(
         field="stop_recommendation.should_stop",
     )
     normalization_reasons: list[str] = []
+    if unsupported_model_signal_repaired:
+        normalization_reasons.append(
+            "unsupported_model_signal_repaired_by_server_evidence"
+        )
+    if unsupported_model_alignment_repaired:
+        normalization_reasons.append(
+            "unsupported_model_alignment_repaired_by_server_evidence"
+        )
+    if misconception_tag_was_canonicalized:
+        normalization_reasons.append(
+            "misconception_tag_canonicalized_from_teacher_taxonomy"
+        )
     if initial and (model_raw_signal != "not_observed" or model_raw_confidence != 0.0):
         normalization_reasons.append("initial_diagnosis_forced_not_observed")
     normalized_related_answer = False
@@ -3821,6 +4241,7 @@ def _validated_plan(
     if not initial:
         explicit_confusion = _explicit_confusion(source_excerpt)
         exact_reference_match: dict[str, str] | None = None
+        correction_contract_match: dict[str, str] | None = None
         exact_contract_source = ""
         if not explicit_confusion:
             for candidate in exact_sources:
@@ -3831,6 +4252,10 @@ def _validated_plan(
                 if exact_reference_match:
                     exact_contract_source = candidate
                     break
+            if exact_reference_match is None:
+                correction_contract_match = _correction_target_contract_match(
+                    source_excerpt, session
+                )
         if not source_excerpt:
             if signal != "no_response" or answer_alignment != "no_response":
                 normalization_reasons.append("empty_response_forced_no_response")
@@ -3866,6 +4291,16 @@ def _validated_plan(
             normalization_reasons.append(exact_reference_match["normalization_reason"])
             safe_retarget_required = True
             action_retarget_kind = exact_reference_match["retarget_kind"]
+        elif correction_contract_match:
+            signal = "correct"
+            confidence = 1.0
+            answer_alignment = "aligned"
+            misconception_tag = None
+            quality = "complete"
+            evidence_binding_source = correction_contract_match["binding_source"]
+            normalization_reasons.append(
+                correction_contract_match["normalization_reason"]
+            )
         elif (
             image_only_response
             and (signal == "correct" or answer_alignment == "aligned")
@@ -4161,6 +4596,27 @@ def _validated_plan(
         normalization_reasons.append("model_skill_not_applicable_to_signal")
         if action_retarget_kind is None:
             action_retarget_kind = "signal_applicability"
+    # The Agent Loop can correctly inspect state yet still return a route whose
+    # Skill only accepts ``not_observed`` while the final diagnosis is already
+    # ``partial``/``correct`` (or while a non-authoritative related-answer
+    # normalization is active).  Keep that route advisory: let the state-first
+    # adjudicator choose the executable stage before the generic fallback order
+    # turns every such case into a broad Socratic action.  Trusted answer,
+    # visual-confirmation and high-impact evidence guards remain higher priority.
+    agent_loop_state_repair_exclusions = {
+        "visual_confirmation",
+        "verified_reference_answer",
+        "verified_short_concept",
+        "verified_prerequisite_example",
+        "ungrounded_high_impact_diagnosis",
+    }
+    agent_loop_route_needs_state_repair = bool(
+        agent_loop_route_requested
+        and automatic_applicability_guard
+        and action_retarget_kind not in agent_loop_state_repair_exclusions
+        and not correction_guard_required
+        and not visual_confirmation_required
+    )
     primary_contract_violation = (
         manual_contract_violation
         if manual_skill_id
@@ -4268,15 +4724,22 @@ def _validated_plan(
     if (
         options.state_first_route_adjudication_enabled
         and not manual_skill_id
-        and not agent_loop_route_requested
-        and not safe_retarget_required
-        and action_retarget_kind is None
+        and (not safe_retarget_required or agent_loop_route_needs_state_repair)
+        and (action_retarget_kind is None or agent_loop_route_needs_state_repair)
         and not visual_confirmation_required
     ):
+        # The bounded Agent Loop is a route proposal, not a bypass around the
+        # state/contract adjudicator.  Keep its selected Skill as the model
+        # tie-break candidate while letting the deterministic policy reject an
+        # unsafe or pedagogically out-of-order route.
         route_adjudication = _state_first_route_adjudication(
             session,
             current_selected_id=selected_id,
-            model_selected_id=model_selected_id,
+            model_selected_id=(
+                str(agent_loop_skill_id)
+                if agent_loop_route_requested
+                else model_selected_id
+            ),
             initial=initial,
             signal=signal,
             confidence=confidence,
@@ -4292,6 +4755,8 @@ def _validated_plan(
                 "state_first_route_adjudication:"
                 + str(route_adjudication["reason_codes"][0])
             )
+        if agent_loop_route_needs_state_repair:
+            normalization_reasons.append("agent_loop_route_repaired_by_state_first")
     if not manual_skill_id:
         applicable_signals = set(skills[selected_id].get("applicable_signals", []))
         if signal not in applicable_signals:
@@ -4372,6 +4837,14 @@ def _validated_plan(
     action_normalization_reasons: list[str] = []
     if options.action_executor_mode == "deterministic_legacy":
         action_normalization_reasons.append("deterministic_legacy_mode")
+    if _active_correction_chain(session):
+        # During a live correction chain the server-owned target is more
+        # important than free-form wording.  Materialize a bounded
+        # verification prompt so the model cannot accidentally reveal a
+        # canonical answer while trying to be helpful.
+        action_normalization_reasons.append(
+            "active_correction_chain_requires_deterministic_verification"
+        )
     # Diagnosis evidence and action execution are separate trust boundaries.
     # A harmless label/confidence repair must not erase an otherwise safe,
     # Skill-conformant teacher utterance.  Routing changes, support changes and
@@ -4509,9 +4982,11 @@ def _validated_plan(
     resolved_raw = diagnosis_raw.get("resolved_misconception_tags", [])
     if not isinstance(resolved_raw, list):
         resolved_raw = []
-    requested_resolved = list(
-        dict.fromkeys(str(item)[:120] for item in resolved_raw[:4] if str(item))
-    )
+    requested_resolved: list[str] = []
+    for item in resolved_raw[:4]:
+        canonical_tag, _ = _canonicalize_misconception_tag(session, item)
+        if canonical_tag and canonical_tag not in requested_resolved:
+            requested_resolved.append(canonical_tag)
     current_primary = (
         current_action_for_contract.get("primary_skill", {})
         if isinstance(current_action_for_contract, Mapping)
@@ -4535,10 +5010,22 @@ def _validated_plan(
         "exact_answer_reference_match_overrode_model_label",
         "bounded_prerequisite_example_match_overrode_model_label",
         "teacher_action_type_mismatch_retargeted_to_primary_skill",
+        "correction_target_contract_exact_match",
+        # These are local, fail-closed route repairs.  They do not change the
+        # learner evidence or the server-owned correction target, so a later
+        # high-confidence verification answer may still resolve that target.
+        "agent_loop_route_enforced",
+        "agent_loop_route_repaired_by_state_first",
+        "correction_requires_grounded_misconception",
+        "model_skill_not_applicable_to_signal",
+        "primary_skill_selection_constrained",
+        "supporting_skill_selection_constrained",
+        "next_focus_constrained_to_primary_skill",
     }
     resolution_normalizations_are_safe = all(
         reason in allowed_resolution_normalizations
         or reason.startswith("primary_skill_contract_violation:")
+        or reason.startswith("state_first_route_adjudication:")
         for reason in normalization_reasons
     )
     resolution_evidence_valid = bool(
@@ -4550,7 +5037,12 @@ def _validated_plan(
         and evidence_excerpt
         and evidence_excerpt in source_excerpt
         and isinstance(current_primary, Mapping)
-        and current_primary.get("role") == "correction"
+        and current_primary.get("role")
+        in {"correction", "assessment", "metacognition", "review"}
+        and str(
+            current_action_for_contract.get("target_misconception_binding", "none")
+        )
+        in {"current_active_misconception", "prior_correction_chain"}
     )
     resolved = (
         [
@@ -4562,6 +5054,23 @@ def _validated_plan(
         else []
     )
     rejected_resolved = [tag for tag in requested_resolved if tag not in set(resolved)]
+    # The server owns the current correction target and the question contract.
+    # When that contract is answered exactly, a model that omits the tag (or
+    # uses a harmless synonym) must not leave a verified misconception active.
+    # Infer only one target, only with grounded high-confidence evidence, and
+    # still reject every unrelated tag the model supplied.
+    if (
+        resolution_evidence_valid
+        and len(targeted_tags) == 1
+        and not resolved
+    ):
+        resolved = [next(iter(targeted_tags))]
+        rejected_resolved = [
+            tag for tag in requested_resolved if tag not in set(resolved)
+        ]
+        normalization_reasons.append(
+            "active_correction_target_resolved_from_contract"
+        )
     if rejected_resolved:
         normalization_reasons.append(
             "misconception_resolution_request_rejected_without_bound_evidence"
@@ -4608,6 +5117,8 @@ def _validated_plan(
         "exact_short_concept_match_overrode_model_label",
         "exact_answer_reference_match_overrode_model_label",
         "bounded_prerequisite_example_match_overrode_model_label",
+        "active_correction_target_resolved_from_contract",
+        "correction_target_contract_exact_match",
     }
     grounded_assessment_repair = bool(
         review_exempt_normalizations & set(normalization_reasons)
@@ -4965,12 +5476,31 @@ def _request_plan(
         plan,
         continuity_constraints,
     )
+    lifecycle_action = {
+        "type": plan["teacher_action"]["type"],
+        "primary_skill": {
+            "skill_id": plan["decision"]["primary_skill_id"],
+        },
+        "supporting_skills": [
+            {"skill_id": skill_id}
+            for skill_id in plan["decision"]["supporting_skill_ids"]
+        ],
+        "next_focus": plan["decision"]["next_focus"],
+    }
+    turn_lifecycle = build_turn_lifecycle_receipt(
+        session,
+        loop_trace=agent_loop_trace,
+        plan=plan,
+        output_action=lifecycle_action,
+        verification_status="passed",
+    )
     trace = {
         **deepcopy(dict(trace)),
         "agent_loop": deepcopy(agent_loop_trace),
         "agent_loop_route_hint": agent_loop_skill_id,
         "action_repair": action_repair,
         "continuity_enforcement": continuity_enforcement,
+        "turn_lifecycle": turn_lifecycle,
     }
     privacy = {
         **deepcopy(dict(privacy)),
@@ -5049,6 +5579,7 @@ def _action_from_plan(
     trace: Mapping[str, Any],
     privacy: Mapping[str, Any],
     previous_primary_skill_id: str | None = None,
+    previous_action_snapshot: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     skills = _skill_index(session["skill_library"])
     decision = plan["decision"]
@@ -5088,11 +5619,64 @@ def _action_from_plan(
     ]
     diagnosis_tag = plan.get("diagnosis", {}).get("misconception_tag")
     target_misconception_tags: list[str] = []
+    target_misconception_binding = "none"
+    previous_action = (
+        previous_action_snapshot
+        if isinstance(previous_action_snapshot, Mapping)
+        else session.get("current_action", {})
+    )
+    previous_target_tags = (
+        [str(item) for item in previous_action.get("target_misconception_tags", [])]
+        if isinstance(previous_action, Mapping)
+        and isinstance(previous_action.get("target_misconception_tags"), list)
+        else []
+    )
+    previous_primary = (
+        previous_action.get("primary_skill", {})
+        if isinstance(previous_action, Mapping)
+        else {}
+    )
+    previous_binding = (
+        str(previous_action.get("target_misconception_binding", "none"))
+        if isinstance(previous_action, Mapping)
+        else "none"
+    )
     if selected["role"] == "correction":
         if diagnosis_tag and str(diagnosis_tag) in active_misconception_tags:
             target_misconception_tags = [str(diagnosis_tag)]
         elif len(active_misconception_tags) == 1:
             target_misconception_tags = active_misconception_tags
+        if target_misconception_tags:
+            target_misconception_binding = "current_active_misconception"
+    elif (
+        len(active_misconception_tags) == 1
+        and previous_target_tags == active_misconception_tags
+        and isinstance(previous_primary, Mapping)
+        and previous_primary.get("role") in {"correction", "assessment", "metacognition", "review"}
+        and previous_binding in {"current_active_misconception", "prior_correction_chain"}
+        and selected["role"] in {"assessment", "metacognition", "review"}
+    ):
+        # Keep a single, evidence-bound correction target attached while the
+        # learner performs the follow-up explanation or retrieval check.  This
+        # prevents a safe skill switch from orphaning an active misconception.
+        target_misconception_tags = list(active_misconception_tags)
+        target_misconception_binding = "prior_correction_chain"
+    if target_misconception_tags:
+        # Keep retrieval and wording changes from drifting the active
+        # correction target into a neighbouring knowledge component.  Prefer
+        # teacher-owned claim components; fall back to the previous action's
+        # bound components when the goal has no taxonomy.
+        bound_components = _misconception_knowledge_components(
+            session, target_misconception_tags
+        )
+        if not bound_components and isinstance(previous_action, Mapping):
+            previous_components = previous_action.get("knowledge_components", [])
+            if isinstance(previous_components, list):
+                bound_components = [
+                    str(item) for item in previous_components if str(item).strip()
+                ][:8]
+        if bound_components:
+            active_knowledge_components = bound_components
     support_execution = decision.get("support_execution", {})
     if not isinstance(support_execution, Mapping) or set(support_execution) != set(
         decision["supporting_skill_ids"]
@@ -5150,6 +5734,7 @@ def _action_from_plan(
         ),
         "action_provenance": deepcopy(decision["action_provenance"]),
         "target_misconception_tags": target_misconception_tags,
+        "target_misconception_binding": target_misconception_binding,
         "teacher_action": {
             "type": plan["teacher_action"]["type"],
             "message": plan["teacher_action"]["message"],
@@ -5569,6 +6154,38 @@ def _record_fallback(
         "credential_logged": False,
         "runtime_policy_contract": deepcopy(dict(policy_contract)),
     }
+    action = session.get("current_action", {})
+    primary = action.get("primary_skill", {}) if isinstance(action, Mapping) else {}
+    supporting = action.get("supporting_skills", []) if isinstance(action, Mapping) else []
+    runtime["last_model_trace"]["turn_lifecycle"] = build_turn_lifecycle_receipt(
+        session,
+        loop_trace={},
+        plan=None,
+        output_action=(
+            {
+                "type": action.get("type"),
+                "primary_skill": {
+                    "skill_id": primary.get("skill_id")
+                    if isinstance(primary, Mapping)
+                    else None
+                },
+                "supporting_skills": [
+                    {"skill_id": item.get("skill_id")}
+                    for item in supporting
+                    if isinstance(item, Mapping)
+                ],
+                "next_focus": session.get("student_state", {})
+                .get("next_focus", {})
+                .get("dimension")
+                if isinstance(session.get("student_state", {}).get("next_focus"), Mapping)
+                else None,
+            }
+            if isinstance(action, Mapping)
+            else None
+        ),
+        verification_status="fallback",
+        fallback_reason=str(error_message)[:240],
+    )
     session["current_action"]["decision_origin"] = "deterministic_safety_fallback"
     session["current_action"]["model_trace"] = deepcopy(runtime["last_model_trace"])
     if isinstance(runtime.get("last_context_trace"), dict):
@@ -5835,6 +6452,57 @@ def _update_interaction_statistics(
     }
 
 
+def _update_student_model_estimate(
+    session: dict[str, Any],
+    *,
+    diagnosis: Mapping[str, Any],
+    evidence_id: str | None,
+    source: str,
+) -> None:
+    """Update the evidence-weighted estimate beside the legacy state.
+
+    The focus is taken from the action that elicited the just-consumed answer,
+    never from the model's proposed next action.  This prevents a route change
+    from retroactively attributing evidence to the wrong knowledge dimension.
+    """
+
+    state = session["student_state"]
+    model = state.get("student_model")
+    if not isinstance(model, Mapping):
+        model = initialize_student_model(state.get("knowledge_mastery", {}))
+    validate_student_model(model)
+    event = session.get("history", [])[-1] if session.get("history") else {}
+    action = event.get("action", {}) if isinstance(event, Mapping) else {}
+    primary = action.get("primary_skill", {}) if isinstance(action, Mapping) else {}
+    focus = str(primary.get("focus_dimension", "conceptual"))
+    if focus not in {"prerequisite", "conceptual", "procedural", "transfer"}:
+        focus = "conceptual"
+    updated = update_student_model(
+        model,
+        signal=str(diagnosis.get("signal", "not_observed")),
+        confidence=float(diagnosis.get("confidence", 0.0) or 0.0),
+        focus_dimension=focus,
+        answer_alignment=str(diagnosis.get("answer_alignment", "ambiguous")),
+        needs_human_review=bool(diagnosis.get("needs_human_review", False)),
+        round_number=int(session.get("round", 0) or 0),
+        evidence_id=evidence_id,
+        source=source,
+    )
+    active_misconception = any(
+        isinstance(item, Mapping)
+        and item.get("status") == "active"
+        and float(item.get("confidence", 0.0) or 0.0) >= 0.5
+        for item in state.get("misconceptions", [])
+        if isinstance(state.get("misconceptions", []), list)
+    )
+    updated["recommended_focus"] = recommend_focus(
+        updated,
+        session.get("goal", {}).get("success_thresholds", {}),
+        active_misconception=active_misconception,
+    )
+    state["student_model"] = updated
+
+
 def _empty_adaptive_summary() -> dict[str, Any]:
     return {
         "schema": ADAPTIVE_PROFILE_SCHEMA,
@@ -6067,6 +6735,9 @@ def start_live_teacher_agent_session(
         "source": "no_current_turn_observation",
         "needs_human_review": False,
     }
+    session["student_state"]["student_model"] = initialize_student_model(
+        session["student_state"].get("knowledge_mastery", {})
+    )
     session["claim_boundary"].update(
         {
             "free_text_answer_processing_enabled": True,
@@ -6220,6 +6891,7 @@ def advance_live_teacher_agent_session(
         learner_text,
         visual_evidence,
     )
+    previous_action_snapshot = deepcopy(current.get("current_action", {}))
     previous_primary_skill_id = current["current_action"]["primary_skill"]["skill_id"]
     prior_switch_count = int(current["control"]["skill_switch_count"])
     try:
@@ -6286,6 +6958,21 @@ def advance_live_teacher_agent_session(
             policy_contract=runtime_policy_contract,
         )
         _mark_rule_fallback_observation(updated)
+        _update_student_model_estimate(
+            updated,
+            diagnosis={
+                "signal": fallback_signal,
+                "confidence": 0.0,
+                "answer_alignment": (
+                    "ambiguous" if visual_confirmation_required else "not_applicable"
+                ),
+                "needs_human_review": visual_confirmation_required,
+            },
+            evidence_id=(
+                f"session_history:r{int(updated.get('round', 0))}:structured_signal"
+            ),
+            source="deterministic_safety_fallback",
+        )
         if updated["history"]:
             updated["history"][-1]["model_error"] = str(exc)[:240]
             updated["history"][-1]["learner_text"] = learner_text
@@ -6361,6 +7048,21 @@ def advance_live_teacher_agent_session(
             policy_contract=runtime_policy_contract,
         )
         _mark_rule_fallback_observation(updated)
+        _update_student_model_estimate(
+            updated,
+            diagnosis={
+                "signal": fallback_signal,
+                "confidence": 0.0,
+                "answer_alignment": (
+                    "ambiguous" if visual_confirmation_required else "not_applicable"
+                ),
+                "needs_human_review": visual_confirmation_required,
+            },
+            evidence_id=(
+                f"session_history:r{int(updated.get('round', 0))}:structured_signal"
+            ),
+            source="deterministic_safety_fallback",
+        )
         if updated["history"]:
             updated["history"][-1]["model_error"] = str(exc)[:240]
             updated["history"][-1]["learner_text"] = learner_text
@@ -6401,6 +7103,14 @@ def advance_live_teacher_agent_session(
         policy_contract=runtime_policy_contract,
     )
     _update_interaction_statistics(updated, response=response, diagnosis=diagnosis)
+    _update_student_model_estimate(
+        updated,
+        diagnosis=diagnosis,
+        evidence_id=(
+            f"session_history:r{int(updated.get('round', 0))}:structured_signal"
+        ),
+        source=str(effective_source),
+    )
     updated["student_state"]["understanding_signal"]["source"] = effective_source
     _update_adaptive_student_profile_candidates(
         updated,
@@ -6462,6 +7172,7 @@ def advance_live_teacher_agent_session(
             trace=trace,
             privacy=privacy,
             previous_primary_skill_id=previous_primary_skill_id,
+            previous_action_snapshot=previous_action_snapshot,
         )
         updated["control"]["skill_switch_count"] = prior_switch_count + int(
             updated["current_action"]["skill_switched"]
@@ -6527,6 +7238,18 @@ def live_session_view(session: Mapping[str, Any]) -> dict[str, Any]:
     """Return a browser-safe view including model and audit metadata."""
 
     summary = session_turn_summary(session)
+    # The persisted session keeps the Beta-like accumulator parameters so the
+    # deterministic estimator can be replayed and integrity-checked.  Those
+    # implementation details are not useful to a learner or teacher in the
+    # browser and can be mistaken for calibrated probabilities, so project the
+    # model before exposing the live view.  The source session remains untouched.
+    student_state = summary.get("student_state")
+    if isinstance(student_state, Mapping):
+        projected_state = deepcopy(dict(student_state))
+        raw_model = projected_state.get("student_model")
+        if isinstance(raw_model, Mapping):
+            projected_state["student_model"] = project_student_model(raw_model)
+        summary["student_state"] = projected_state
     summary.update(
         {
             "goal_plan": deepcopy(session.get("goal_plan", {})),

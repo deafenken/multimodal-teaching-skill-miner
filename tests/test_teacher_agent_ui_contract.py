@@ -865,6 +865,112 @@ class TeacherAgentUiContractTests(unittest.TestCase):
         self.assertIn("renderAgentTrace(session, action)", render_session)
         self.assertIn("不展示内部思考链", self.html)
 
+    def test_learning_command_bar_exposes_goal_plan_progress_and_control(self) -> None:
+        for element_id in (
+            "learningCommandBar",
+            "commandGoal",
+            "commandGoalDetail",
+            "commandPlan",
+            "commandPlanDetail",
+            "commandProgressText",
+            "commandProgressBar",
+            "commandProgressDetail",
+            "commandControlState",
+            "commandControlDetail",
+        ):
+            with self.subTest(element_id=element_id):
+                self.parser.by_id(element_id)
+
+        renderer = self.script.split(
+            "function renderLearningCommandBar(session, action = {})", 1
+        )[1].split("function renderRecoveryConsole", 1)[0]
+        for required in (
+            "goal_plan",
+            "intermediate_objectives",
+            "knowledge_mastery",
+            "success_thresholds",
+            "selection_reason",
+            "app.controlMode",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, renderer)
+        self.assertIn("renderLearningCommandBar(session, action)", self.script)
+        self.assertIn(".learning-command-bar", self.style)
+
+    def test_public_trace_metrics_and_teacher_verification_are_explicit(self) -> None:
+        for element_id in (
+            "agentTraceStepCount",
+            "agentTraceModelCalls",
+            "agentTraceToolCalls",
+            "agentTraceFallbackCount",
+            "agentTraceEventCount",
+            "teacherAuditObservation",
+            "teacherAuditDecision",
+            "teacherAuditRecovery",
+        ):
+            with self.subTest(element_id=element_id):
+                self.parser.by_id(element_id)
+        trace_renderer = self.script.split(
+            "function renderAgentTrace(session, action)", 1
+        )[1].split("function renderRuntime", 1)[0]
+        for required in (
+            "model_call_count",
+            "tool_call_count",
+            "fallback_count",
+            'select("#agentTraceEventCount")',
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, trace_renderer)
+        audit_renderer = self.script.split(
+            "function renderTeacherAudit(session, action)", 1
+        )[1].split("function renderGoalPlan", 1)[0]
+        self.assertIn("understanding_signal", audit_renderer)
+        self.assertIn("selection_reason", audit_renderer)
+        self.assertIn("teacher.expected_signal", audit_renderer)
+        self.assertIn("model_stop_recommendation", audit_renderer)
+        self.assertIn(".teacher-audit-grid", self.style)
+
+    def test_recovery_console_supports_retry_and_explicit_human_handoff(self) -> None:
+        for element_id in (
+            "recoveryConsole",
+            "recoveryModeLabel",
+            "recoveryHeadline",
+            "recoveryDetail",
+            "retryTurnButton",
+            "handoffButton",
+        ):
+            with self.subTest(element_id=element_id):
+                self.parser.by_id(element_id)
+        recovery_renderer = self.script.split(
+            "function renderRecoveryConsole(session, action = {})", 1
+        )[1].split("function providerReady", 1)[0]
+        for state in ("ready", "working", "degraded", "error", "terminal"):
+            with self.subTest(state=state):
+                self.assertIn(f'"{state}"', recovery_renderer)
+        handoff = self.script.split("async function handoffToTeacher()", 1)[1].split(
+            "async function applySkillOverride", 1
+        )[0]
+        self.assertIn('await sendCommand("stop")', handoff)
+        self.assertIn('select("#turnForm").requestSubmit()', self.script)
+        self.assertIn("当前输入仍在页面中", self.script)
+        self.assertIn(".recovery-console[data-state=\"error\"]", self.style)
+
+    def test_recovery_state_is_cleared_on_new_or_restored_session(self) -> None:
+        error_helper = self.script.split("function showInlineError", 1)[1].split(
+            "function clearInlineError", 1
+        )[0]
+        self.assertIn("app.pendingTurn?.active", error_helper)
+        self.assertIn("无法提交", error_helper)
+        self.assertNotIn('app.recoveryRetryable = true;\n      renderRecoveryConsole', error_helper)
+        start = self.script.split("async function startSession(event)", 1)[1].split(
+            "async function sendCommand", 1
+        )[0]
+        self.assertIn("app.recoveryRetryable = false", start)
+        restore = self.script.split("async function restoreSession()", 1)[1].split(
+            "async function init()", 1
+        )[0]
+        self.assertIn("app.recoveryRetryable = false", restore)
+
     def test_structured_agent_trace_is_responsive_and_uses_status_tokens(self) -> None:
         for selector in (
             ".agent-trace-grid",

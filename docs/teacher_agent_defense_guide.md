@@ -24,9 +24,9 @@
 
 > 生产页面还打开了 state-first 路由：模型先提候选，控制器按掌握短板、误解、参与度、无进展次数和 Skill 契约确定优先层，模型只在同层作 tie-break。页面忙碌时的“停止生成”只取消当前回合并保留 Session；显式 `/stop` 才结束整个 Session，`transport_cancellation_supported=false` 表示远程请求本身仍可能完成。
 
-> 这一版 live prompt 是 V14（`teaching_agent_assess_route_act_v14_state_first_route_adjudication`）。action-only repair 只修当前动作；请求统计按 `completed_committed_turns_only`，且 `transport_cancellation_supported=false`。这些是工程边界，不是把开发集分数说成部署准确率。
+> 这一版 live prompt 是 V15（`teaching_agent_assess_route_act_v15_correction_chain_taxonomy_contract`）。action-only repair 只修当前动作；请求统计按 `completed_committed_turns_only`，纠错链 taxonomy 只做 teacher-owned 标签归一化，且 `transport_cancellation_supported=false`。这些是工程边界，不是把开发集分数说成部署准确率。
 
-本答辩指南以 V14 state-first 契约为准；代码和审计字段使用 `action_only_repair`、`continuity_recall` 与 `cancel_turn` 的固定名称，便于现场复核。
+本答辩指南以 V15 state-first 契约为准；代码和审计字段使用 `action_only_repair`、`continuity_recall`、`misconception_tag_canonicalized_from_teacher_taxonomy` 与 `cancel_turn` 的固定名称，便于现场复核。
 
 ## 0:30—1:05：01 目标与画像
 
@@ -109,6 +109,10 @@
 再指向多轮 benchmark 说明：
 
 > 我们还构造了 20 个多轮 episode，其中有 65 个学生回答回合和 1 次画像替换操作，专门压长期记忆、图片证据、知识纠错、Skill 切换、画像隔离和终止恢复。gold 不会发给模型；但它仍是作者构造、未经专家复核、未锁箱的开发集。当前只展示评估管线和覆盖范围，不编造尚未完成的在线数值，也不把它说成部署准确率。
+
+如果现场演示 Agent Loop 的路由细节：
+
+> 工具 Loop 的选择不是最终答案。它先读取状态并建议 Skill；如果建议只适用于上一种 signal，服务器会用 state-first 规则重新裁决到可执行阶段。之后若只修教师话语，修复不会改动已经确定的 Skill、终止状态或 route/loop 证据。这是可靠性门禁，不是把模型开发集分数包装成教学准确率。
 
 再指向自适应 Agent 与固定单 Skill表：
 

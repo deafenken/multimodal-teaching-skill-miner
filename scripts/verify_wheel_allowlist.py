@@ -30,6 +30,8 @@ PUBLIC_DATA_FILES = (
     "evaluation_cases.json",
     "formal_caption_sources.json",
     "neural_v1_runtime_manifest.json",
+    "teacher_agent_benchmark_v2_development.json",
+    "teacher_agent_benchmark_v2_development_gold.json",
     "teacher_agent_demo_input.json",
     "teacher_agent_evaluation_cases.json",
     "teacher_agent_free_text_benchmark.json",

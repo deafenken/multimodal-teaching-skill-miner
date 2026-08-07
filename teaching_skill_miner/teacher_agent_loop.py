@@ -262,6 +262,9 @@ def _session_view(
             current_response_evidence_id = _short(response_id, 120)
     if not current_focus:
         current_focus = _short(source.get("current_focus"), 80)
+    state_next_focus = state.get("next_focus", "")
+    if isinstance(state_next_focus, Mapping):
+        state_next_focus = state_next_focus.get("dimension", "")
     return {
         "goal": {
             "concept": _short(goal.get("concept"), 240),
@@ -296,7 +299,7 @@ def _session_view(
                 if isinstance(item, Mapping)
             ],
             "understanding_signal": deepcopy(state.get("understanding_signal", {})),
-            "next_focus": _short(state.get("next_focus"), 40),
+            "next_focus": _short(state_next_focus, 40),
         },
         "current_action": {
             "type": _short(current_action.get("type"), 80),
@@ -803,12 +806,16 @@ def run_teaching_agent_loop(
                 )
             break
         selected = state.get("selected_skill_id")
-        if not selected or selected != plan["selected_skill_id"]:
+        planned_selected = plan.get("selected_skill_id")
+        if not selected or not planned_selected or selected != planned_selected:
             events.append({"type": "guard", "step": step, "reason": "action_without_runtime_skill_selection"})
             terminal = {"status": "action_ready", "action": _fallback_action(session, state, "action emitted before select_skills"), "reason": "action emitted before select_skills"}
             events.append({"type": "fallback", "step": step, "reason": "action emitted before select_skills"})
             break
-        if plan["supporting_skill_ids"] != state.get("supporting_skill_ids", []):
+        planned_supporting = plan.get("supporting_skill_ids")
+        if not isinstance(planned_supporting, list) or planned_supporting != state.get(
+            "supporting_skill_ids", []
+        ):
             events.append(
                 {
                     "type": "guard",
@@ -831,7 +838,7 @@ def run_teaching_agent_loop(
                 }
             )
             break
-        if plan["next_focus"] != state.get("next_focus"):
+        if plan.get("next_focus") != state.get("next_focus"):
             events.append(
                 {
                     "type": "guard",
@@ -854,7 +861,8 @@ def run_teaching_agent_loop(
                 }
             )
             break
-        if len(plan["message"]) > options.max_action_chars:
+        message = plan.get("message")
+        if not isinstance(message, str) or len(message) > options.max_action_chars:
             events.append(
                 {
                     "type": "guard",
@@ -896,7 +904,14 @@ def run_teaching_agent_loop(
             },
             "reason": "model produced a validated teaching action",
         }
-        events.append({"type": "teaching_action", "step": step, "skill_id": selected, "message_sha256": hashlib.sha256(plan["message"].encode()).hexdigest()})
+        events.append(
+            {
+                "type": "teaching_action",
+                "step": step,
+                "skill_id": selected,
+                "message_sha256": hashlib.sha256(message.encode()).hexdigest(),
+            }
+        )
         break
     if terminal is None:
         if state.get("selected_skill_id") and state.get("next_focus") in _FOCUS:

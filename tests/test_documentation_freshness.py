@@ -231,11 +231,11 @@ class DocumentationFreshnessTests(unittest.TestCase):
         }
         self.assertEqual(
             LIVE_PROMPT_VERSION,
-            "teaching_agent_assess_route_act_v14_state_first_route_adjudication",
+            "teaching_agent_assess_route_act_v15_correction_chain_taxonomy_contract",
         )
         for relative, text in documents.items():
             with self.subTest(document=relative):
-                self.assertIn("V14", text)
+                self.assertIn("V15", text)
                 self.assertNotIn("V12", text)
                 self.assertNotIn("v12", text)
                 self.assertIn("state-first", text)

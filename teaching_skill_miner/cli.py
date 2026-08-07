@@ -163,6 +163,12 @@ from .teacher_agent_benchmark import (
     benchmark_exit_code,
     run_teacher_agent_benchmark,
 )
+from .teacher_agent_benchmark_v2 import (
+    predictions_from_live_cases,
+    score_benchmark_v2,
+    validate_benchmark_gold,
+    validate_benchmark_inputs,
+)
 from .teacher_agent_outcomes import evaluate_learning_observation
 
 
@@ -473,6 +479,79 @@ def command_teacher_agent_benchmark(args: argparse.Namespace) -> int:
     else:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     return benchmark_exit_code(report)
+
+
+def command_teacher_agent_benchmark_v2(args: argparse.Namespace) -> int:
+    """Validate or score the product benchmark without mixing input and gold."""
+
+    dataset = read_json(resolve_resource_path(args.benchmark))
+    gold = read_json(resolve_resource_path(args.gold))
+    library = read_json(resolve_resource_path(args.skill_library))
+    validate_benchmark_inputs(dataset, library)
+    validate_benchmark_gold(gold, dataset, library)
+    if args.validate_only:
+        summary = {
+            "schema": "teaching_skill_miner.teacher_agent_benchmark_v2_validation.v1",
+            "benchmark_id": dataset["benchmark_id"],
+            "split": dataset["split"],
+            "case_count": len(dataset["cases"]),
+            "gold_is_separate": True,
+            "input_contains_gold": False,
+            "deployment_accuracy_established": False,
+            "real_learning_effect_established": False,
+            "passed": True,
+        }
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+    predictions = None
+    if args.predictions:
+        predictions = read_json(args.predictions)
+    elif args.online:
+        if not args.allow_remote_benchmark_data:
+            raise ValueError("--online requires --allow-remote-benchmark-data")
+        if not args.predictions_output:
+            raise ValueError("--online requires --predictions-output in a private path")
+        client = DeepSeekClient(
+            DeepSeekConfig.from_environment(
+                api_key_file=args.api_key_file,
+                allow_remote_student_data=True,
+                model=args.model,
+            )
+        )
+        predictions = predictions_from_live_cases(dataset, library, client)
+        ensure_private_directory(Path(args.predictions_output).parent)
+        write_json(args.predictions_output, predictions)
+    else:
+        raise ValueError(
+            "provide --predictions for offline scoring, or use --online with explicit consent"
+        )
+    report = score_benchmark_v2(
+        dataset,
+        gold,
+        predictions,
+        library,
+        acknowledge_held_out=args.acknowledge_held_out,
+    )
+    if args.output:
+        target = write_json(args.output, report)
+        print(
+            json.dumps(
+                {
+                    "output": str(target),
+                    "benchmark_id": report["benchmark_id"],
+                    "split": report["split"],
+                    "run_fingerprint": report["run_fingerprint"],
+                    "content_sha256": report["content_sha256"],
+                    "raw_teacher_messages_printed": False,
+                    "deployment_accuracy_established": False,
+                    "real_learning_effect_established": False,
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
 
 
 def command_teacher_agent_outcome_evaluate(args: argparse.Namespace) -> int:
@@ -2720,6 +2799,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--fixed-skill-id", default="skill_diagnostic_questioning"
     )
     teacher_benchmark_parser.set_defaults(func=command_teacher_agent_benchmark)
+
+    teacher_benchmark_v2_parser = subparsers.add_parser(
+        "teacher-agent-benchmark-v2",
+        help="validate or score the product benchmark with separately governed gold",
+    )
+    teacher_benchmark_v2_parser.add_argument(
+        "--benchmark", default="data/teacher_agent_benchmark_v2_development.json"
+    )
+    teacher_benchmark_v2_parser.add_argument(
+        "--gold", default="data/teacher_agent_benchmark_v2_development_gold.json"
+    )
+    teacher_benchmark_v2_parser.add_argument(
+        "--skill-library", default="data/teacher_agent_skill_library_v2.json"
+    )
+    teacher_benchmark_v2_parser.add_argument("--predictions")
+    teacher_benchmark_v2_parser.add_argument("--predictions-output")
+    teacher_benchmark_v2_parser.add_argument("--output")
+    teacher_benchmark_v2_parser.add_argument(
+        "--validate-only", action="store_true", help="only validate input/gold separation"
+    )
+    teacher_benchmark_v2_parser.add_argument(
+        "--online", action="store_true", help="run the real DeepSeek executor"
+    )
+    teacher_benchmark_v2_parser.add_argument(
+        "--allow-remote-benchmark-data",
+        action="store_true",
+        help="explicitly authorize sending benchmark learner text to DeepSeek",
+    )
+    teacher_benchmark_v2_parser.add_argument("--api-key-file")
+    teacher_benchmark_v2_parser.add_argument(
+        "--model", choices=sorted(ALLOWED_MODELS), default="deepseek-v4-flash"
+    )
+    teacher_benchmark_v2_parser.add_argument(
+        "--acknowledge-held-out", action="store_true"
+    )
+    teacher_benchmark_v2_parser.set_defaults(func=command_teacher_agent_benchmark_v2)
 
     teacher_outcome_parser = subparsers.add_parser(
         "teacher-agent-outcome-evaluate",

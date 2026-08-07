@@ -188,6 +188,29 @@
           <div class="session-state"><i></i><span id="sessionStatus">等待开始</span></div>
         </header>
 
+        <section id="learningCommandBar" class="learning-command-bar" aria-label="本轮教学控制台" aria-live="polite">
+          <div class="command-cell goal-cell">
+            <span class="command-label">GOAL</span>
+            <strong id="commandGoal">尚未开始学习</strong>
+            <small id="commandGoalDetail">先设置一个可验证的学习目标。</small>
+          </div>
+          <div class="command-cell plan-cell">
+            <span class="command-label">PLAN</span>
+            <strong id="commandPlan">等待计划</strong>
+            <small id="commandPlanDetail">系统会先诊断，再选择下一步 Skill。</small>
+          </div>
+          <div class="command-cell progress-cell">
+            <div class="command-cell-heading"><span class="command-label">PROGRESS</span><strong id="commandProgressText">0%</strong></div>
+            <progress id="commandProgressBar" max="1" value="0" aria-label="教学目标进度 0%"></progress>
+            <small id="commandProgressDetail">0 / 0 个目标步骤</small>
+          </div>
+          <div class="command-cell control-cell">
+            <span class="command-label">CONTROL</span>
+            <strong id="commandControlState">READY</strong>
+            <small id="commandControlDetail">等待开始</small>
+          </div>
+        </section>
+
         <section id="liveDecisionStrip" class="live-decision-strip" aria-label="当前教学决策" aria-live="polite" hidden>
           <div><span>本轮方法</span><strong id="liveSkillName">等待开始</strong></div>
           <div><span>策略变化</span><strong id="liveSwitchLabel">—</strong></div>
@@ -204,6 +227,13 @@
               <small id="agentTraceSummary">开始后展示计划、调用结果和最终教学动作</small>
             </summary>
             <div class="agent-trace-body">
+              <div class="trace-metrics" aria-label="本轮公开运行统计">
+                <span><small>STEPS</small><strong id="agentTraceStepCount">0</strong></span>
+                <span><small>MODEL CALLS</small><strong id="agentTraceModelCalls">0</strong></span>
+                <span><small>TOOL CALLS</small><strong id="agentTraceToolCalls">0</strong></span>
+                <span><small>FALLBACK / TURN</small><strong id="agentTraceFallbackCount">0</strong></span>
+                <span><small>PUBLIC EVENTS</small><strong id="agentTraceEventCount">0</strong></span>
+              </div>
               <div class="agent-trace-grid">
                 <section class="agent-trace-card" aria-labelledby="agentTracePlanTitle">
                   <header><span>PLAN</span><h3 id="agentTracePlanTitle">本轮计划与进度</h3></header>
@@ -247,7 +277,14 @@
               <div class="message-content">
                 <header><span>老师 · 当前步骤</span><b id="actionType">—</b><strong id="currentActionOrigin" class="action-origin-chip" data-origin="unknown">来源待确认</strong></header>
                 <blockquote id="teacherMessage">—</blockquote>
-                <details class="teacher-audit-hint"><summary>查看本轮判断标准（教师 / 答辩）</summary><div class="expected"><span>老师在观察什么</span><p id="expectedSignal">—</p></div></details>
+                <details class="teacher-audit-hint"><summary>查看本轮判断标准（教师 / 答辩）</summary>
+                  <div class="teacher-audit-grid">
+                    <section><span>学生刚才表现</span><p id="teacherAuditObservation">等待学生回答。</p></section>
+                    <section><span>为什么现在这样教</span><p id="teacherAuditDecision">等待 Skill 路由依据。</p></section>
+                    <section><span>下一轮如何验证</span><p id="expectedSignal">—</p></section>
+                    <section><span>证据不足时怎么办</span><p id="teacherAuditRecovery">保持当前轮次，补充一个更小的可验证问题；必要时转人工。</p></section>
+                  </div>
+                </details>
               </div>
             </article>
           </div>
@@ -283,6 +320,10 @@
               <select id="fallbackSignalInput"><option value="partial">部分理解</option><option value="correct">理解正确</option><option value="misconception">存在误解</option><option value="confused">仍然困惑</option><option value="no_response">没有回应</option></select>
               <small>模型不可用时由演示者选择；这不是自由文本识别。</small>
             </label>
+            <section id="recoveryConsole" class="recovery-console" data-state="ready" aria-live="polite">
+              <div class="recovery-copy"><span id="recoveryModeLabel">READY</span><strong id="recoveryHeadline">会话可继续</strong><p id="recoveryDetail">每轮只提交一个教学动作，系统会保留当前输入直到收到服务端确认。</p></div>
+              <div class="recovery-actions"><button id="retryTurnButton" class="secondary-button" type="button" hidden>重新发送本轮</button><button id="handoffButton" class="text-button" type="button" hidden>结束并转人工</button></div>
+            </section>
             <div class="composer-footer">
               <div><span>Enter 换行 · ⌘/Ctrl + Enter 发送</span><button id="commandHintButton" class="text-button" type="button" aria-expanded="false" aria-controls="commandHints">教学控制</button></div>
               <div class="composer-actions"><button id="cancelTurnButton" class="cancel-turn-button" type="button" hidden>停止生成</button><button id="stepButton" class="send-button" type="submit"><span>发送</span><span aria-hidden="true">↑</span></button></div>

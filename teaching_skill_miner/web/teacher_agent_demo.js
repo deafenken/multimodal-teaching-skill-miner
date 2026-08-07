@@ -15,6 +15,7 @@
     pendingCommand: null,
     pendingAttachment: null,
     stopRequested: false,
+    recoveryRetryable: false,
     draftingReplacement: false,
     activeView: "learning",
     toastTimer: null,
@@ -383,12 +384,22 @@
     const error = select(target);
     error.textContent = message;
     error.hidden = false;
+    if (target === "#turnError") {
+      const retryable = Boolean(app.pendingTurn?.active)
+        || /无法提交|较早的教学响应|会话已在另一处更新|会话已更新|生成已停止|停止生成失败|转人工失败/.test(String(message));
+      app.recoveryRetryable = retryable;
+      renderRecoveryConsole(app.session, currentAction());
+    }
   }
 
   function clearInlineError(target) {
     const error = select(target);
     error.textContent = "";
     error.hidden = true;
+    if (target === "#turnError") {
+      app.recoveryRetryable = false;
+      renderRecoveryConsole(app.session, currentAction());
+    }
   }
 
   function showUnavailableSessionNotice(message) {
@@ -449,6 +460,7 @@
     app.pendingStart = null;
     app.pendingTurn = null;
     app.pendingCommand = null;
+    app.recoveryRetryable = false;
     app.draftingReplacement = false;
     clearSessionHandle();
     setControlMode("auto");
@@ -457,6 +469,8 @@
     select("#activeSession").hidden = true;
     select("#emptySession").hidden = false;
     renderPhase(null);
+    renderLearningCommandBar(null, {});
+    renderRecoveryConsole(null, {});
     showSetupForm(true);
     renderProfileIdentity();
     renderDraftProfileBaseline();
@@ -958,6 +972,132 @@
     finish.classList.toggle("current", Boolean(terminal));
   }
 
+  function renderLearningCommandBar(session, action = {}) {
+    const bar = select("#learningCommandBar");
+    if (!bar) return;
+    const goal = object(session?.goal || app.lastSetupPayload?.goal);
+    const concept = textValue(goal.concept || select("#conceptInput").value, "尚未开始学习");
+    const objective = textValue(goal.objective || select("#objectiveInput").value, "先设置一个可验证的学习目标。");
+    const plan = object(session?.goal_plan);
+    let steps = array(plan.intermediate_objectives);
+    let completed = finite(object(plan.progress).completed_steps, 0);
+    let total = finite(object(plan.progress).total_steps, steps.length);
+    let fraction = finite(object(plan.progress).fraction, NaN);
+    if (!steps.length && session) {
+      const mastery = object(session.student_state?.knowledge_mastery);
+      const thresholds = object(goal.success_thresholds);
+      let activeAssigned = false;
+      steps = Object.keys(dimensionLabels).map((dimension) => {
+        const threshold = Math.max(finite(thresholds[dimension], 1), 0.001);
+        const value = finite(mastery[dimension], 0);
+        const done = value >= threshold;
+        const current = !done && !activeAssigned;
+        if (current) activeAssigned = true;
+        return {dimension, status: done ? "completed" : (current ? "active" : "pending"), progress: Math.min(1, value / threshold)};
+      });
+      completed = steps.filter((step) => step.status === "completed").length;
+      total = steps.length;
+      fraction = total ? completed / total : 0;
+    }
+    if (!Number.isFinite(fraction)) fraction = total ? completed / total : 0;
+    fraction = Math.max(0, Math.min(1, fraction));
+    const activeStep = steps.find((step) => textValue(step.status, "") === "active") || steps.find((step) => textValue(step.status, "") !== "completed");
+    const activeDescription = textValue(activeStep?.description || activeStep?.objective, session ? "等待下一步教学动作" : "系统会先诊断学生当前状态");
+    const currentSkill = object(action.primary_skill);
+    const skillLabel = textValue(currentSkill.name || skillName(currentSkill.skill_id), "尚未路由 Skill");
+    const routeReason = textValue(action.selection_reason || action.model_selection_reason, "收到回答后再选择最合适的教学策略");
+    const status = !session
+      ? "ready"
+      : session.status !== "active"
+        ? "terminal"
+        : app.recoveryRetryable
+          ? "error"
+          : (app.bootstrap?.provider_status?.provider === "deterministic_fallback" || action.decision_origin === "deterministic_safety_fallback")
+            ? "degraded"
+            : "active";
+    bar.dataset.state = status;
+    select("#commandGoal").textContent = concept;
+    select("#commandGoal").title = concept;
+    select("#commandGoalDetail").textContent = compactText(objective, 120);
+    select("#commandPlan").textContent = activeDescription;
+    select("#commandPlan").title = activeDescription;
+    select("#commandPlanDetail").textContent = session
+      ? `${skillLabel} · ${compactText(routeReason, 90)}`
+      : "系统会先诊断，再选择下一步 Skill。";
+    select("#commandProgressText").textContent = `${Math.round(fraction * 100)}%`;
+    select("#commandProgressBar").value = fraction;
+    select("#commandProgressBar").setAttribute("aria-label", `教学目标进度 ${Math.round(fraction * 100)}%`);
+    select("#commandProgressDetail").textContent = `${Math.round(completed)} / ${Math.round(total)} 个目标步骤`;
+    const controlState = !session
+      ? "READY"
+      : session.status !== "active"
+        ? (session.status === "succeeded" ? "DONE" : "HANDOFF")
+        : app.busy
+          ? "RUNNING"
+          : app.controlMode === "manual" ? "MANUAL" : "AUTO";
+    const controlDetail = !session
+      ? "等待开始"
+      : session.status !== "active"
+        ? "当前会话已停止，可由教师接管"
+        : app.busy
+          ? "正在等待服务端确认"
+          : app.controlMode === "manual" ? "已锁定 Skill，输入 /auto 释放" : "Agent 自动路由 Skill";
+    select("#commandControlState").textContent = controlState;
+    select("#commandControlDetail").textContent = controlDetail;
+  }
+
+  function renderRecoveryConsole(session, action = {}) {
+    const consoleNode = select("#recoveryConsole");
+    if (!consoleNode) return;
+    if (!session) {
+      consoleNode.hidden = true;
+      return;
+    }
+    consoleNode.hidden = false;
+    const active = session.status === "active";
+    const provider = object(app.bootstrap?.provider_status);
+    const trace = object(action.model_trace || session.agent_runtime?.last_model_trace);
+    const fallback = provider.provider === "deterministic_fallback"
+      || trace.fallback_used === true
+      || action.decision_origin === "deterministic_safety_fallback";
+    let state = "ready";
+    let mode = "READY";
+    let headline = "会话可继续";
+    let detail = "每轮只提交一个教学动作，系统会保留当前输入直到收到服务端确认。";
+    if (!active) {
+      state = "terminal";
+      mode = session.status === "succeeded" ? "DONE" : "HANDOFF";
+      headline = session.status === "succeeded" ? "目标已达标" : "已转人工接管";
+      detail = textValue(action.termination_reason || session.termination_reason, "系统已停止自动生成；教师可以查看完整轨迹。" );
+    } else if (app.recoveryRetryable) {
+      state = "error";
+      mode = "RETRY READY";
+      headline = "本轮没有提交成功";
+      detail = "当前输入仍在页面中；确认问题没有变化后可以重新发送，或结束并转人工。";
+    } else if (app.busy) {
+      state = "working";
+      mode = "RUNNING";
+      headline = "Agent 正在处理本轮";
+      detail = "正在读取上下文、诊断学情并校验下一步教学动作。";
+    } else if (fallback) {
+      state = "degraded";
+      mode = "FALLBACK";
+      headline = "规则回退仍可继续";
+      detail = "在线模型未完成本轮语义诊断；当前动作可审计，但不应当解释为模型准确率。";
+    }
+    consoleNode.dataset.state = state;
+    select("#recoveryModeLabel").textContent = mode;
+    select("#recoveryHeadline").textContent = headline;
+    select("#recoveryDetail").textContent = detail;
+    const retry = select("#retryTurnButton");
+    retry.hidden = !(active && app.recoveryRetryable);
+    retry.disabled = app.busy;
+    const handoff = select("#handoffButton");
+    const canHandoff = active && commandControlsSupported();
+    handoff.hidden = !canHandoff;
+    handoff.disabled = app.busy;
+  }
+
   function providerReady() {
     const provider = object(app.bootstrap?.provider_status);
     return provider.provider === "deepseek"
@@ -1107,6 +1247,8 @@
     for (const card of document.querySelectorAll("[data-profile-id]")) {
       card.disabled = app.busy;
     }
+    renderLearningCommandBar(app.session, currentAction());
+    renderRecoveryConsole(app.session, currentAction());
   }
 
   function setRange(input, value) {
@@ -2049,6 +2191,34 @@
       : reason;
   }
 
+  function renderTeacherAudit(session, action) {
+    const history = array(session?.history);
+    const latest = object(history.at(-1));
+    const state = object(session?.student_state);
+    const signal = object(state.understanding_signal);
+    const evidence = object(state.assessment_evidence);
+    const teacher = object(action?.teacher_action);
+    const observation = textValue(
+      signal.response_excerpt || evidence.excerpt || latest.learner_response,
+      history.length ? "本轮已有回答，但没有可公开的原话片段。" : "等待学生回答。"
+    );
+    const routeReason = textValue(
+      action?.selection_reason || action?.model_selection_reason,
+      textValue(object(state.next_focus).reason, "等待 Skill 路由依据。")
+    );
+    const verification = textValue(teacher.expected_signal, "等待学生作答后再验证当前重点。" );
+    const stop = object(action?.model_stop_recommendation);
+    const recovery = session?.status !== "active"
+      ? "会话已停止；保留当前学情与证据，交由教师决定是否继续。"
+      : stop.should_stop === true
+        ? "模型建议停止，但只有满足服务端终止门槛后才执行；否则继续收集证据。"
+        : "若连续低置信度、无回应或误解未消除，先缩小问题粒度；仍无法推进时转人工。";
+    select("#teacherAuditObservation").textContent = compactText(observation, 220);
+    select("#teacherAuditDecision").textContent = compactText(routeReason, 220);
+    select("#expectedSignal").textContent = compactText(verification, 220);
+    select("#teacherAuditRecovery").textContent = recovery;
+  }
+
   function renderGoalPlan(session) {
     const plan = object(session.goal_plan);
     let steps = array(plan.intermediate_objectives);
@@ -2672,6 +2842,19 @@
       : "尚未形成路由结果";
     events.push({label: "Skill 路由结果", status: routeChanged ? "active" : "success", detail: routeDetail});
     events.push({label: terminal ? "终止动作" : "教师教学动作", status: hasAction ? "success" : "active", detail: hasAction ? `${textValue(teacher.type || current.type)} · ${compactText(teacher.message, 180)}` : "等待可展示动作"});
+    select("#agentTraceStepCount").textContent = String(Math.max(finite(loopTrace.steps, 0), planRows.filter((row) => row.status === "done").length));
+    select("#agentTraceModelCalls").textContent = String(finite(loopTrace.model_call_count, hasModelCall ? 1 : 0));
+    select("#agentTraceToolCalls").textContent = String(finite(loopTrace.tool_call_count, 0));
+    const sessionFallbackCount = finite(runtime.fallback_count, 0);
+    const currentFallbackCount = loopTrace.deterministic_fallback === true
+      || trace.fallback_used === true
+      || current.decision_origin === "deterministic_safety_fallback"
+      ? 1
+      : 0;
+    const fallbackNode = select("#agentTraceFallbackCount");
+    fallbackNode.textContent = String(currentFallbackCount);
+    fallbackNode.title = `本轮 ${currentFallbackCount} 次 · 会话累计 ${sessionFallbackCount} 次`;
+    select("#agentTraceEventCount").textContent = String(events.length);
     const eventRoot = select("#agentTraceEvents");
     eventRoot.replaceChildren(...events.map((entry) => {
       const item = node("li", "");
@@ -2799,10 +2982,12 @@
     select("#roundCounter").textContent = `R${finite(session.rounds_completed, 0)}`;
     updateWorkspaceIdentity(session.goal);
     renderPhase(session);
+    renderLearningCommandBar(session, action);
     if (active) renderActive(session, action); else renderTerminal(session, action);
     renderActionProvenance(action);
 
     renderAssessment(session);
+    renderTeacherAudit(session, action);
     const states = latestHistoryStates();
     const studentState = object(session.student_state);
     renderMastery(studentState, states.before);
@@ -3141,6 +3326,7 @@
       app.lastSetupPayload = startPayload;
       app.pendingTurn = null;
       app.pendingCommand = null;
+      app.recoveryRetryable = false;
       clearPendingAttachment();
       select("#learnerResponse").value = "";
       synchronizeControlModeFromSession();
@@ -3231,6 +3417,24 @@
       app.stopRequested = false;
       syncControls();
       showInlineError("#turnError", `停止生成失败：${String(error.message || error)}`);
+    }
+  }
+
+  async function handoffToTeacher() {
+    if (app.busy || !app.session || app.session.status !== "active") return;
+    if (!commandControlsSupported()) {
+      showToast("当前降级后端不支持远程终止命令；请使用左侧设置结束演示。 ");
+      return;
+    }
+    setBusy(true);
+    app.recoveryRetryable = false;
+    try {
+      await sendCommand("stop");
+      showToast("已结束自动教学并保留当前学情，教师可以接管后续讲解。 ");
+    } catch (error) {
+      showInlineError("#turnError", `转人工失败：${String(error.message || error)}`);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -3654,6 +3858,11 @@
       showToast("已记录你对 OCR 转写的核对；系统仍会依据当前问题契约判断答案。 ");
     });
     select("#cancelTurnButton").addEventListener("click", requestStopGeneration);
+    select("#retryTurnButton").addEventListener("click", () => {
+      if (app.busy || !app.session || app.session.status !== "active") return;
+      select("#turnForm").requestSubmit();
+    });
+    select("#handoffButton").addEventListener("click", handoffToTeacher);
     select("#presetButton").addEventListener("click", handleSetupButton);
     select("#conceptInput").addEventListener("input", () => updateWorkspaceIdentity());
     select("#objectiveInput").addEventListener("input", () => updateWorkspaceIdentity());
@@ -3771,6 +3980,7 @@
       app.pendingStart = null;
       app.pendingTurn = null;
       app.pendingCommand = null;
+      app.recoveryRetryable = false;
       clearPendingAttachment();
       app.draftingReplacement = false;
       syncReplacementDraftUi();
@@ -3799,6 +4009,8 @@
     setSidebar(false);
     setInspectorTab("state");
     renderPhase(null);
+    renderLearningCommandBar(null, {});
+    renderRecoveryConsole(null, {});
     showSetupForm(true);
     setControlMode("auto");
     syncReplacementDraftUi();

@@ -305,6 +305,25 @@ def test_layered_context_fails_closed_when_recall_cue_has_no_matching_record() -
     assert recall["must_not_invent"] is True
 
 
+def test_prior_agreement_completion_cue_prioritizes_unresolved_work() -> None:
+    context = build_layered_context(
+        _continuity_session(),
+        "按我们之前约定的方式继续，并提醒我哪里还没完成。",
+        max_recent_turns=1,
+        max_chars=14_000,
+    )
+    validate_layered_context(context)
+
+    recall = context["semantic_summary"]["continuity_recall"]
+    assert recall["cue_kind"] == "prior_agreement_or_agenda"
+    assert recall["status"] == "resolved_evidence_linked"
+    assert recall["target"]["kind"] == "unresolved_learner_question"
+    assert recall["target"]["source_round"] == 3
+    assert set(recall["target"]["evidence_refs"]) <= {
+        item["evidence_id"] for item in context["evidence_ledger"]
+    }
+
+
 def test_continuity_recall_can_resolve_the_current_unanswered_teacher_action() -> None:
     session = _session()
     session["student_profile"] = {

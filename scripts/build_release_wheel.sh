@@ -50,6 +50,8 @@ for relative_path in \
   data/evaluation_cases.json \
   data/formal_caption_sources.json \
   data/neural_v1_runtime_manifest.json \
+  data/teacher_agent_benchmark_v2_development.json \
+  data/teacher_agent_benchmark_v2_development_gold.json \
   data/teacher_agent_demo_input.json \
   data/teacher_agent_evaluation_cases.json \
   data/teacher_agent_free_text_benchmark.json \
