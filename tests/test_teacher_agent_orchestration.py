@@ -266,6 +266,207 @@ class TeacherAgentOrchestrationTests(unittest.TestCase):
             unable_receipt["phases"][-1]["status"], "handoff_required"
         )
 
+    def test_event_lifecycle_receipt_derives_a_real_commit_without_raw_text(self) -> None:
+        session = self._session()
+        action = {
+            "type": "probe_prior_knowledge",
+            "primary_skill": {"skill_id": "skill_diagnostic_questioning"},
+            "supporting_skills": [{"skill_id": "skill_wait_and_elicit"}],
+            "next_focus": "prerequisite",
+        }
+        receipt = build_turn_lifecycle_receipt(
+            session,
+            loop_trace={},
+            plan=None,
+            output_action=action,
+            route_authority="state_first_policy",
+            turn_outcome="commit",
+            commit_round=0,
+            lifecycle_events=[
+                {
+                    "event": "observe",
+                    "observation_present": True,
+                    "evidence_count": 1,
+                    "source": "learner_turn",
+                    "learner_text": "PRIVATE_LEARNER_TEXT",
+                },
+                {
+                    "event": "assess",
+                    "signal": "partial",
+                    "confidence": 0.82,
+                    "assessment_source": "validated_diagnosis",
+                    "evidence_excerpt": "PRIVATE_ASSESSMENT_EXCERPT",
+                },
+                {
+                    "event": "route",
+                    "selected_skill_id": "skill_diagnostic_questioning",
+                    "supporting_skill_ids": ["skill_wait_and_elicit"],
+                },
+                {
+                    "event": "act",
+                    "action": {
+                        **action,
+                        "message": "PRIVATE_TEACHER_MESSAGE",
+                    },
+                },
+                {"event": "commit", "committed": True, "round": 0},
+            ],
+        )
+
+        self.assertEqual(receipt["status"], "completed")
+        self.assertEqual(receipt["turn_outcome"], "commit")
+        self.assertEqual(receipt["verification"]["status"], "verified")
+        self.assertEqual(receipt["route_authority"], "state_first_policy")
+        self.assertEqual(receipt["commit_round"], 0)
+        self.assertFalse(receipt["replan"]["occurred"])
+        self.assertEqual(
+            [event["event"] for event in receipt["events"]],
+            ["observe", "assess", "route", "act", "commit"],
+        )
+        self.assertEqual(receipt["events"][-1]["status"], "committed")
+        self.assertTrue(receipt["claim_boundary"]["commit_established"])
+        encoded = json.dumps(receipt, ensure_ascii=False)
+        for forbidden in (
+            "PRIVATE_LEARNER_TEXT",
+            "PRIVATE_ASSESSMENT_EXCERPT",
+            "PRIVATE_TEACHER_MESSAGE",
+        ):
+            self.assertNotIn(forbidden, encoded)
+
+    def test_event_lifecycle_commit_rejects_asserted_pass_without_facts(self) -> None:
+        session = self._session()
+        action = {
+            "type": "probe_prior_knowledge",
+            "primary_skill": {"skill_id": "skill_diagnostic_questioning"},
+            "supporting_skills": [],
+            "next_focus": "prerequisite",
+        }
+        receipt = build_turn_lifecycle_receipt(
+            session,
+            loop_trace={},
+            plan=None,
+            output_action=action,
+            route_authority="state_first_policy",
+            turn_outcome="commit",
+            commit_round=0,
+            lifecycle_events=[
+                {"event": "observe", "status": "passed", "observed": False},
+                {"event": "assess", "signal": "partial", "confidence": 0.8},
+                {
+                    "event": "route",
+                    "selected_skill_id": "skill_diagnostic_questioning",
+                },
+                {
+                    "event": "act",
+                    "selected_skill_id": "skill_diagnostic_questioning",
+                    "action_type": "probe_prior_knowledge",
+                    "action_materialized": True,
+                },
+                {"event": "commit", "committed": True, "round": 0},
+            ],
+        )
+
+        self.assertEqual(receipt["status"], "blocked")
+        self.assertEqual(receipt["turn_outcome"], "invalid")
+        self.assertEqual(receipt["verification"]["status"], "rejected")
+        self.assertIn(
+            "observation_fact_missing", receipt["verification"]["failures"]
+        )
+        self.assertFalse(receipt["claim_boundary"]["commit_established"])
+        self.assertNotIn("passed", json.dumps(receipt, ensure_ascii=False))
+
+    def test_event_lifecycle_records_abort_without_free_text_reason(self) -> None:
+        receipt = build_turn_lifecycle_receipt(
+            self._session(),
+            loop_trace={},
+            plan=None,
+            lifecycle_events=[
+                {
+                    "event": "observe",
+                    "observation_present": True,
+                    "learner_text": "PRIVATE_ABORTED_TURN",
+                },
+                {
+                    "event": "abort",
+                    "aborted": True,
+                    "reason": "PRIVATE_EXCEPTION_DETAIL",
+                    "reason_codes": ["client_cancelled"],
+                },
+            ],
+            turn_outcome="abort",
+        )
+
+        self.assertEqual(receipt["status"], "aborted")
+        self.assertEqual(receipt["turn_outcome"], "abort")
+        self.assertEqual(receipt["events"][-1]["status"], "aborted")
+        self.assertEqual(
+            receipt["events"][-1]["reason_codes"], ["client_cancelled"]
+        )
+        encoded = json.dumps(receipt, ensure_ascii=False)
+        self.assertNotIn("PRIVATE_ABORTED_TURN", encoded)
+        self.assertNotIn("PRIVATE_EXCEPTION_DETAIL", encoded)
+
+    def test_event_lifecycle_exposes_route_replan_authority(self) -> None:
+        action = {
+            "type": "present_minimal_example",
+            "primary_skill": {"skill_id": "skill_concrete_example_bridge"},
+            "supporting_skills": [],
+            "next_focus": "conceptual",
+        }
+        receipt = build_turn_lifecycle_receipt(
+            self._session(),
+            loop_trace={},
+            plan=None,
+            output_action=action,
+            route_authority="state_first_policy",
+            turn_outcome="commit",
+            commit_round=0,
+            lifecycle_events=[
+                {"event": "observe", "observation_present": True},
+                {"event": "assess", "signal": "partial", "confidence": 0.8},
+                {
+                    "event": "route",
+                    "selected_skill_id": "skill_diagnostic_questioning",
+                },
+                {
+                    "event": "act",
+                    "selected_skill_id": "skill_diagnostic_questioning",
+                    "action_type": "probe_prior_knowledge",
+                    "action_materialized": True,
+                },
+                {
+                    "event": "route",
+                    "selected_skill_id": "skill_concrete_example_bridge",
+                    "replan_count": 1,
+                    "reason_codes": ["state_changed_after_verification"],
+                },
+                {
+                    "event": "act",
+                    "selected_skill_id": "skill_concrete_example_bridge",
+                    "action_type": "present_minimal_example",
+                    "action_materialized": True,
+                },
+                {"event": "commit", "round": 0},
+            ],
+        )
+
+        self.assertEqual(receipt["status"], "completed")
+        self.assertEqual(receipt["replan_count"], 1)
+        self.assertTrue(receipt["replan"]["occurred"])
+        self.assertTrue(receipt["replan"]["route_changed"])
+        self.assertEqual(
+            receipt["replan"]["initial_skill_id"],
+            "skill_diagnostic_questioning",
+        )
+        self.assertEqual(
+            receipt["replan"]["final_skill_id"],
+            "skill_concrete_example_bridge",
+        )
+        self.assertIn(
+            "state_changed_after_verification",
+            receipt["replan"]["reason_codes"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,9 +27,13 @@ from teaching_skill_miner.teacher_agent_live import (
     _deterministically_enforce_action_continuity,
     _apply_support_skill_modifiers,
     _contract_safe_retarget_action,
+    _correction_target_contract_match,
     _grounded_model_excerpt,
     _learner_evidence_validation_context,
     _materialize_contract_safe_fallback_action,
+    _provisional_route_session,
+    _request_plan,
+    _state_first_route_adjudication,
     _safe_generative_action_candidate,
     _skill_prompt_view,
     _system_prompt,
@@ -4842,7 +4846,10 @@ class LiveTeacherAgentTests(unittest.TestCase):
             "先让我检查遗漏的最后一步。"
         )
         plans[3]["diagnosis"]["evidence_excerpt"] = (
-            "还要考虑最后走两级，所以是 dp[i-1] 和 dp[i-2] 两类相加。"
+            # Deliberately do not provide a verbatim learner substring.  The
+            # server-owned correction contract must still bind the original
+            # response as evidence and resolve the single active target.
+            "模型摘要：已检查两类最后一步来源。"
         )
         client = _client(plans)
         options = LiveAgentOptions(
@@ -4871,6 +4878,137 @@ class LiveTeacherAgentTests(unittest.TestCase):
         assert "correction_target_contract_exact_match" in assessment[
             "normalization_reasons"
         ]
+        assert assessment["evidence_excerpt"] == (
+            "还要考虑最后走两级，所以是 dp[i-1] 和 dp[i-2] 两类相加。"
+        )
+        assert assessment["evidence_binding_source"] == (
+            "teacher_knowledge_spec_correction_contract_match"
+        )
+
+    def test_correction_contract_rejects_term_complete_but_contradictory_claim(
+        self,
+    ) -> None:
+        initial = _plan(
+            signal="not_observed",
+            confidence=0.0,
+            skill_id="skill_diagnostic_questioning",
+        )
+        session = start_live_teacher_agent_session(
+            self.demo["goal"],
+            self.demo["student_profile"],
+            self.library,
+            _client([initial]),
+        )
+        session["student_state"]["misconceptions"] = [
+            {
+                "tag": "missing_second_transition",
+                "description": "遗漏最后走两级的合法路径",
+                "confidence": 0.9,
+                "status": "active",
+            }
+        ]
+        session["current_action"] = {
+            "primary_skill": {"role": "correction"},
+            "target_misconception_tags": ["missing_second_transition"],
+            "target_misconception_binding": "current_active_misconception",
+            "knowledge_components": ["状态转移"],
+            "teacher_action": {
+                "message": "请说明两类最后一步如何共同构成状态转移。",
+                "question_contract": {
+                    "answer_type": "explanation",
+                    "target_concepts": ["状态转移"],
+                    "accepted_aliases": ["dp[i-1] 和 dp[i-2]", "走两级"],
+                    "success_criteria": ["说明两类最后一步来源"],
+                },
+            },
+        }
+
+        contradictory = (
+            "状态转移只需要 dp[i-1] 和 dp[i-2] 中的前者，走两级不需要。"
+        )
+        correct = "还要考虑最后走两级，所以是 dp[i-1] 和 dp[i-2] 两类相加。"
+
+        self.assertIsNone(
+            _correction_target_contract_match(contradictory, session)
+        )
+        self.assertIsNotNone(_correction_target_contract_match(correct, session))
+
+    def test_contradictory_correction_answer_does_not_resolve_misconception(
+        self,
+    ) -> None:
+        plans = [
+            _plan(
+                signal="not_observed",
+                confidence=0.0,
+                skill_id="skill_diagnostic_questioning",
+            ),
+            _plan(
+                signal="misconception",
+                confidence=0.9,
+                skill_id="skill_misconception_contrast",
+                misconception_tag="missing_second_transition",
+            ),
+            _plan(
+                signal="partial",
+                confidence=0.7,
+                skill_id="skill_self_explanation",
+                answer_alignment="partially_aligned",
+            ),
+        ]
+        plans[1]["diagnosis"]["evidence_excerpt"] = (
+            "我认为 dp[i] 只需要等于 dp[i-1]，因为最后只走一步。"
+        )
+        plans[2]["diagnosis"]["evidence_excerpt"] = (
+            "模型摘要：学生提到了两个状态，但否定了第二类来源。"
+        )
+        client = _client(plans)
+        session = start_live_teacher_agent_session(
+            self.demo["goal"],
+            self.demo["student_profile"],
+            self.library,
+            client,
+        )
+        session = advance_live_teacher_agent_session(
+            session,
+            learner_response=(
+                "我认为 dp[i] 只需要等于 dp[i-1]，因为最后只走一步。"
+            ),
+            client=client,
+        )
+        # Bind a realistic correction contract with the two required terms;
+        # this isolates the polarity gate from unrelated action-template text.
+        session["current_action"]["target_misconception_tags"] = [
+            "missing_second_transition"
+        ]
+        session["current_action"]["target_misconception_binding"] = (
+            "current_active_misconception"
+        )
+        session["current_action"]["knowledge_components"] = ["状态转移"]
+        session["current_action"]["teacher_action"]["question_contract"] = {
+            "answer_type": "explanation",
+            "target_concepts": ["状态转移"],
+            "accepted_aliases": ["dp[i-1] 和 dp[i-2]", "走两级"],
+            "success_criteria": ["说明两类最后一步来源"],
+            "grading_scope": "current_question_only",
+        }
+        _refresh_integrity(session)
+
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response=(
+                "状态转移只需要 dp[i-1] 和 dp[i-2] 中的前者，走两级不需要。"
+            ),
+            client=client,
+        )
+        misconception = next(
+            item
+            for item in updated["student_state"]["misconceptions"]
+            if item["tag"] == "missing_second_transition"
+        )
+        assessment = updated["history"][-1]["deepseek_assessment"]
+        self.assertNotEqual(assessment["signal"], "correct")
+        self.assertEqual(assessment["resolved_misconception_tags"], [])
+        self.assertEqual(misconception["status"], "active")
 
     def test_correction_target_survives_intermediate_skill_switch(self) -> None:
         profile = deepcopy(self.demo["student_profile"])
@@ -4952,6 +5090,215 @@ class LiveTeacherAgentTests(unittest.TestCase):
             for item in updated["student_state"]["misconceptions"]
             if item["tag"] == "m1"
         ) == "resolved"
+
+    def test_post_assessment_route_adjudication_uses_provisional_state_only_for_route(
+        self,
+    ) -> None:
+        """The route gate sees this turn, while resolution keeps old-state evidence."""
+
+        profile = deepcopy(self.demo["student_profile"])
+        profile["known_misconceptions"] = [
+            {"tag": "m1", "description": "只看一个前驱", "confidence": 0.9}
+        ]
+        session = start_live_teacher_agent_session(
+            self.demo["goal"],
+            profile,
+            self.library,
+            _client(
+                [
+                    _plan(
+                        signal="not_observed",
+                        confidence=0.0,
+                        skill_id="skill_diagnostic_questioning",
+                    )
+                ]
+            ),
+            options=LiveAgentOptions(agent_loop_enabled=False),
+        )
+        session["student_state"]["knowledge_mastery"] = {
+            dimension: 0.9
+            for dimension in ("prerequisite", "conceptual", "procedural", "transfer")
+        }
+        session["current_action"]["primary_skill"] = {
+            "skill_id": "skill_misconception_contrast",
+            "name": "误解对比纠错",
+            "role": "correction",
+            "focus_dimension": "conceptual",
+            "knowledge_components": ["动态规划的状态与转移"],
+            "source": {},
+        }
+        session["current_action"]["target_misconception_tags"] = ["m1"]
+        session["current_action"]["target_misconception_binding"] = (
+            "current_active_misconception"
+        )
+        session["current_action"]["teacher_action"]["question_contract"] = {
+            "answer_type": "explanation",
+            "target_concepts": ["全部合法前驱"],
+            "accepted_aliases": ["所有合法前驱"],
+            "success_criteria": ["指出转移应检查全部合法前驱"],
+            "grading_scope": "current_question_only",
+        }
+        _refresh_integrity(session)
+
+        raw_plan = _plan(
+            signal="correct",
+            confidence=0.95,
+            skill_id="skill_diagnostic_questioning",
+            answer_alignment="aligned",
+        )
+        raw_plan["diagnosis"]["evidence_excerpt"] = "全部合法前驱"
+        raw_plan["diagnosis"]["resolved_misconception_tags"] = ["m1"]
+        response = "全部合法前驱"
+        context = build_layered_context(session, response)
+        captured_route_sessions: list[dict] = []
+
+        def capture_route_session(route_session: dict, **kwargs: object) -> dict:
+            captured_route_sessions.append(deepcopy(route_session))
+            return _state_first_route_adjudication(route_session, **kwargs)
+
+        loop_trace = {
+            "schema": "teaching_skill_miner.teacher_agent_loop.v1",
+            "status": "route_ready",
+            "selected_skill_id": "skill_diagnostic_questioning",
+            "deterministic_fallback": False,
+            "steps": 1,
+            "events": [],
+        }
+        with (
+            patch(
+                "teaching_skill_miner.teacher_agent_live._run_live_agent_loop",
+                return_value=("skill_diagnostic_questioning", loop_trace),
+            ),
+            patch(
+                "teaching_skill_miner.teacher_agent_live._state_first_route_adjudication",
+                side_effect=capture_route_session,
+            ),
+        ):
+            plan, _trace, _privacy = _request_plan(
+                _client([raw_plan]),
+                session,
+                learner_response=response,
+                learner_text=response,
+                learner_evidence=None,
+                context_memory=context,
+                manual_skill_id=None,
+                options=LiveAgentOptions(
+                    agent_loop_enabled=True,
+                    agent_loop_post_assessment_enabled=True,
+                    state_first_route_adjudication_enabled=True,
+                    agent_loop_model_retries=0,
+                ),
+            )
+
+        self.assertEqual(len(captured_route_sessions), 1)
+        route_state = captured_route_sessions[0]["student_state"]
+        self.assertEqual(route_state["understanding_signal"]["label"], "correct")
+        self.assertEqual(route_state["knowledge_mastery"]["conceptual"], 0.9)
+        self.assertEqual(
+            captured_route_sessions[0]["control"]["consecutive_no_progress"],
+            session["control"]["consecutive_no_progress"],
+        )
+        self.assertEqual(
+            next(
+                item["status"]
+                for item in route_state["misconceptions"]
+                if item["tag"] == "m1"
+            ),
+            "resolved",
+        )
+        self.assertEqual(
+            next(
+                item["status"]
+                for item in session["student_state"]["misconceptions"]
+                if item["tag"] == "m1"
+            ),
+            "active",
+        )
+        self.assertEqual(plan["diagnosis"]["resolved_misconception_tags"], ["m1"])
+        self.assertEqual(
+            plan["decision"]["primary_skill_id"], "skill_transfer_check"
+        )
+        self.assertIn(
+            "agent_loop_route_rejected_by_server_contract",
+            plan["diagnosis"]["normalization_reasons"],
+        )
+
+    def test_provisional_route_projection_does_not_double_count_mastery_or_progress(
+        self,
+    ) -> None:
+        session = start_live_teacher_agent_session(
+            self.demo["goal"],
+            self.demo["student_profile"],
+            self.library,
+            _client(
+                [
+                    _plan(
+                        signal="not_observed",
+                        confidence=0.0,
+                        skill_id="skill_diagnostic_questioning",
+                    )
+                ]
+            ),
+            options=LiveAgentOptions(agent_loop_enabled=False),
+        )
+        session["student_state"]["knowledge_mastery"]["prerequisite"] = 0.30
+        session["control"]["consecutive_no_progress"] = 1
+        _refresh_integrity(session)
+
+        correct_plan = _plan(
+            signal="correct",
+            confidence=1.0,
+            skill_id="skill_diagnostic_questioning",
+            answer_alignment="aligned",
+        )
+        route_session = _provisional_route_session(session, correct_plan)
+        self.assertEqual(
+            route_session["student_state"]["knowledge_mastery"]["prerequisite"],
+            0.30,
+        )
+        self.assertEqual(route_session["control"]["consecutive_no_progress"], 1)
+
+        audit = _state_first_route_adjudication(
+            route_session,
+            current_selected_id="skill_diagnostic_questioning",
+            model_selected_id="skill_diagnostic_questioning",
+            initial=False,
+            signal="correct",
+            confidence=1.0,
+            answer_alignment="aligned",
+            response="我能说明前置概念与当前目标的关系。",
+            engagement="medium",
+            misconception_tag=None,
+            needs_human_review=False,
+        )
+        # 0.30 + one 0.28 increment = 0.58, still below the 0.60
+        # prerequisite threshold.  A second application would incorrectly
+        # move focus to conceptual.
+        self.assertEqual(audit["focus_dimension"], "prerequisite")
+
+        confused_plan = _plan(
+            signal="confused",
+            confidence=0.8,
+            skill_id="skill_concrete_example_bridge",
+            answer_alignment="ambiguous",
+        )
+        confused_route_session = _provisional_route_session(
+            session, confused_plan
+        )
+        confused_audit = _state_first_route_adjudication(
+            confused_route_session,
+            current_selected_id="skill_diagnostic_questioning",
+            model_selected_id="skill_concrete_example_bridge",
+            initial=False,
+            signal="confused",
+            confidence=0.8,
+            answer_alignment="ambiguous",
+            response="我还是不知道怎么开始。",
+            engagement="medium",
+            misconception_tag=None,
+            needs_human_review=False,
+        )
+        self.assertEqual(confused_audit["projected_no_progress"], 2)
 
     def test_response_presence_and_alignment_are_normalized_consistently(self) -> None:
         cases = (

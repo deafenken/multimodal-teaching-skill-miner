@@ -429,6 +429,58 @@ class TeacherAgentLoopIntegrationTests(unittest.TestCase):
         for forbidden in ("messages", "learner_response", "raw_media"):
             self.assertNotIn(forbidden, encoded)
 
+    def test_live_turn_persists_event_derived_lifecycle_receipt(self) -> None:
+        client = _deepseek_script_client(
+            [
+                _selection_plan(),
+                _route_ready(),
+                _live_plan(
+                    signal="not_observed",
+                    skill_id="skill_diagnostic_questioning",
+                    action_type="probe_prior_knowledge",
+                    message="请先说出一个完成当前目标所需的前置概念。",
+                ),
+                _selection_plan(primary_skill_id="skill_diagnostic_questioning"),
+                _route_ready("继续核对前置概念。"),
+                _live_plan(
+                    signal="partial",
+                    skill_id="skill_diagnostic_questioning",
+                    action_type="probe_prior_knowledge",
+                    message="请再补充一个前置概念，并说明它的作用。",
+                ),
+            ]
+        )
+        options = LiveAgentOptions(
+            agent_loop_enabled=True,
+            maximum_agent_steps=4,
+            agent_loop_model_retries=0,
+        )
+        session = start_live_teacher_agent_session(
+            deepcopy(self.demo["goal"]),
+            deepcopy(self.demo["student_profile"]),
+            deepcopy(self.library),
+            client,
+            options=options,
+        )
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="我知道状态保存每一级的走法数，但还说不清它如何由前一步转移得到。",
+            client=client,
+            options=options,
+        )
+        receipt = updated["history"][-1]["turn_lifecycle"]
+        self.assertEqual(receipt["lifecycle_mode"], "event_derived")
+        self.assertEqual(receipt["status"], "completed")
+        event_names = [event["event"] for event in receipt["events"]]
+        self.assertEqual(event_names[:2], ["observe", "assess"])
+        self.assertEqual(event_names[-2:], ["act", "commit"])
+        self.assertIn(event_names.count("route"), {1, 2})
+        self.assertEqual(receipt["commit_round"], updated["round"])
+        self.assertTrue(receipt["verification"]["checks"])
+        encoded = json.dumps(receipt, ensure_ascii=False)
+        for forbidden in ("learner_response", "raw_media", "消息", "我知道状态"):
+            self.assertNotIn(forbidden, encoded)
+
     def test_live_outbound_context_exposes_current_answer_to_route_loop(self) -> None:
         session = self._session()
         learner_response = "我把每一级的编号当成了状态值，邮箱 test@example.com 不应被发送。"
@@ -520,6 +572,96 @@ class TeacherAgentLoopIntegrationTests(unittest.TestCase):
         # The learner response remains in the normal teaching history, but is
         # not duplicated into the loop's durable public receipt.
         self.assertEqual(updated["history"][-1]["learner_text"], learner_text)
+
+    def test_post_assessment_loop_sees_current_signal_and_owns_final_route(self) -> None:
+        captured: list[dict[str, object]] = []
+        responses = deque(
+            [
+                _live_plan(
+                    signal="not_observed",
+                    skill_id="skill_concrete_example_bridge",
+                    action_type="present_minimal_example",
+                    message="请先看一个最小例子。",
+                ),
+                _selection_plan(),
+                _route_ready("已依据首轮未观察状态选择诊断 Skill。"),
+                _live_plan(
+                    signal="partial",
+                    skill_id="skill_concrete_example_bridge",
+                    action_type="present_minimal_example",
+                    message="请继续看一个最小例子。",
+                ),
+                _selection_plan(
+                    primary_skill_id="skill_concrete_example_bridge",
+                    supporting_skill_ids=[],
+                    next_focus="conceptual",
+                ),
+                _route_ready("本轮部分理解已验证，先补足最小例子表征。"),
+            ]
+        )
+
+        def transport(
+            _url: str,
+            _headers: dict[str, str],
+            payload: bytes,
+            _timeout: float,
+        ) -> tuple[int, bytes]:
+            captured.append(json.loads(payload))
+            content = responses.popleft()
+            return 200, _envelope(content, response_id=f"post-{len(captured)}")
+
+        client = DeepSeekClient(
+            DeepSeekConfig(allow_remote_student_data=True, max_retries=0),
+            api_key="route-key",
+            transport=transport,
+        )
+        options = LiveAgentOptions(
+            agent_loop_enabled=True,
+            agent_loop_post_assessment_enabled=True,
+            state_first_route_adjudication_enabled=True,
+            maximum_agent_steps=4,
+            agent_loop_model_retries=0,
+        )
+        session = start_live_teacher_agent_session(
+            deepcopy(self.demo["goal"]),
+            deepcopy(self.demo["student_profile"]),
+            deepcopy(self.library),
+            client,
+            options=options,
+        )
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="我知道状态保存走法数，但还没有说明它和转移的关系。",
+            client=client,
+            options=options,
+        )
+
+        self.assertFalse(responses)
+        # Call order is now assess -> route loop -> route_ready for each turn.
+        followup_route_request = captured[4]
+        loop_payload = json.loads(followup_route_request["messages"][1]["content"])
+        current_signal = loop_payload["teaching_context"]["student"][
+            "understanding_signal"
+        ]
+        self.assertEqual(current_signal["label"], "partial")
+        self.assertEqual(
+            current_signal["source"], "provisional_validated_diagnosis"
+        )
+        self.assertEqual(
+            updated["current_action"]["primary_skill"]["skill_id"],
+            "skill_concrete_example_bridge",
+        )
+        authority = updated["history"][-1]["model_trace"]["route_authority"]
+        self.assertEqual(authority["mode"], "post_assessment_agent_loop")
+        self.assertTrue(authority["current_turn_provisional_state_used"])
+        self.assertTrue(authority["route_consistent"])
+        self.assertEqual(authority["route_replan_count"], 0)
+        self.assertEqual(
+            authority["loop_selected_skill_id"], authority["final_skill_id"]
+        )
+        self.assertNotIn(
+            "route-key", json.dumps(updated, ensure_ascii=False)
+        )
 
     def test_inapplicable_loop_route_is_repaired_by_state_first_stage(self) -> None:
         """A loop route for an initial-only Skill must not become the final action."""

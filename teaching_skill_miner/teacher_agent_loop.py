@@ -355,6 +355,9 @@ def _model_messages(
         "完成 select_skills 与 set_next_focus 后，优先返回 {kind:route_ready,reason}，"
         "由受约束的最终动作规划器生成教师话语；terminate 必须包含 "
         "outcome(success|handoff),reason；若选择 success，先调用 evaluate_termination。"
+        "teaching_context.student.understanding_signal 在 post-assessment 模式下是本轮已校验状态；"
+        "必须优先使用它而不是上一轮 history signal。select_skills 必须逐字复制 skill_library 中的 "
+        "skill_id；若工具返回 accepted=false，按 allowed_primary_skill_ids 修正一次，不要重复读取同一状态。"
     )
     user = json.dumps(
         {
@@ -539,7 +542,19 @@ def _tool_result(
         primary = _short(arguments.get("primary_skill_id"), 120)
         supports = arguments.get("supporting_skill_ids", [])
         if primary not in skills or skills[primary].get("role") not in PRIMARY_ROLES:
-            raise TeachingAgentLoopError("select_skills primary Skill is invalid")
+            allowed_primary_ids = sorted(
+                skill_id
+                for skill_id, skill in skills.items()
+                if skill.get("role") in PRIMARY_ROLES
+            )
+            return {
+                "accepted": False,
+                "error_code": "invalid_primary_skill_id",
+                "selected_skill_id": None,
+                "requested_primary_skill_id": primary or None,
+                "allowed_primary_skill_ids": allowed_primary_ids,
+                "reason": "primary_skill_id must exactly match one allowlisted primary Skill",
+            }
         rejected_support_ids: list[str] = []
         if not isinstance(supports, list):
             supports = []
@@ -570,6 +585,7 @@ def _tool_result(
                 state["next_focus"] = inferred_focus
         state["selection_reason"] = _short(arguments.get("reason"), 600)
         return {
+            "accepted": True,
             "selected_skill_id": primary,
             "supporting_skill_ids": support_ids,
             "rejected_supporting_skill_ids": rejected_support_ids[:4],
@@ -578,9 +594,14 @@ def _tool_result(
     if name == "set_next_focus":
         focus = _short(arguments.get("next_focus"), 40)
         if focus not in _FOCUS:
-            raise TeachingAgentLoopError("set_next_focus value is invalid")
+            return {
+                "accepted": False,
+                "error_code": "invalid_next_focus",
+                "next_focus": None,
+                "allowed_focus_values": sorted(_FOCUS),
+            }
         state["next_focus"] = focus
-        return {"next_focus": focus}
+        return {"accepted": True, "next_focus": focus}
     if name == "evaluate_termination":
         goal = context.get("goal", {})
         source = context.get("student", {}).get("mastery", {})
@@ -1034,6 +1055,10 @@ def public_agent_loop_trace(result: Mapping[str, Any]) -> dict[str, Any]:
     state = result.get("loop_state", {})
     if not isinstance(state, Mapping):
         state = {}
+    bounded_route_completion = (
+        result.get("termination_reason")
+        == "max_steps exceeded; using the last validated route"
+    )
     public = {
         "schema": LOOP_SCHEMA,
         "status": _short(result.get("status"), 40),
@@ -1049,6 +1074,7 @@ def public_agent_loop_trace(result: Mapping[str, Any]) -> dict[str, Any]:
         ],
         "next_focus": _short(state.get("next_focus"), 40),
         "deterministic_fallback": bool(result.get("deterministic_fallback")),
+        "bounded_route_completion": bounded_route_completion,
         "events": events[-32:],
     }
     public["trace_sha256"] = canonical_sha256(public)

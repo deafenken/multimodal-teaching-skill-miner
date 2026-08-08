@@ -297,6 +297,34 @@ _EXPLICIT_CLAIM_PATTERNS = tuple(
         r"\b(?:is|are|means?|equals?|because|therefore|always|never|cannot|can't|does\s+not|must|only)\b",
     )
 )
+_CORRECTION_CONTRADICTION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        # A correction contract must not be satisfied by explicitly rejecting
+        # one of the teacher-owned required components.  Keep these patterns
+        # narrow: phrases such as ``不能遗漏`` are positive evidence and are
+        # intentionally not matched by the bare ``遗漏`` token.
+        r"(?:不需要|不用|无需|不必|不考虑|不包含|不算|不相加|不依赖|"
+        r"无关|没有关系|可以忽略|应(?:当)?忽略|只(?:需|要|看|用|依赖|考虑|计算|保留|取)|"
+        r"仅(?:需|要|看|用|依赖|考虑|计算|保留|取)|"
+        r"(?:前者|后者)(?:即可|就够|就行))",
+        r"(?:dp\s*\[\s*i\s*[-−]\s*2\s*\]|走\s*两级|第二(?:类|种|条|步)).{0,24}"
+        r"(?:不需要|不用|无需|不必|不考虑|无关|忽略)",
+        r"(?:不需要|不用|无需|不必|不考虑|无关|忽略).{0,24}"
+        r"(?:dp\s*\[\s*i\s*[-−]\s*2\s*\]|走\s*两级|第二(?:类|种|条|步))",
+        r"\b(?:not\s+needed|not\s+required|irrelevant|ignore|only\s+needs?|"
+        r"only\s+uses?|does\s+not\s+need)\b",
+    )
+)
+_CORRECTION_INCLUSION_CUES = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"相加|加起来|合并|组合|两类|两种|互斥|全部|所有|每(?:个|种|一步|一类)?|"
+        r"各(?:自|类|种)?|同时|以及|并且|都要|还要|也要|逐项|不能遗漏|不能缺|"
+        r"包含|包括|保留|考虑|需要|必须|影响后续|后续",
+        r"\b(?:add|sum|combine|both|all|each|include|包含|考虑)\b",
+    )
+)
 _STRUCTURAL_CLAIM_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -476,6 +504,7 @@ class LiveAgentOptions:
     action_only_repair_enabled: bool = False
     state_first_route_adjudication_enabled: bool = False
     agent_loop_enabled: bool = False
+    agent_loop_post_assessment_enabled: bool = False
     maximum_agent_steps: int = 6
     maximum_agent_tool_calls_per_step: int = 3
     maximum_agent_repeated_tool_calls: int = 2
@@ -514,6 +543,14 @@ class LiveAgentOptions:
         if not isinstance(self.agent_loop_enabled, bool):
             raise LiveTeacherAgentError(
                 "agent_loop_enabled must be a JSON boolean"
+            )
+        if not isinstance(self.agent_loop_post_assessment_enabled, bool):
+            raise LiveTeacherAgentError(
+                "agent_loop_post_assessment_enabled must be a JSON boolean"
+            )
+        if self.agent_loop_post_assessment_enabled and not self.agent_loop_enabled:
+            raise LiveTeacherAgentError(
+                "agent_loop_post_assessment_enabled requires agent_loop_enabled"
             )
         if (
             isinstance(self.maximum_agent_steps, bool)
@@ -642,6 +679,9 @@ def live_runtime_policy_contract(
             options.state_first_route_adjudication_enabled
         ),
         "agent_loop_enabled": options.agent_loop_enabled,
+        "agent_loop_post_assessment_enabled": (
+            options.agent_loop_post_assessment_enabled
+        ),
         "maximum_agent_steps": options.maximum_agent_steps,
         "maximum_agent_tool_calls_per_step": options.maximum_agent_tool_calls_per_step,
         "maximum_agent_repeated_tool_calls": options.maximum_agent_repeated_tool_calls,
@@ -693,6 +733,7 @@ def validate_live_runtime_policy_contract(
         "action_only_repair_enabled",
         "state_first_route_adjudication_enabled",
         "agent_loop_enabled",
+        "agent_loop_post_assessment_enabled",
         "maximum_agent_steps",
         "maximum_agent_tool_calls_per_step",
         "maximum_agent_repeated_tool_calls",
@@ -3956,6 +3997,29 @@ def _correction_target_contract_match(
                 matched_terms.append(fragment)
     if len(matched_terms) < 2:
         return None
+    # The old gate treated any explicit statement containing two contract
+    # terms as a verified correction.  That is unsafe: an answer can mention
+    # both ``dp[i-1]`` and ``dp[i-2]`` while explicitly saying the latter is
+    # unnecessary.  Use only bounded, teacher-owned lexical evidence here—no
+    # extra model call—and fail closed when the statement does not express the
+    # inclusion/combination principle carried by the relevant claim.
+    claim_text = " ".join(
+        [
+            str(claim.get("statement", ""))
+            for claim in relevant_claims
+            if isinstance(claim, Mapping)
+        ]
+        + [str(catalog_row.get("corrective_principle", ""))]
+    )
+    if any(pattern.search(text) for pattern in _CORRECTION_CONTRADICTION_PATTERNS):
+        return None
+    # At least one positive inclusion cue must be present in both the
+    # teacher-owned contract and the learner response.  A missing cue is
+    # treated as unverified rather than inferred from term overlap.
+    if not any(pattern.search(claim_text) for pattern in _CORRECTION_INCLUSION_CUES):
+        return None
+    if not any(pattern.search(text) for pattern in _CORRECTION_INCLUSION_CUES):
+        return None
     return {
         "reference": "；".join(matched_terms[:4])[:120],
         "binding_source": "teacher_knowledge_spec_correction_contract_match",
@@ -4093,6 +4157,7 @@ def _validated_plan(
     agent_loop_skill_id: str | None,
     options: LiveAgentOptions,
     continuity_constraints: Mapping[str, Any] | None = None,
+    route_session: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(raw, Mapping) or raw.get("schema") != PLAN_SCHEMA:
         raise LiveTeacherAgentError(f"model plan schema must be {PLAN_SCHEMA}")
@@ -4297,6 +4362,15 @@ def _validated_plan(
             answer_alignment = "aligned"
             misconception_tag = None
             quality = "complete"
+            # The correction-contract matcher is a server-owned, narrow
+            # verification gate over the current learner response.  It can
+            # establish the evidence binding itself, even when DeepSeek's
+            # optional ``diagnosis.evidence_excerpt`` is omitted or is not an
+            # exact substring (for example, because the model paraphrased it).
+            # Keep the evidence fence anchored to the original response so
+            # the downstream resolution check does not silently discard a
+            # valid correction merely due to model excerpt formatting.
+            evidence_excerpt = source_excerpt[:240]
             evidence_binding_source = correction_contract_match["binding_source"]
             normalization_reasons.append(
                 correction_contract_match["normalization_reason"]
@@ -4724,7 +4798,11 @@ def _validated_plan(
     if (
         options.state_first_route_adjudication_enabled
         and not manual_skill_id
-        and (not safe_retarget_required or agent_loop_route_needs_state_repair)
+        and (
+            not agent_loop_route_requested
+            or not options.agent_loop_post_assessment_enabled
+            or agent_loop_route_needs_state_repair
+        )
         and (action_retarget_kind is None or agent_loop_route_needs_state_repair)
         and not visual_confirmation_required
     ):
@@ -4733,7 +4811,7 @@ def _validated_plan(
         # tie-break candidate while letting the deterministic policy reject an
         # unsafe or pedagogically out-of-order route.
         route_adjudication = _state_first_route_adjudication(
-            session,
+            route_session if isinstance(route_session, Mapping) else session,
             current_selected_id=selected_id,
             model_selected_id=(
                 str(agent_loop_skill_id)
@@ -4757,6 +4835,12 @@ def _validated_plan(
             )
         if agent_loop_route_needs_state_repair:
             normalization_reasons.append("agent_loop_route_repaired_by_state_first")
+    if (
+        agent_loop_route_requested
+        and options.agent_loop_post_assessment_enabled
+        and selected_id != agent_loop_skill_id
+    ):
+        normalization_reasons.append("agent_loop_route_rejected_by_server_contract")
     if not manual_skill_id:
         applicable_signals = set(skills[selected_id].get("applicable_signals", []))
         if signal not in applicable_signals:
@@ -5016,6 +5100,7 @@ def _validated_plan(
         # high-confidence verification answer may still resolve that target.
         "agent_loop_route_enforced",
         "agent_loop_route_repaired_by_state_first",
+        "agent_loop_route_rejected_by_server_contract",
         "correction_requires_grounded_misconception",
         "model_skill_not_applicable_to_signal",
         "primary_skill_selection_constrained",
@@ -5351,6 +5436,14 @@ def _record_agent_loop_trace(
     runtime["agent_loop_retry_count"] = int(
         runtime.get("agent_loop_retry_count", 0)
     ) + int(safe_trace.get("retry_count", 0) or 0)
+    if safe_trace.get("deterministic_fallback") is True:
+        # Keep loop fallback separate from planner/action fallbacks.  The
+        # route loop may safely fall back to a last validated route while the
+        # main planner still succeeds; losing this distinction made reports
+        # under-count loop failures.
+        runtime["agent_loop_fallback_count"] = int(
+            runtime.get("agent_loop_fallback_count", 0)
+        ) + 1
 
 
 def _run_live_agent_loop(
@@ -5361,7 +5454,7 @@ def _run_live_agent_loop(
     options: LiveAgentOptions,
     manual_skill_id: str | None,
 ) -> tuple[str | None, dict[str, Any]]:
-    """Run the bounded route/tool phase before the final teaching planner."""
+    """Run the bounded route/tool phase against the supplied context snapshot."""
 
     if not options.agent_loop_enabled:
         return None, {}
@@ -5389,6 +5482,428 @@ def _run_live_agent_loop(
     return selected, public_trace
 
 
+def _live_turn_lifecycle_receipt(
+    session: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any] | None,
+    trace: Mapping[str, Any] | None,
+    action: Mapping[str, Any] | None,
+    observed: bool,
+    outcome: str,
+    source: str,
+    fallback_reason: str = "",
+) -> dict[str, Any]:
+    """Derive a privacy-safe Observe→Assess→Route→Act receipt for live turns.
+
+    The receipt is deliberately built after the state/action boundary has been
+    decided.  It records only bounded labels, Skill IDs, action types and
+    hashes; learner text, OCR, model prompts and free-form teacher messages
+    never enter the lifecycle event stream.
+    """
+
+    candidate = dict(plan) if isinstance(plan, Mapping) else {}
+    decision = candidate.get("decision", {})
+    if not isinstance(decision, Mapping):
+        decision = {}
+    diagnosis = candidate.get("diagnosis", {})
+    if not isinstance(diagnosis, Mapping):
+        diagnosis = {}
+    runtime_trace = trace if isinstance(trace, Mapping) else {}
+    if isinstance(runtime_trace.get("agent_loop"), Mapping):
+        runtime_trace = runtime_trace["agent_loop"]
+    runtime_action = action if isinstance(action, Mapping) else {}
+    primary = runtime_action.get("primary_skill", {})
+    if not isinstance(primary, Mapping):
+        primary = {}
+    selected_skill_id = str(
+        primary.get("skill_id")
+        or decision.get("primary_skill_id")
+        or runtime_trace.get("agent_loop_route_hint")
+        or ""
+    ).strip()
+    supporting = runtime_action.get("supporting_skills", [])
+    supporting_ids = [
+        str(item.get("skill_id"))
+        for item in supporting[:2]
+        if isinstance(item, Mapping) and item.get("skill_id")
+    ] if isinstance(supporting, list) else []
+    if not supporting_ids:
+        raw_supporting = decision.get("supporting_skill_ids", [])
+        supporting_ids = [str(item) for item in raw_supporting[:2]] if isinstance(raw_supporting, list) else []
+    if not candidate and runtime_action:
+        # Deterministic fallback actions do not have a model plan.  Reconstruct
+        # only the bounded facts needed by the lifecycle validator; no text is
+        # copied into this synthetic plan.
+        fallback_signal = str(
+            session.get("student_state", {})
+            .get("understanding_signal", {})
+            .get("label", "not_observed")
+        )
+        candidate = {
+            "diagnosis": {
+                "signal": fallback_signal,
+                "confidence": float(
+                    session.get("student_state", {})
+                    .get("understanding_signal", {})
+                    .get("confidence", 0.0)
+                    or 0.0
+                ),
+                "needs_human_review": True,
+                "assessment_source": "deterministic_safety_fallback",
+            },
+            "decision": {
+                "primary_skill_id": selected_skill_id,
+                "supporting_skill_ids": supporting_ids,
+                "next_focus": (
+                    session.get("student_state", {})
+                    .get("next_focus", {})
+                    .get("dimension", "conceptual")
+                    if isinstance(
+                        session.get("student_state", {}).get("next_focus"), Mapping
+                    )
+                    else "conceptual"
+                ),
+                "route_authority": {"mode": "deterministic_safety_fallback"},
+            },
+        }
+        decision = candidate["decision"]
+        diagnosis = candidate["diagnosis"]
+    authority = decision.get("route_authority", {})
+    if isinstance(authority, Mapping):
+        authority_id = str(
+            authority.get("mode")
+            or authority.get("authority")
+            or authority.get("outcome")
+            or "validated_plan"
+        ).strip()
+    else:
+        authority_id = "validated_plan"
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", authority_id):
+        authority_id = "validated_plan"
+    events: list[dict[str, Any]] = [
+        {
+            "event": "observe",
+            "observation_present": bool(observed),
+            "evidence_count": 1 if observed else 0,
+            "source": source,
+        }
+    ]
+    if diagnosis:
+        events.append(
+            {
+                "event": "assess",
+                "signal": str(diagnosis.get("signal", "not_observed")),
+                "confidence": float(diagnosis.get("confidence", 0.0) or 0.0),
+                "needs_human_review": bool(diagnosis.get("needs_human_review", False)),
+                "assessment_source": str(
+                    diagnosis.get("assessment_source", source)
+                ),
+            }
+        )
+    if outcome == "commit" and selected_skill_id:
+        final_reason_codes = [
+            str(item)
+            for item in (
+                decision.get("route_adjudication", {}).get("reason_codes", [])
+                if isinstance(decision.get("route_adjudication"), Mapping)
+                else []
+            )[:8]
+            if str(item)
+        ]
+        route_authority_data = decision.get("route_authority", {})
+        proposed_skill_id = (
+            str(route_authority_data.get("loop_selected_skill_id") or "").strip()
+            if isinstance(route_authority_data, Mapping)
+            else ""
+        )
+        known_primary_ids = {
+            str(item.get("skill_id"))
+            for item in session.get("skill_library", {}).get("skills", [])
+            if isinstance(item, Mapping) and item.get("role") in PRIMARY_ROLES
+        }
+        route_changed = bool(
+            proposed_skill_id
+            and proposed_skill_id != selected_skill_id
+            and proposed_skill_id in known_primary_ids
+        )
+        if route_changed:
+            events.append(
+                {
+                    "event": "route",
+                    "selected_skill_id": proposed_skill_id,
+                    "supporting_skill_ids": [],
+                    "route_authority": authority_id,
+                    "reason_codes": ["route_proposal_rejected"],
+                    "replan_count": 0,
+                }
+            )
+            final_reason_codes = [
+                "route_replanned",
+                *final_reason_codes,
+            ]
+        events.extend(
+            [
+                {
+                    "event": "route",
+                    "selected_skill_id": selected_skill_id,
+                    "supporting_skill_ids": supporting_ids,
+                    "route_authority": authority_id,
+                    "reason_codes": final_reason_codes,
+                    "replan_count": 1 if route_changed else 0,
+                },
+                {
+                    "event": "act",
+                    "selected_skill_id": selected_skill_id,
+                    "action_type": str(
+                        runtime_action.get("teacher_action", {}).get("type", "")
+                        if isinstance(runtime_action.get("teacher_action"), Mapping)
+                        else ""
+                    ),
+                    "action_materialized": True,
+                },
+                {
+                    "event": "commit",
+                    "committed": True,
+                    "round": int(session.get("round", 0)),
+                },
+            ]
+        )
+    else:
+        events.append(
+            {
+                "event": "abort",
+                "aborted": True,
+                "reason_codes": ["live_turn_aborted"],
+            }
+        )
+    return build_turn_lifecycle_receipt(
+        session,
+        loop_trace=runtime_trace,
+        plan=candidate,
+        output_action=runtime_action,
+        lifecycle_events=events,
+        route_authority=authority_id,
+        turn_outcome="commit" if outcome == "commit" else "abort",
+        commit_round=int(session.get("round", 0)),
+        fallback_reason=fallback_reason,
+    )
+
+
+def _provisional_route_context(
+    context_memory: Mapping[str, Any],
+    session: Mapping[str, Any],
+    provisional_plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project the just-validated assessment into a private routing snapshot.
+
+    The production route loop must not inspect the previous round and guess
+    what the current answer means.  The first planner call has already passed
+    the evidence/contract gate, so we can expose only its bounded diagnosis,
+    prospective mastery and misconception status to the route tools.  This
+    snapshot is never persisted as session state and contains no new learner
+    excerpt; the original redacted response remains the sole evidence source.
+    """
+
+    routed = deepcopy(dict(context_memory))
+    diagnosis = provisional_plan.get("diagnosis", {})
+    decision = provisional_plan.get("decision", {})
+    if not isinstance(diagnosis, Mapping):
+        diagnosis = {}
+    if not isinstance(decision, Mapping):
+        decision = {}
+    signal = str(diagnosis.get("signal", "not_observed"))
+    confidence = float(diagnosis.get("confidence", 0.0) or 0.0)
+    alignment = str(diagnosis.get("answer_alignment", "ambiguous"))
+    needs_review = bool(diagnosis.get("needs_human_review", False))
+    knowledge = routed.setdefault("knowledge_state", {})
+    if not isinstance(knowledge, dict):
+        knowledge = {}
+        routed["knowledge_state"] = knowledge
+    mastery = _prospective_mastery(
+        session,
+        signal=signal,
+        confidence=confidence,
+        answer_alignment=alignment,
+        needs_human_review=needs_review,
+    )
+    existing_mastery = knowledge.get("concept_mastery", [])
+    by_dimension = {
+        str(item.get("dimension")): deepcopy(dict(item))
+        for item in existing_mastery
+        if isinstance(item, Mapping) and item.get("dimension")
+    }
+    knowledge["concept_mastery"] = [
+        {
+            **by_dimension.get(dimension, {"dimension": dimension}),
+            "value": round(float(mastery[dimension]), 4),
+        }
+        for dimension in ("prerequisite", "conceptual", "procedural", "transfer")
+    ]
+    knowledge["current_understanding_signal"] = {
+        "label": signal,
+        "confidence": round(confidence, 4),
+        "answer_alignment": alignment,
+        "source": "provisional_validated_diagnosis",
+    }
+    next_focus = str(decision.get("next_focus", "conceptual"))
+    if next_focus not in {"prerequisite", "conceptual", "procedural", "transfer"}:
+        next_focus = "conceptual"
+    knowledge["next_focus"] = {
+        "dimension": next_focus,
+        "selected_skill_id": str(decision.get("primary_skill_id", "")),
+        "source": "provisional_validated_diagnosis",
+    }
+    knowledge["assessment_evidence"] = {
+        "needs_human_review": needs_review,
+        "source": "provisional_validated_diagnosis",
+    }
+    misconceptions = knowledge.get("misconceptions", [])
+    if not isinstance(misconceptions, list):
+        misconceptions = []
+    misconceptions = deepcopy(misconceptions)
+    resolved = {
+        str(item)
+        for item in (diagnosis.get("resolved_misconception_tags", []) or [])
+        if str(item)
+    }
+    for item in misconceptions:
+        if isinstance(item, dict) and str(item.get("tag", "")) in resolved:
+            item["status"] = "resolved"
+    tag = str(diagnosis.get("misconception_tag", "") or "")
+    if tag:
+        found = False
+        for item in misconceptions:
+            if isinstance(item, dict) and str(item.get("tag", "")) == tag:
+                item["status"] = "active"
+                item["confidence"] = max(float(item.get("confidence", 0.0) or 0.0), confidence)
+                found = True
+                break
+        if not found:
+            misconceptions.append(
+                {
+                    "tag": tag,
+                    "status": "active",
+                    "confidence": round(confidence, 4),
+                    "description": "本轮证据绑定的待核验误解",
+                }
+            )
+    knowledge["misconceptions"] = misconceptions[-8:]
+    working = routed.setdefault("working_memory", {})
+    if isinstance(working, dict):
+        working["provisional_assessment"] = {
+            "signal": signal,
+            "confidence": round(confidence, 4),
+            "answer_alignment": alignment,
+            "next_focus": next_focus,
+            "misconception_tag": tag or None,
+            "source": "provisional_validated_diagnosis",
+        }
+    routed["route_authority"] = {
+        "mode": "post_assessment_agent_loop",
+        "assessment_source": "provisional_validated_diagnosis",
+        "state_is_current_turn": True,
+    }
+    return routed
+
+
+def _provisional_route_session(
+    session: Mapping[str, Any],
+    provisional_plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project the just-assessed turn into a private route-only session view.
+
+    ``_provisional_route_context`` is the redacted payload sent to the bounded
+    Agent Loop.  The deterministic route adjudicator used to receive the
+    original session as well, which meant that it could still see a previous
+    round's active misconception/no-progress state.  In particular, a high
+    confidence correction answer could be routed as if the misconception were
+    still active, even though the current turn had already passed the evidence
+    gate.  This copy carries only the bounded prospective state into route
+    checks; it is never committed and the original session remains the sole
+    source for resolution evidence and history.
+    """
+
+    routed = deepcopy(dict(session))
+    diagnosis = provisional_plan.get("diagnosis", {})
+    decision = provisional_plan.get("decision", {})
+    if not isinstance(diagnosis, Mapping):
+        diagnosis = {}
+    if not isinstance(decision, Mapping):
+        decision = {}
+    state = routed.get("student_state")
+    if not isinstance(state, dict):
+        state = {}
+        routed["student_state"] = state
+
+    signal = str(diagnosis.get("signal", "not_observed"))
+    confidence = float(diagnosis.get("confidence", 0.0) or 0.0)
+    alignment = str(diagnosis.get("answer_alignment", "ambiguous"))
+    needs_review = bool(diagnosis.get("needs_human_review", False))
+    # Leave pre-turn mastery untouched.  ``_state_first_route_adjudication``
+    # receives the current signal/confidence explicitly and applies its
+    # prospective mastery increment exactly once.  Writing the increment into
+    # this route-only copy would make the adjudicator count the same answer a
+    # second time.
+    state["understanding_signal"] = {
+        "label": signal,
+        "confidence": round(confidence, 4),
+        "answer_alignment": alignment,
+        "source": "provisional_validated_diagnosis",
+    }
+    next_focus = str(decision.get("next_focus", "conceptual"))
+    if next_focus not in {"prerequisite", "conceptual", "procedural", "transfer"}:
+        next_focus = "conceptual"
+    state["next_focus"] = {
+        "dimension": next_focus,
+        "selected_skill_id": str(decision.get("primary_skill_id", "")),
+        "source": "provisional_validated_diagnosis",
+    }
+    state["assessment_evidence"] = {
+        "needs_human_review": needs_review,
+        "source": "provisional_validated_diagnosis",
+    }
+
+    misconceptions = state.get("misconceptions", [])
+    if not isinstance(misconceptions, list):
+        misconceptions = []
+    projected_misconceptions = deepcopy(misconceptions)
+    resolved = {
+        str(item)
+        for item in (diagnosis.get("resolved_misconception_tags", []) or [])
+        if str(item)
+    }
+    for item in projected_misconceptions:
+        if isinstance(item, dict) and str(item.get("tag", "")) in resolved:
+            item["status"] = "resolved"
+    tag = str(diagnosis.get("misconception_tag", "") or "")
+    if tag:
+        found = False
+        for item in projected_misconceptions:
+            if isinstance(item, dict) and str(item.get("tag", "")) == tag:
+                item["status"] = "active"
+                item["confidence"] = max(
+                    float(item.get("confidence", 0.0) or 0.0), confidence
+                )
+                found = True
+                break
+        if not found:
+            projected_misconceptions.append(
+                {
+                    "tag": tag,
+                    "status": "active",
+                    "confidence": round(confidence, 4),
+                    "description": "本轮证据绑定的待核验误解",
+                }
+            )
+    state["misconceptions"] = projected_misconceptions[-8:]
+
+    # Do not project ``control.consecutive_no_progress`` here.  The route
+    # adjudicator derives the prospective value exactly once from the
+    # pre-turn counter and the current signal; changing it in this copy would
+    # make confused/no-response turns count twice.
+    return routed
+
+
 def _request_plan(
     client: DeepSeekClient,
     session: dict[str, Any],
@@ -5403,25 +5918,33 @@ def _request_plan(
     continuity_constraints = _bounded_action_repair_continuity_constraints(
         context_memory
     )
-    agent_loop_skill_id, agent_loop_trace = _run_live_agent_loop(
-        client,
-        session,
-        context_memory=context_memory,
-        options=options,
-        manual_skill_id=manual_skill_id,
+    agent_loop_skill_id: str | None = None
+    agent_loop_trace: dict[str, Any] = {}
+    post_assessment_route = bool(
+        options.agent_loop_enabled and options.agent_loop_post_assessment_enabled
     )
-    # The loop receipt is part of the session's auditable runtime metadata;
-    # refresh the integrity fence before any fallback path can validate/clone
-    # this candidate.
-    if agent_loop_trace:
-        _refresh_integrity(session)
+    if options.agent_loop_enabled and not post_assessment_route:
+        agent_loop_skill_id, agent_loop_trace = _run_live_agent_loop(
+            client,
+            session,
+            context_memory=context_memory,
+            options=options,
+            manual_skill_id=manual_skill_id,
+        )
+        # The loop receipt is part of the session's auditable runtime metadata;
+        # refresh the integrity fence before any fallback path can validate/clone
+        # this candidate.
+        if agent_loop_trace:
+            _refresh_integrity(session)
     payload, privacy = _remote_payload(
         session,
         context_memory=context_memory,
         manual_skill_id=manual_skill_id,
         learner_evidence=learner_evidence,
-        agent_loop_trace=agent_loop_trace,
-        agent_loop_skill_id=agent_loop_skill_id,
+        agent_loop_trace=agent_loop_trace if not post_assessment_route else None,
+        agent_loop_skill_id=(
+            agent_loop_skill_id if not post_assessment_route else None
+        ),
     )
     raw, trace = client.chat_json(
         [
@@ -5445,25 +5968,97 @@ def _request_plan(
         learner_text,
         learner_evidence,
     )
-    plan = _validated_plan(
-        raw,
-        session,
-        initial=learner_response is None,
-        evidence_source=str(
-            context_memory["working_memory"]["current_learner_response"]
-        ),
-        trusted_evidence_sources=trusted_evidence_sources,
-        exact_match_sources=exact_match_sources,
-        visual_confirmation_required=visual_confirmation_required,
-        image_only_response=bool(learner_evidence)
-        and not _typed_response_independently_actionable(
-            str(learner_text or ""),
+
+    def validate_with_route(
+        route_skill_id: str | None,
+        *,
+        route_session: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return _validated_plan(
+            raw,
             session,
+            initial=learner_response is None,
+            evidence_source=str(
+                context_memory["working_memory"]["current_learner_response"]
+            ),
+            trusted_evidence_sources=trusted_evidence_sources,
+            exact_match_sources=exact_match_sources,
+            visual_confirmation_required=visual_confirmation_required,
+            image_only_response=bool(learner_evidence)
+            and not _typed_response_independently_actionable(
+                str(learner_text or ""),
+                session,
+            ),
+            manual_skill_id=manual_skill_id,
+            agent_loop_skill_id=route_skill_id,
+            options=options,
+            continuity_constraints=continuity_constraints,
+            route_session=route_session,
+        )
+
+    provisional_plan = validate_with_route(
+        agent_loop_skill_id if not post_assessment_route else None
+    )
+    if post_assessment_route:
+        route_context = _provisional_route_context(
+            context_memory,
+            session,
+            provisional_plan,
+        )
+        route_session = _provisional_route_session(session, provisional_plan)
+        agent_loop_skill_id, agent_loop_trace = _run_live_agent_loop(
+            client,
+            session,
+            context_memory=route_context,
+            options=options,
+            manual_skill_id=manual_skill_id,
+        )
+        if agent_loop_trace:
+            _refresh_integrity(session)
+        plan = (
+            validate_with_route(
+                agent_loop_skill_id,
+                route_session=route_session,
+            )
+            if agent_loop_skill_id is not None
+            else provisional_plan
+        )
+    else:
+        plan = provisional_plan
+    final_skill_id = str(plan["decision"]["primary_skill_id"])
+    route_consistent = bool(
+        agent_loop_skill_id is None or final_skill_id == agent_loop_skill_id
+    )
+    route_authority = {
+        "schema": "teaching_skill_miner.teacher_agent_route_authority.v1",
+        "mode": (
+            "post_assessment_agent_loop"
+            if post_assessment_route
+            else "legacy_pre_assessment_agent_loop"
+            if options.agent_loop_enabled
+            else "single_planner_state_first"
         ),
-        manual_skill_id=manual_skill_id,
-        agent_loop_skill_id=agent_loop_skill_id,
-        options=options,
-        continuity_constraints=continuity_constraints,
+        "assessment_signal": str(plan["diagnosis"]["signal"]),
+        "assessment_source": str(plan["diagnosis"]["assessment_source"]),
+        "loop_selected_skill_id": agent_loop_skill_id,
+        "final_skill_id": final_skill_id,
+        "route_consistent": route_consistent,
+        "route_replan_count": int(
+            agent_loop_skill_id is not None and not route_consistent
+        ),
+        "outcome": (
+            "accepted"
+            if agent_loop_skill_id is not None and route_consistent
+            else "rejected_by_server_contract"
+            if agent_loop_skill_id is not None
+            else "not_run_or_no_route"
+        ),
+        "current_turn_provisional_state_used": post_assessment_route,
+        "benchmark_gold_used": False,
+    }
+    plan["decision"]["route_authority"] = deepcopy(route_authority)
+    plan["decision"]["action_provenance"]["route_authority"] = deepcopy(
+        route_authority
     )
     plan, action_repair = _attempt_action_only_repair(
         client,
@@ -5498,6 +6093,7 @@ def _request_plan(
         **deepcopy(dict(trace)),
         "agent_loop": deepcopy(agent_loop_trace),
         "agent_loop_route_hint": agent_loop_skill_id,
+        "route_authority": deepcopy(route_authority),
         "action_repair": action_repair,
         "continuity_enforcement": continuity_enforcement,
         "turn_lifecycle": turn_lifecycle,
@@ -5528,6 +6124,9 @@ def _runtime_metadata(
             options.state_first_route_adjudication_enabled
         ),
         "agent_loop_enabled": options.agent_loop_enabled,
+        "agent_loop_post_assessment_enabled": (
+            options.agent_loop_post_assessment_enabled
+        ),
         "agent_loop_schema": AGENT_LOOP_SCHEMA,
         "maximum_agent_steps": options.maximum_agent_steps,
         "maximum_agent_tool_calls_per_step": options.maximum_agent_tool_calls_per_step,
@@ -5540,6 +6139,11 @@ def _runtime_metadata(
         "agent_loop_model_call_count": 0,
         "agent_loop_tool_call_count": 0,
         "agent_loop_retry_count": 0,
+        "agent_loop_fallback_count": 0,
+        "planner_fallback_count": 0,
+        "action_fallback_count": 0,
+        "assessment_failure_count": 0,
+        "consecutive_assessment_failures": 0,
         "last_agent_loop": None,
         "last_model_trace": None,
         "last_error": None,
@@ -5898,6 +6502,11 @@ def _materialize_contract_safe_fallback_action(
 
     if session.get("status") != "active":
         return False
+    runtime = session.get("agent_runtime")
+    if isinstance(runtime, dict):
+        runtime["action_fallback_count"] = int(
+            runtime.get("action_fallback_count", 0)
+        ) + 1
     skills = _skill_index(session["skill_library"])
     eligibility_session: Mapping[str, Any] = session
     if not initial and session.get("history"):
@@ -6142,9 +6751,25 @@ def _record_fallback(
     error_message: str,
     request_kind: str,
     policy_contract: Mapping[str, Any],
+    observed: bool = True,
 ) -> None:
     runtime = session["agent_runtime"]
     runtime["fallback_count"] += 1
+    kind = str(request_kind)
+    if kind in {"teacher_agent_initial", "teacher_agent_turn"}:
+        runtime["planner_fallback_count"] = int(
+            runtime.get("planner_fallback_count", 0)
+        ) + 1
+    # A learner-turn fallback means that the semantic assessment was not
+    # available.  Track it independently from the learner's actual
+    # no-progress signal; the latter is updated only by a valid assessment.
+    if kind.startswith("teacher_agent_turn"):
+        runtime["assessment_failure_count"] = int(
+            runtime.get("assessment_failure_count", 0)
+        ) + 1
+        runtime["consecutive_assessment_failures"] = int(
+            runtime.get("consecutive_assessment_failures", 0)
+        ) + 1
     runtime["last_error"] = error_message[:240]
     runtime["last_model_trace"] = {
         "provider": "deepseek",
@@ -6157,33 +6782,42 @@ def _record_fallback(
     action = session.get("current_action", {})
     primary = action.get("primary_skill", {}) if isinstance(action, Mapping) else {}
     supporting = action.get("supporting_skills", []) if isinstance(action, Mapping) else []
-    runtime["last_model_trace"]["turn_lifecycle"] = build_turn_lifecycle_receipt(
-        session,
-        loop_trace={},
-        plan=None,
-        output_action=(
-            {
-                "type": action.get("type"),
-                "primary_skill": {
-                    "skill_id": primary.get("skill_id")
-                    if isinstance(primary, Mapping)
+    compact_action = (
+        {
+            "teacher_action": {
+                "type": (
+                    action.get("teacher_action", {}).get("type")
+                    if isinstance(action.get("teacher_action"), Mapping)
                     else None
-                },
-                "supporting_skills": [
-                    {"skill_id": item.get("skill_id")}
-                    for item in supporting
-                    if isinstance(item, Mapping)
-                ],
-                "next_focus": session.get("student_state", {})
-                .get("next_focus", {})
-                .get("dimension")
-                if isinstance(session.get("student_state", {}).get("next_focus"), Mapping)
-                else None,
-            }
-            if isinstance(action, Mapping)
-            else None
-        ),
-        verification_status="fallback",
+                )
+            },
+            "primary_skill": {
+                "skill_id": primary.get("skill_id")
+                if isinstance(primary, Mapping)
+                else None
+            },
+            "supporting_skills": [
+                {"skill_id": item.get("skill_id")}
+                for item in supporting
+                if isinstance(item, Mapping)
+            ],
+            "next_focus": session.get("student_state", {})
+            .get("next_focus", {})
+            .get("dimension")
+            if isinstance(session.get("student_state", {}).get("next_focus"), Mapping)
+            else None,
+        }
+        if isinstance(action, Mapping)
+        else None
+    )
+    runtime["last_model_trace"]["turn_lifecycle"] = _live_turn_lifecycle_receipt(
+        session,
+        plan=None,
+        trace=runtime["last_model_trace"],
+        action=compact_action,
+        observed=observed,
+        outcome="commit" if isinstance(primary, Mapping) and primary.get("skill_id") else "abort",
+        source="deterministic_safety_fallback",
         fallback_reason=str(error_message)[:240],
     )
     session["current_action"]["decision_origin"] = "deterministic_safety_fallback"
@@ -6397,6 +7031,7 @@ def _update_runtime_after_call(
         "runtime_policy_contract": deepcopy(dict(policy_contract)),
     }
     runtime["last_error"] = None
+    runtime["consecutive_assessment_failures"] = 0
     if isinstance(runtime.get("last_context_trace"), dict):
         runtime["last_context_trace"]["request_outcome"] = "validated_model_plan"
 
@@ -6817,6 +7452,17 @@ def start_live_teacher_agent_session(
             privacy=privacy,
             previous_primary_skill_id=None,
         )
+        lifecycle = _live_turn_lifecycle_receipt(
+            session,
+            plan=plan,
+            trace=trace,
+            action=session["current_action"],
+            observed=True,
+            outcome="commit",
+            source="initial_context",
+        )
+        trace["turn_lifecycle"] = lifecycle
+        session["current_action"]["model_trace"] = deepcopy(dict(trace))
         _update_runtime_after_call(
             session,
             trace,
@@ -6931,6 +7577,7 @@ def advance_live_teacher_agent_session(
                 "ambiguous" if visual_confirmation_required else None
             ),
             needs_human_review=visual_confirmation_required,
+            count_as_no_progress=False,
         )
         updated = _ensure_current_question_contract(updated)
         if updated["status"] == "active":
@@ -7021,6 +7668,7 @@ def advance_live_teacher_agent_session(
                 "ambiguous" if visual_confirmation_required else None
             ),
             needs_human_review=visual_confirmation_required,
+            count_as_no_progress=False,
         )
         updated = _ensure_current_question_contract(updated)
         if updated["status"] == "active":
@@ -7177,6 +7825,25 @@ def advance_live_teacher_agent_session(
         updated["control"]["skill_switch_count"] = prior_switch_count + int(
             updated["current_action"]["skill_switched"]
         )
+    lifecycle = _live_turn_lifecycle_receipt(
+        updated,
+        plan=plan,
+        trace=trace,
+        action=updated.get("current_action"),
+        observed=True,
+        outcome="commit" if updated.get("status") == "active" else "abort",
+        source="learner_turn",
+    )
+    trace["turn_lifecycle"] = lifecycle
+    if updated.get("history") and isinstance(updated["history"][-1], dict):
+        updated["history"][-1]["model_trace"] = deepcopy(dict(trace))
+        updated["history"][-1]["turn_lifecycle"] = deepcopy(lifecycle)
+    if isinstance(updated.get("agent_runtime", {}).get("last_model_trace"), dict):
+        updated["agent_runtime"]["last_model_trace"]["turn_lifecycle"] = deepcopy(
+            lifecycle
+        )
+    if isinstance(updated.get("current_action"), dict):
+        updated["current_action"]["model_trace"] = deepcopy(dict(trace))
     _update_goal_plan_progress(updated)
     _commit_latest_teaching_memory_turn(updated, learner_text=learner_text)
     _synchronize_latest_event_state_snapshot(updated)

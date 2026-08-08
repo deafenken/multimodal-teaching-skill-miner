@@ -109,6 +109,8 @@ def main(argv: list[str] | None = None) -> int:
                 action_only_repair_enabled=True,
                 state_first_route_adjudication_enabled=True,
                 agent_loop_enabled=True,
+                agent_loop_post_assessment_enabled=True,
+                maximum_agent_steps=4,
             ),
         )
         if args.predictions_output is not None:

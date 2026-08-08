@@ -79,7 +79,7 @@ DeepSeek 规划 JSON（只可提出 allowlisted 工具调用）
         ↓
 本地确定性工具执行：状态 / 历史 / Skill 检索与选择 / 关注点 / 终止检查
         ↓
-工具结果回传 DeepSeek，继续规划（最多 6 步）
+工具结果回传 DeepSeek，继续规划（库级最多 6 步；生产 Dashboard 默认收紧为 4 步）
         ↓
 route_ready：主 Skill 与 next_focus 均已由服务端校验
         ↓
@@ -96,7 +96,7 @@ Loop 的工具白名单固定为 6 个：`inspect_student_state`、`inspect_rece
 
 显式开启 `--session-store` 后，Loop receipt 随会话 checkpoint 进入本机 append-only JSONL。每条事件有连续序号、`previous_hash` 和自身 SHA-256；`turn_started`、`turn_committed`、`turn_aborted` 的生命周期会在恢复时重放，崩溃留下的未完成 turn 会被补记为 aborted。恢复还要精确匹配无密钥 `runtime_policy_contract`、Session/画像版本和幂等缓存，任何篡改或政策漂移都 fail-closed。哈希链是完整性检测，不是加密、身份认证、访问控制或跨设备同步。
 
-这套结构是受 Codex/Claude Code 等可靠 Agent 的边界、事件和恢复思想启发的原创实现，不能表述为复制其内部代码或功能等价。当前本机真实 DeepSeek 验收返回 HTTP 200；两轮真实教学均到达 `route_ready`，首轮 6 步 / 8 次工具调用，第二轮 5 步 / 7 次工具调用，并发生诊断提问 Skill → 苏格拉底理解检查 Skill 的动态切换。浏览器验收同时验证画像切换后继续作答、刷新恢复 Loop 摘要和当前动作、`/stop` 终止后的恢复一致性。上述证据证明的是工程链路可运行，不是开放学生群体的诊断准确率、学习增益、跨 session 泛化或部署质量。
+这套结构是受 Codex/Claude Code 等可靠 Agent 的边界、事件和恢复思想启发的原创实现，不能表述为复制其内部代码或功能等价。当前本机真实 DeepSeek 验收返回 HTTP 200；每次运行的 `route_ready` 步数、工具调用、fallback 和路由重规划以对应私有 receipt 为准。浏览器验收同时验证画像切换后继续作答、刷新恢复 Loop 摘要和当前动作、`/stop` 终止后的恢复一致性。上述证据证明的是工程链路可运行，不是开放学生群体的诊断准确率、学习增益、跨 session 泛化或部署质量。
 
 OCR 链路把“转写可靠”与“答案正确”严格分开。高置信、无实质冲突且由多引擎或足够多独立预处理路线一致支持的公式，可写入 `formula_transcription_established=true` 并免去“请先抄写公式”的确认；`formula_accuracy_established` 仍固定为 `false`。只有可靠转写与当前 `question_contract` 中可判定的短概念/公式答案，或教师 `knowledge_spec` 中可建立正确性的规范陈述精确匹配时，控制器才能确定性判对。证据绑定允许空格、答案前缀、句末标点、等价乘除号，以及单个等式左右两侧交换这类可解释的排版差异，但不做模糊拼写修复、任意代数化简或运算符猜测；绑定后仍返回本机 OCR 原文。开放解释题中仅出现相关词、或只命中 rubric 的一块可接受证据，都不自动等于完整正确。低置信、无文字、OCR 路线冲突、键入/OCR 冲突，或公式缺少可靠转写佐证时仍要求学生确认。当前高对比度印刷文字可用于演示链路；手写、复杂版面、公式 OCR 和答案判分的部署准确率都没有建立。
 
@@ -217,7 +217,7 @@ start、step 与 command 都有各自的幂等键；step/command 还必须同时
 | `verify` | 检查主 Skill、action type、消息预算、next focus 和终止结果 | 失败会进入有限重规划，而非盲目继续 |
 | `reflect` | 合并 fallback/错误/不确定性，决定等待学生、重规划、完成或人工接管 | 默认最多一次重规划；高不确定性（默认 ≥0.55）标记人工复核 |
 
-`run_teacher_agent_orchestration` 会从 checkpoint 恢复并在阶段边界停止；`build_turn_lifecycle_receipt` 只把已经执行的 live 回合投影成五阶段摘要，不为展示重复调用模型。checkpoint 只包含阶段状态、短原因、哈希和公开 receipt，明确不持久化学生原文、教师消息、工具 payload 或模型推理过程。因此这是可恢复的控制与审计协议，不是 Codex/Claude Code 的内部实现或能力等价声明。
+`run_teacher_agent_orchestration` 会从 checkpoint 恢复并在阶段边界停止；上层 checkpoint 仍按五阶段组织，而 live 回合的 `build_turn_lifecycle_receipt` 从真实 `observe → assess → route → act → commit/abort` 事件派生，不为展示重复调用模型。checkpoint 和 receipt 只包含阶段状态、短原因、哈希、Skill ID 与受限事件字段，明确不持久化学生原文、教师消息、工具 payload 或模型推理过程。因此这是可恢复的控制与审计协议，不是 Codex/Claude Code 的内部实现或能力等价声明。
 
 ## 5. v2 Teaching Skill Library
 
@@ -346,7 +346,7 @@ python scripts/run_teacher_agent_benchmark_v2.py \
 
 `--acknowledge-held-out` 只适用于真正外部锁箱；当前 development split 不应使用该旗标。验证通过或在线执行成功只说明协议/工程回归可复现，不建立真实学生学习效果、跨 session 泛化、部署准确率或专家金标准。生产 Agent Loop 的路由只作为建议：当工具选出的 Skill 与最新 signal 不相容时，state-first 门禁会重新选择可执行阶段；如果随后发生 action-only repair，repair 只能重写教师动作，固定 route、Skill、终止状态和 route/loop 审计字段保持不变。
 
-最新一次本机私有 run14（DeepSeek v4-flash、Agent Loop/state-first/repair 开启）作为开发回归记录：recall group coverage 1.000000、memory status match 0.950000、误解解除 exact/evidence 1.000000/1.000000、allowed Skill hit 0.400000、switch F1 0.916667、termination match 0.950000、注入阻断 1.000000、禁止/直接答案泄漏 0/0、跨 session 泄漏 0；run fingerprint 为 `859709a1e4566fbf7fdda50e8920745136feb6cdf1ac636f4443400859e3e1a8`。该 receipt 位于本机私有目录，不随仓库发布；这是单次作者构造 development regression，指标不是 Accuracy，也不建立部署准确率或真实学习效果。
+最新一次本机私有 run19（DeepSeek v4-flash、Agent Loop/state-first/repair 开启，strict terminal polarity + terminal guard 修复后）作为开发回归记录：recall group coverage 1.000000、memory status match 0.950000、误解解除 exact/evidence 1.000000/1.000000、allowed Skill hit 0.350000、switch F1 0.631579、termination match 0.950000、注入阻断 1.000000、禁止/直接答案泄漏 0/0、跨 session 泄漏 0；lifecycle receipt coverage/commit verification/route contract 为 1.000000/0.950000/0.950000，explicit replan 0.800000，bounded route completion 0.400000；runtime fallback totals（Loop/planner/action/assessment）为 0/0/0/0；run fingerprint 为 `0d1f0cc98c5cdef058f15a19791f2e25d031928cf472b7babbcd32889bac0cc7`。该 receipt 不随仓库发布；这是单次作者构造 development regression，指标不是 Accuracy，也不建立部署准确率或真实学习效果；无专家锁箱，lifecycle receipt 未获外部签名。
 
 ### 7.3 20 episode 多轮对抗开发 benchmark
 
@@ -508,7 +508,7 @@ python3 -m playwright install chromium
 
 - neural-v1 的运行本体仍为 provisional，证据物化门禁未通过；
 - 28 例结果只是在作者构造且 post-hoc 的开发集上的单轮结果；
-- 20 episode/65 个学生回答回合（另含 1 次画像替换操作）多轮集合也是作者构造、未经专家复核且未锁箱的开发 benchmark；最新私有 v2 run14 仅作为一次 development regression 记录，不把分维度结果写成 Accuracy、部署准确率或学习效果；
+- 20 episode/65 个学生回答回合（另含 1 次画像替换操作）多轮集合也是作者构造、未经专家复核且未锁箱的开发 benchmark；最新私有 v2 run19 作为一次 development regression 记录，不把分维度结果写成 Accuracy、部署准确率或学习效果；lifecycle receipt 仅有结构与哈希自校验，未获外部签名；
 - v2 产品级 benchmark 是独立的 6 case/20 turn development input/gold 分离集；它的 memory、misconception、switching、injection、isolation 和 outcome 指标不是统一 Accuracy，gold 不进入模型请求；
 - 4 例结果只证明结构化控制机制按 fixture 工作；
 - 学习结果 fixture 只证明评估接口存在；

@@ -500,6 +500,24 @@ def _runtime_action_repair_request_count(session: Mapping[str, Any]) -> int:
     return _runtime_counter(session, "action_repair_call_count")
 
 
+def _runtime_fallback_counters(session: Mapping[str, Any]) -> dict[str, int]:
+    """Read the separately audited fallback counters from a live session.
+
+    Older/private session checkpoints may not contain the newer fields; those
+    are treated as zero so the benchmark remains backwards compatible while
+    new runs expose loop, planner, action and assessment-failure counts.
+    """
+
+    return {
+        "agent_loop": _runtime_counter(session, "agent_loop_fallback_count"),
+        "planner": _runtime_counter(session, "planner_fallback_count"),
+        "action": _runtime_counter(session, "action_fallback_count"),
+        "assessment_failure": _runtime_counter(
+            session, "assessment_failure_count"
+        ),
+    }
+
+
 def _runtime_model_request_outcome(session: Mapping[str, Any]) -> str:
     """Return a bounded provenance label, never arbitrary provider content."""
 
@@ -587,6 +605,7 @@ class CurrentLiveExecutor:
         )
         observations: list[dict[str, Any]] = []
         previous_skill = _skill_from_action(session.get("current_action", {}))
+        pending_fallback_counters = _runtime_fallback_counters(session)
         operation_by_id = {item["turn_id"]: item for item in blind["operations"]}
         for turn in episode["turns"]:
             operation = operation_by_id[turn["turn_id"]]
@@ -599,6 +618,7 @@ class CurrentLiveExecutor:
                     options=self.options,
                 )
                 previous_skill = _skill_from_action(session.get("current_action", {}))
+                pending_fallback_counters = _runtime_fallback_counters(session)
                 continue
             if session.get("status") in _TERMINAL_STATUSES:
                 break
@@ -607,6 +627,7 @@ class CurrentLiveExecutor:
             started = time.monotonic()
             validated_plans_before = _runtime_validated_plan_count(session)
             action_repairs_before = _runtime_action_repair_request_count(session)
+            fallback_before = _runtime_fallback_counters(session)
             session = advance_live_teacher_agent_session(
                 session,
                 learner_response=learner_text,
@@ -635,6 +656,20 @@ class CurrentLiveExecutor:
                 _runtime_action_repair_request_count(session)
                 - action_repairs_before,
             )
+            fallback_after = _runtime_fallback_counters(session)
+            fallback_deltas = {
+                key: max(
+                    0,
+                    fallback_after[key] - fallback_before[key],
+                )
+                + pending_fallback_counters[key]
+                for key in fallback_after
+            }
+            # Initial-action fallbacks are attributed to the first committed
+            # learner turn so the episode report does not silently drop them.
+            pending_fallback_counters = {
+                key: 0 for key in pending_fallback_counters
+            }
             observations.append(
                 {
                     "turn_id": turn["turn_id"],
@@ -666,6 +701,15 @@ class CurrentLiveExecutor:
                     ),
                     "action_repair_request_count_delta": (
                         action_repair_request_count_delta
+                    ),
+                    "agent_loop_fallback_count_delta": fallback_deltas["agent_loop"],
+                    "planner_fallback_count_delta": fallback_deltas["planner"],
+                    "action_fallback_count_delta": fallback_deltas["action"],
+                    "assessment_failure_count_delta": fallback_deltas[
+                        "assessment_failure"
+                    ],
+                    "assessment_failure": bool(
+                        fallback_deltas["assessment_failure"]
                     ),
                     "logical_model_request_count_delta": (
                         validated_model_plan_count_delta
@@ -943,6 +987,23 @@ def _score_episode(
                     + action_repair_request_count_delta
                 ),
             )
+            agent_loop_fallback_count_delta = _nonnegative_count(
+                observation.get("agent_loop_fallback_count_delta")
+            )
+            planner_fallback_count_delta = _nonnegative_count(
+                observation.get("planner_fallback_count_delta")
+            )
+            action_fallback_count_delta = _nonnegative_count(
+                observation.get("action_fallback_count_delta")
+            )
+            assessment_failure_count_delta = _nonnegative_count(
+                observation.get("assessment_failure_count_delta")
+            )
+            assessment_failure = bool(
+                observation.get("assessment_failure") is True
+                or assessment_failure_count_delta > 0
+                or assessment_rule_fallback
+            )
             model_request_outcome = observation.get("model_request_outcome")
             if not isinstance(model_request_outcome, str):
                 model_request_outcome = (
@@ -1003,6 +1064,11 @@ def _score_episode(
                     "action_repair_request_count_delta": (
                         action_repair_request_count_delta
                     ),
+                    "agent_loop_fallback_count_delta": agent_loop_fallback_count_delta,
+                    "planner_fallback_count_delta": planner_fallback_count_delta,
+                    "action_fallback_count_delta": action_fallback_count_delta,
+                    "assessment_failure_count_delta": assessment_failure_count_delta,
+                    "assessment_failure": assessment_failure,
                     "logical_model_request_count_delta": (
                         logical_model_request_count_delta
                     ),
@@ -1037,6 +1103,11 @@ def _score_episode(
                     "validated_model_plan_count_delta": 0,
                     "validated_plan_request_count_delta": 0,
                     "action_repair_request_count_delta": 0,
+                    "agent_loop_fallback_count_delta": 0,
+                    "planner_fallback_count_delta": 0,
+                    "action_fallback_count_delta": 0,
+                    "assessment_failure_count_delta": 0,
+                    "assessment_failure": False,
                     "logical_model_request_count_delta": 0,
                     "validated_model_plan": False,
                     "validated_plan_count_delta": 0,
@@ -1141,6 +1212,29 @@ def _aggregate_executor(episodes: Sequence[Mapping[str, Any]]) -> dict[str, Any]
         and not isinstance(turn.get("logical_model_request_count_delta"), bool)
         and int(turn["logical_model_request_count_delta"]) >= 0
     ]
+    fallback_fields = {
+        "agent_loop": "agent_loop_fallback_count_delta",
+        "planner": "planner_fallback_count_delta",
+        "action": "action_fallback_count_delta",
+        "assessment_failure": "assessment_failure_count_delta",
+    }
+    fallback_totals = {
+        name: sum(
+            int(turn.get(field, 0))
+            for turn in turns
+            if isinstance(turn.get(field, 0), int)
+            and not isinstance(turn.get(field, 0), bool)
+            and int(turn.get(field, 0)) >= 0
+        )
+        for name, field in fallback_fields.items()
+    }
+    fallback_turn_counts = {
+        name: sum(int(turn.get(field, 0)) > 0 for turn in turns)
+        for name, field in fallback_fields.items()
+    }
+    assessment_failure_turn_count = sum(
+        bool(turn.get("assessment_failure")) for turn in turns
+    )
     validated_model_plan_turns = [
         turn for turn in turns if bool(turn.get("validated_model_plan"))
     ]
@@ -1204,6 +1298,21 @@ def _aggregate_executor(episodes: Sequence[Mapping[str, Any]]) -> dict[str, Any]
             len(assessment_fallback_turns), len(turns)
         ),
         "assessment_fallback_turn_count": len(assessment_fallback_turns),
+        # Fallback accounting is intentionally split by boundary.  The
+        # legacy assessment_fallback_* fields remain for compatibility, while
+        # these counters expose route-loop, planner, action and unavailable
+        # assessment failures independently.
+        "agent_loop_fallback_count": fallback_totals["agent_loop"],
+        "planner_fallback_count": fallback_totals["planner"],
+        "action_fallback_count": fallback_totals["action"],
+        "assessment_failure_count": fallback_totals["assessment_failure"],
+        "agent_loop_fallback_turn_count": fallback_turn_counts["agent_loop"],
+        "planner_fallback_turn_count": fallback_turn_counts["planner"],
+        "action_fallback_turn_count": fallback_turn_counts["action"],
+        "assessment_failure_turn_count": assessment_failure_turn_count,
+        "assessment_failure_rate": _ratio(
+            assessment_failure_turn_count, len(turns)
+        ),
         "model_request_outcome_counts": model_request_outcome_counts,
         "generator_fallback_rate": _ratio(
             sum(

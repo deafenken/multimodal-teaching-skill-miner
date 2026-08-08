@@ -45,7 +45,18 @@
         "assessment_confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "route_changed": {"type": "boolean"},
         "assessment_source": {"type": "string"},
-        "loop_summary": {"type": ["object", "null"]}
+        "loop_summary": {"type": ["object", "null"]},
+        "fallback_counts": {
+          "type": "object",
+          "properties": {
+            "agent_loop_fallback_count": {"type": "integer", "minimum": 0},
+            "planner_fallback_count": {"type": "integer", "minimum": 0},
+            "action_fallback_count": {"type": "integer", "minimum": 0},
+            "assessment_failure_count": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "lifecycle_receipt": {"type": ["object", "null"]}
       },
       "additionalProperties": false
     }

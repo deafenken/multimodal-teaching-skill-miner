@@ -121,7 +121,7 @@
     "teaching_memory": {"$ref": "#/$defs/teachingMemory"},
     "agent_runtime": {
       "type": "object",
-      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "action_only_repair_enabled", "state_first_route_adjudication_enabled", "agent_loop_enabled", "agent_loop_schema", "maximum_agent_steps", "maximum_agent_tool_calls_per_step", "maximum_agent_repeated_tool_calls", "agent_loop_model_retries", "fallback_count", "model_call_count", "action_repair_call_count", "agent_loop_run_count", "agent_loop_model_call_count", "agent_loop_tool_call_count", "agent_loop_retry_count", "last_agent_loop", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "input_modalities", "raw_image_model_support", "local_visual_evidence_policy", "last_context_trace"],
+      "required": ["schema", "mode", "provider", "model", "prompt_version", "fallback_to_rules", "action_only_repair_enabled", "state_first_route_adjudication_enabled", "agent_loop_enabled", "agent_loop_post_assessment_enabled", "agent_loop_schema", "maximum_agent_steps", "maximum_agent_tool_calls_per_step", "maximum_agent_repeated_tool_calls", "agent_loop_model_retries", "fallback_count", "model_call_count", "action_repair_call_count", "agent_loop_run_count", "agent_loop_model_call_count", "agent_loop_tool_call_count", "agent_loop_retry_count", "agent_loop_fallback_count", "planner_fallback_count", "action_fallback_count", "assessment_failure_count", "consecutive_assessment_failures", "last_agent_loop", "last_model_trace", "last_error", "remote_student_data_opt_in", "api_key_exposed", "context_policy", "input_modalities", "raw_image_model_support", "local_visual_evidence_policy", "last_context_trace"],
       "properties": {
         "schema": {"const": "teaching_skill_miner.deepseek_teacher_runtime.v1"},
         "mode": {"const": "deepseek_live"},
@@ -132,6 +132,7 @@
         "action_only_repair_enabled": {"type": "boolean"},
         "state_first_route_adjudication_enabled": {"type": "boolean"},
         "agent_loop_enabled": {"type": "boolean"},
+        "agent_loop_post_assessment_enabled": {"type": "boolean"},
         "agent_loop_schema": {"const": "teaching_skill_miner.teacher_agent_loop.v1"},
         "maximum_agent_steps": {"type": "integer", "minimum": 2, "maximum": 16},
         "maximum_agent_tool_calls_per_step": {"type": "integer", "minimum": 1, "maximum": 6},
@@ -144,6 +145,11 @@
         "agent_loop_model_call_count": {"type": "integer", "minimum": 0},
         "agent_loop_tool_call_count": {"type": "integer", "minimum": 0},
         "agent_loop_retry_count": {"type": "integer", "minimum": 0},
+        "agent_loop_fallback_count": {"type": "integer", "minimum": 0},
+        "planner_fallback_count": {"type": "integer", "minimum": 0},
+        "action_fallback_count": {"type": "integer", "minimum": 0},
+        "assessment_failure_count": {"type": "integer", "minimum": 0},
+        "consecutive_assessment_failures": {"type": "integer", "minimum": 0},
         "last_agent_loop": {
           "anyOf": [
             {"type": "null"},
@@ -277,7 +283,7 @@
     },
     "agentLoopTrace": {
       "type": "object",
-      "required": ["schema", "status", "termination_reason", "steps", "model_call_count", "tool_call_count", "retry_count", "selected_skill_id", "supporting_skill_ids", "next_focus", "deterministic_fallback", "events", "trace_sha256"],
+      "required": ["schema", "status", "termination_reason", "steps", "model_call_count", "tool_call_count", "retry_count", "selected_skill_id", "supporting_skill_ids", "next_focus", "deterministic_fallback", "bounded_route_completion", "events", "trace_sha256"],
       "properties": {
         "schema": {"const": "teaching_skill_miner.teacher_agent_loop.v1"},
         "status": {"type": "string", "minLength": 1},
@@ -290,6 +296,7 @@
         "supporting_skill_ids": {"type": "array", "maxItems": 2, "items": {"type": "string"}},
         "next_focus": {"type": "string"},
         "deterministic_fallback": {"type": "boolean"},
+        "bounded_route_completion": {"type": "boolean"},
         "events": {
           "type": "array",
           "maxItems": 32,

@@ -1525,6 +1525,7 @@ def _apply_student_signal(
     resolve_all_on_correction: bool,
     answer_alignment: str | None = None,
     needs_human_review: bool = False,
+    count_as_no_progress: bool = True,
 ) -> None:
     action = session["current_action"]
     focus = action["primary_skill"]["focus_dimension"]
@@ -1567,6 +1568,13 @@ def _apply_student_signal(
         confidence=confidence,
         resolve_all_on_correction=resolve_all_on_correction,
     )
+    # A model/transport failure is not evidence about the learner.  Live mode
+    # passes ``count_as_no_progress=False`` for its deterministic safety
+    # fallback so repeated provider failures cannot masquerade as three
+    # consecutive unproductive learner turns.  Keep the legacy default
+    # unchanged for callers that supply an actual structured observation.
+    if not count_as_no_progress:
+        return
     if signal in {"correct", "partial"} and confidence >= 0.5:
         session["control"]["consecutive_no_progress"] = 0
     else:
@@ -1600,6 +1608,7 @@ def advance_teacher_agent_session(
     resolved_misconception_tags: list[str] | None = None,
     answer_alignment: str | None = None,
     needs_human_review: bool = False,
+    count_as_no_progress: bool = True,
 ) -> dict[str, Any]:
     """Consume one response and emit exactly one subsequent action or termination."""
 
@@ -1621,6 +1630,8 @@ def advance_teacher_agent_session(
         raise TeacherAgentError("answer_alignment is invalid")
     if not isinstance(needs_human_review, bool):
         raise TeacherAgentError("needs_human_review must be a boolean")
+    if not isinstance(count_as_no_progress, bool):
+        raise TeacherAgentError("count_as_no_progress must be a boolean")
     confidence = _finite_probability(signal_confidence, field="signal_confidence")
     response = str(learner_response).strip()
     action_before = deepcopy(current["current_action"])
@@ -1634,6 +1645,7 @@ def advance_teacher_agent_session(
         resolve_all_on_correction=resolve_all_on_correction,
         answer_alignment=answer_alignment,
         needs_human_review=needs_human_review,
+        count_as_no_progress=count_as_no_progress,
     )
     resolved_tags = resolved_misconception_tags or []
     if (
@@ -1689,6 +1701,7 @@ def advance_teacher_agent_session(
             "label": signal,
             "confidence": confidence,
             "source": "teacher_or_external_judge",
+            "counted_as_no_progress": count_as_no_progress,
         },
         "student_state_before": state_before,
         "student_state_after_observation": deepcopy(current["student_state"]),
