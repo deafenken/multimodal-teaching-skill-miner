@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN" data-theme="paper" data-density="comfortable">
+<html lang="zh-CN" data-theme="night" data-density="comfortable">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,12 +17,12 @@
         <button id="sidebarToggle" class="icon-button mobile-only" type="button" aria-label="打开任务侧栏" aria-expanded="false" aria-controls="setupPanel"><span aria-hidden="true">☰</span></button>
         <a class="brand" href="#liveLoop" aria-label="TeachLab 学习工作台">
           <span class="brand-mark" aria-hidden="true">T</span>
-          <span><strong>TeachLab</strong><small>自适应学习工作台</small></span>
+          <span><strong>TeachLab Agent</strong><small>自适应教学工作台</small></span>
         </a>
       </div>
 
       <div class="topbar-context" aria-live="polite">
-        <span>当前任务</span>
+        <span>当前工作区</span>
         <strong id="workspaceGoalTitle">尚未开始学习</strong>
       </div>
 
@@ -32,6 +32,8 @@
       </nav>
 
       <div class="topbar-actions">
+        <button id="newSessionShortcut" class="topbar-shortcut" type="button" aria-label="新建教学会话"><span aria-hidden="true">＋</span><span>新会话</span><kbd>⌘N</kbd></button>
+        <button id="commandPaletteButton" class="topbar-shortcut command-shortcut" type="button" aria-label="打开命令面板"><span aria-hidden="true">⌕</span><span>搜索命令</span><kbd>⌘K</kbd></button>
         <details class="runtime-menu">
           <summary aria-label="查看系统状态">
             <span id="providerBadge" class="system-badge pending"><i></i><strong>模型</strong><span id="providerState">检查中</span></span>
@@ -54,6 +56,18 @@
           <div><span>学习任务</span><h1 id="setupTitle">新建会话</h1></div>
           <button id="sidebarClose" class="icon-button mobile-only" type="button" aria-label="关闭任务侧栏">×</button>
         </div>
+
+        <div class="workspace-search" role="search">
+          <span aria-hidden="true">⌕</span>
+          <label class="visually-hidden" for="sessionSearch">搜索会话或命令</label>
+          <input id="sessionSearch" type="search" autocomplete="off" placeholder="搜索会话或命令">
+          <kbd>⌘K</kbd>
+        </div>
+
+        <section class="session-navigator" aria-label="会话导航">
+          <div class="session-navigator-head"><span>最近会话</span><button id="clearSessionCatalogButton" class="text-button" type="button">清除</button></div>
+          <div id="sessionHistoryList" class="session-history-list"><p class="session-history-empty">还没有已保存的会话</p></div>
+        </section>
 
         <button id="presetButton" class="new-session-button" type="button">
           <span aria-hidden="true">＋</span>
@@ -217,6 +231,7 @@
           <div><span>下一关注</span><strong id="liveNextFocus">—</strong></div>
           <button id="openMethodInspectorButton" type="button"><span>查看选择依据</span><b aria-hidden="true">→</b></button>
         </section>
+        <p id="liveSelectionReason" class="live-selection-reason" aria-live="polite" hidden>开始会话后，这里会用一句话说明为什么选择当前 Skill。</p>
 
         <section id="agentTracePanel" class="agent-trace-panel" aria-labelledby="agentTraceTitle" hidden>
           <details class="agent-trace-shell" open>
@@ -263,6 +278,7 @@
             <span><b>2</b> 系统判断当前卡点</span>
             <span><b>3</b> 下一步会随反馈改变</span>
           </div>
+          <button id="emptyStartButton" class="empty-start-button" type="button"><span>开始一个学习会话</span><kbd>⌘N</kbd></button>
         </div>
 
         <div id="activeSession" class="active-session" hidden>
@@ -378,6 +394,10 @@
 
               <section class="state-fact"><span>这轮理解信号</span><strong id="understandingSignal">尚未观察</strong><p id="responseExcerpt">等待第一轮作答。</p></section>
               <section class="state-fact focus-fact"><span>接下来重点</span><strong id="nextFocus">—</strong><p id="nextFocusReason">开始后显示选择这个重点的原因。</p></section>
+              <section class="state-timeline-board" aria-labelledby="studentStateTimelineTitle">
+                <div class="section-title"><span id="studentStateTimelineTitle">学生状态时间线</span><small id="studentStateTimelineCount">0 轮</small></div>
+                <ol id="studentStateTimeline" class="student-state-timeline"><li>提交第一条回答后，这里会记录每轮“回答信号 → 掌握变化 → 下一关注”。</li></ol>
+              </section>
             </div>
           </details>
           </div>
@@ -533,8 +553,24 @@
     <label><span>密度</span><select id="densityTweak"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
   </aside>
 
+  <div id="commandPalette" class="command-palette" hidden role="dialog" aria-modal="true" aria-labelledby="commandPaletteTitle">
+    <button id="commandPaletteBackdrop" class="command-palette-backdrop" type="button" aria-label="关闭命令面板"></button>
+    <section class="command-palette-card">
+      <header><div><span>TEACHLAB COMMANDS</span><h2 id="commandPaletteTitle">你想做什么？</h2></div><button id="commandPaletteClose" class="icon-button" type="button" aria-label="关闭命令面板">×</button></header>
+      <label class="command-palette-input"><span aria-hidden="true">⌕</span><input id="commandPaletteSearch" type="search" autocomplete="off" placeholder="输入命令或搜索会话"><kbd>ESC</kbd></label>
+      <div id="commandPaletteItems" class="command-palette-items" role="listbox" aria-label="可用命令">
+        <button type="button" role="option" data-palette-command="new"><span class="palette-icon">＋</span><span><strong>新建教学会话</strong><small>设置新的目标、画像和达标条件</small></span><kbd>⌘N</kbd></button>
+        <button type="button" role="option" data-palette-command="inspector"><span class="palette-icon">◫</span><span><strong>打开学情检查器</strong><small>查看掌握度、误解、Skill 和证据</small></span><kbd>⌘I</kbd></button>
+        <button type="button" role="option" data-palette-command="evaluation"><span class="palette-icon">▦</span><span><strong>打开实验 / 评估</strong><small>查看冻结样例与基线对比</small></span><kbd>⌘E</kbd></button>
+        <button type="button" role="option" data-palette-command="auto"><span class="palette-icon">↻</span><span><strong>恢复自动路由</strong><small>/auto · 让 Agent 重新选择 Skill</small></span><kbd>/auto</kbd></button>
+        <button type="button" role="option" data-palette-command="stop"><span class="palette-icon">■</span><span><strong>结束并转人工</strong><small>/stop · 保留学情并停止自动推进</small></span><kbd>/stop</kbd></button>
+      </div>
+      <footer><span>↑↓ 选择</span><span>Enter 执行</span><span>Esc 关闭</span></footer>
+    </section>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  <script>window.TEACHER_AGENT_TWEAKS = /*EDITMODE-BEGIN*/{"theme":"paper","density":"comfortable"}/*EDITMODE-END*/;</script>
+  <script>window.TEACHER_AGENT_TWEAKS = /*EDITMODE-BEGIN*/{"theme":"night","density":"comfortable"}/*EDITMODE-END*/;</script>
   <script src="assets/teacher_agent_demo.js"></script>
 </body>
 </html>

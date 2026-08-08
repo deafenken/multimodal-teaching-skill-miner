@@ -31,7 +31,10 @@
     stateEpoch: 0,
     profileEpoch: 0,
     requestSequence: 0,
-    requestEpochs: {}
+    requestEpochs: {},
+    sessionCatalog: [],
+    commandPaletteOpen: false,
+    paletteSelection: 0
   };
 
   const sessionHandleKey = "teachlab_opaque_session_handle_v2";
@@ -380,6 +383,174 @@
     }, 4600);
   }
 
+  // The session rail is deliberately an in-memory navigator.  It stores only
+  // opaque session identity and a few display fields; learner answers and
+  // model payloads never enter the catalog or browser storage.
+  function sessionCatalogStatusLabel(status) {
+    return status === "active" ? "进行中" : status === "succeeded" ? "已达标" : "已转人工";
+  }
+
+  function rememberSession(session = app.session) {
+    const value = object(session);
+    const sessionId = textValue(value.session_id, "");
+    if (!sessionId) return;
+    const goal = object(value.goal);
+    const profile = object(value.profile_summary);
+    const profileByRef = profileByReference(profile.profile_ref);
+    const name = textValue(
+      profile.display_name || profile.name,
+      profileByRef?.name || activeProfile().name
+    );
+    const entry = {
+      session_id: sessionId,
+      concept: textValue(goal.concept, "未命名任务"),
+      profile_name: name,
+      profile_revision: textValue(profile.profile_revision, ""),
+      status: textValue(value.status, "active"),
+      rounds: Math.max(0, Math.round(finite(value.rounds_completed, 0))),
+      touched_at: Date.now()
+    };
+    app.sessionCatalog = [entry, ...app.sessionCatalog.filter((item) => item.session_id !== sessionId)].slice(0, 8);
+    renderSessionCatalog(select("#sessionSearch")?.value || "");
+  }
+
+  function renderSessionCatalog(query = "") {
+    const root = select("#sessionHistoryList");
+    if (!root) return;
+    const needle = String(query || "").trim().toLocaleLowerCase();
+    const visible = app.sessionCatalog.filter((item) => {
+      if (!needle) return true;
+      return [item.concept, item.profile_name, sessionCatalogStatusLabel(item.status)]
+        .some((part) => String(part || "").toLocaleLowerCase().includes(needle));
+    });
+    if (!visible.length) {
+      root.replaceChildren(node("p", "session-history-empty", needle ? "没有匹配的会话" : "还没有已保存的会话"));
+      return;
+    }
+    root.replaceChildren(...visible.map((item) => {
+      const button = node("button", "session-history-item");
+      button.type = "button";
+      button.dataset.sessionId = item.session_id;
+      button.dataset.status = item.status;
+      button.classList.toggle("active", item.session_id === app.session?.session_id);
+      button.setAttribute("aria-label", `打开会话：${item.concept}，${item.profile_name}`);
+      button.append(node("i", "", ""));
+      const copy = node("span", "session-history-item-copy");
+      copy.append(node("strong", "", item.concept), node("small", "", `${item.profile_name} · ${sessionCatalogStatusLabel(item.status)} · R${item.rounds}`));
+      button.append(copy, node("kbd", "", item.session_id === app.session?.session_id ? "当前" : "打开"));
+      button.addEventListener("click", () => openCatalogSession(item.session_id));
+      return button;
+    }));
+  }
+
+  async function openCatalogSession(sessionId) {
+    if (!sessionId || app.busy) return;
+    if (sessionId === app.session?.session_id) {
+      closeCommandPalette();
+      showSetupForm(false);
+      setSidebar(false);
+      return;
+    }
+    setBusy(true);
+    const requestAnchor = beginRequestAnchor("catalog_resume", {session: null});
+    try {
+      const restoredSession = await postJson("api/session", {session_id: sessionId});
+      commitSessionResponse(requestAnchor, restoredSession, {
+        newSession: true,
+        expectedSessionId: sessionId
+      });
+      const initial = object(app.session.profile_summary).initial_mastery;
+      app.sessionInitialMastery = {...object(initial)};
+      app.pendingStart = null;
+      app.pendingTurn = null;
+      app.pendingCommand = null;
+      app.recoveryRetryable = false;
+      clearPendingAttachment();
+      app.draftingReplacement = false;
+      syncReplacementDraftUi();
+      applySessionProfile(app.session, {syncDraft: true});
+      applySetupSnapshot(app.session);
+      synchronizeControlModeFromSession();
+      renderSession();
+      syncNewMessageAnnouncer();
+      showSetupForm(false);
+      setSidebar(false);
+      showToast(`已切换到“${textValue(app.session.goal?.concept, "未命名任务")}”会话。`);
+    } catch (error) {
+      app.sessionCatalog = app.sessionCatalog.filter((item) => item.session_id !== sessionId);
+      renderSessionCatalog(select("#sessionSearch")?.value || "");
+      showToast(`该会话已不可恢复：${String(error.message || error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function closeCommandPalette() {
+    const palette = select("#commandPalette");
+    if (!palette) return;
+    palette.hidden = true;
+    app.commandPaletteOpen = false;
+    select("#appShell")?.removeAttribute("inert");
+    const input = select("#commandPaletteSearch");
+    if (input) input.value = "";
+    app.paletteSelection = 0;
+    renderCommandPaletteItems();
+  }
+
+  function openCommandPalette() {
+    const palette = select("#commandPalette");
+    if (!palette) return;
+    palette.hidden = false;
+    app.commandPaletteOpen = true;
+    select("#appShell")?.setAttribute("inert", "");
+    app.paletteSelection = 0;
+    renderCommandPaletteItems();
+    window.requestAnimationFrame(() => select("#commandPaletteSearch")?.focus());
+  }
+
+  function renderCommandPaletteItems() {
+    const input = select("#commandPaletteSearch");
+    const query = String(input?.value || "").trim().toLocaleLowerCase();
+    const items = [...document.querySelectorAll("#commandPaletteItems [data-palette-command]")];
+    let visibleIndex = 0;
+    for (const item of items) {
+      const visible = !query || item.textContent.toLocaleLowerCase().includes(query);
+      item.hidden = !visible;
+      item.setAttribute("aria-selected", String(visible && visibleIndex++ === app.paletteSelection));
+    }
+    const visible = items.filter((item) => !item.hidden);
+    if (visible.length && app.paletteSelection >= visible.length) {
+      app.paletteSelection = visible.length - 1;
+      visible.forEach((item, index) => item.setAttribute("aria-selected", String(index === app.paletteSelection)));
+    }
+  }
+
+  async function executePaletteCommand(command) {
+    closeCommandPalette();
+    if (command === "new") {
+      handleSetupButton();
+      return;
+    }
+    if (command === "inspector") {
+      setInspectorTab("state");
+      setInspector(true);
+      return;
+    }
+    if (command === "evaluation") {
+      setAppView("evaluation");
+      return;
+    }
+    if (command === "auto") {
+      if (app.session?.status === "active") await chooseAutoMode();
+      else showToast("开始学习后才能恢复自动路由。 ");
+      return;
+    }
+    if (command === "stop") {
+      if (app.session?.status === "active") await handoffToTeacher();
+      else showToast("当前没有正在进行的会话。 ");
+    }
+  }
+
   function showInlineError(target, message) {
     const error = select(target);
     error.textContent = message;
@@ -452,6 +623,7 @@
   }
 
   function discardUnavailableSession({render = true} = {}) {
+    const retiredSessionId = textValue(app.session?.session_id, "");
     app.stateEpoch += 1;
     clearPendingAttachment();
     app.session = null;
@@ -463,14 +635,24 @@
     app.recoveryRetryable = false;
     app.draftingReplacement = false;
     clearSessionHandle();
+    if (retiredSessionId) {
+      app.sessionCatalog = app.sessionCatalog.filter(
+        (item) => item.session_id !== retiredSessionId
+      );
+    }
     setControlMode("auto");
     syncReplacementDraftUi();
     if (!render) return;
     select("#activeSession").hidden = true;
     select("#emptySession").hidden = false;
+    select("#liveDecisionStrip").hidden = true;
+    select("#liveSelectionReason").hidden = true;
+    select("#agentTracePanel").hidden = true;
     renderPhase(null);
     renderLearningCommandBar(null, {});
     renderRecoveryConsole(null, {});
+    renderStudentStateTimeline(null);
+    renderSessionCatalog(select("#sessionSearch")?.value || "");
     showSetupForm(true);
     renderProfileIdentity();
     renderDraftProfileBaseline();
@@ -2017,6 +2199,91 @@
     select("#masteryRing").setAttribute("aria-label", `当前综合掌握度 ${score}%，四项等权平均`);
   }
 
+  function renderStudentStateTimeline(session) {
+    const countNode = select("#studentStateTimelineCount");
+    const root = select("#studentStateTimeline");
+    if (!countNode || !root) return;
+    const history = array(session?.history);
+    countNode.textContent = `${history.length} 轮`;
+    if (!history.length) {
+      root.replaceChildren(
+        node(
+          "li",
+          "",
+          "提交第一条回答后，这里会记录每轮“回答信号 → 掌握变化 → 下一关注”。"
+        )
+      );
+      return;
+    }
+    let previousMastery = object(app.sessionInitialMastery);
+    const rows = history.map((raw, index) => {
+      const event = object(raw);
+      const before = historyStateBefore(event, previousMastery);
+      const after = historyStateAfter(event);
+      previousMastery = object(after.knowledge_mastery);
+      const mastery = object(after.knowledge_mastery);
+      const values = Object.keys(dimensionLabels)
+        .map((dimension) => finite(mastery[dimension], NaN))
+        .filter((value) => Number.isFinite(value));
+      const average = values.length
+        ? values.reduce((sum, value) => sum + value, 0) / values.length
+        : null;
+      const beforeValues = Object.keys(dimensionLabels)
+        .map((dimension) => finite(object(before.knowledge_mastery)[dimension], NaN))
+        .filter((value) => Number.isFinite(value));
+      const beforeAverage = beforeValues.length
+        ? beforeValues.reduce((sum, value) => sum + value, 0) / beforeValues.length
+        : null;
+      const delta = average !== null && beforeAverage !== null
+        ? average - beforeAverage
+        : null;
+      const action = historyAction(event);
+      const signal = normalizeSignal(
+        event.structured_signal || event.signal || object(event.deepseek_assessment).signal
+      );
+      const afterFocus = object(after.next_focus);
+      // The deterministic dashboard history is intentionally compact and may
+      // flatten each event down to signal/mastery fields.  In that shape the
+      // authoritative next_focus lives on the current session state, not on
+      // the individual history row.  Use it only for the newest row; never
+      // invent a focus for older rows.
+      const sessionFocus = index === history.length - 1
+        ? object(session?.student_state).next_focus
+        : null;
+      const focusValue = afterFocus.dimension
+        || object(action).next_focus
+        || object(sessionFocus).dimension;
+      const focus = dimensionLabels[focusValue]
+        || textValue(focusValue, index === history.length - 1 ? "等待判断" : "本轮已记录");
+      const skill = textValue(
+        object(action.primary_skill).name || action.skill_name || event.skill_name,
+        "教学 Skill"
+      );
+      const reason = compactText(
+        action.selection_reason || event.selection_reason,
+        86
+      );
+      const item = node("li", "");
+      const round = node("span", "timeline-round", `R${finite(event.round, index + 1)}`);
+      const copy = node("div", "timeline-copy");
+      copy.append(
+        node("strong", "", `${signalLabels[signal] || signal} · 关注 ${focus}`),
+        node("small", "", `${skill}${reason !== "—" ? ` · ${reason}` : ""}`)
+      );
+      const score = node(
+        "span",
+        `timeline-score${delta !== null && delta > 0 ? " positive" : ""}`,
+        average === null
+          ? "—"
+          : `${probability(average)}${delta === null ? "" : ` ${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}pt`}`
+      );
+      score.title = "当前四项掌握估计的等权平均；括号后的变化为相对上一轮的差值";
+      item.append(round, copy, score);
+      return item;
+    });
+    root.replaceChildren(...rows);
+  }
+
   function renderMisconceptions(state) {
     const rows = array(state.misconceptions);
     const active = rows.filter((item) => item.status !== "resolved");
@@ -2653,9 +2920,17 @@
       studentRow.append(studentAvatar, studentBubble);
 
       const details = node("details", "turn-audit");
+      const hasLearnerEvidence = Boolean(
+        textValue(event.learner_text, "")
+        || textValue(event.learner_response, "")
+        || textValue(object(event.learner_feedback).response, "")
+        || visualEvidence.length
+      );
       const answerAlignment = textValue(
         diagnosis.answer_alignment,
-        Object.keys(diagnosis).length ? "ambiguous" : "not_applicable"
+        Object.keys(diagnosis).length
+          ? "ambiguous"
+          : (hasLearnerEvidence ? "ambiguous" : "not_applicable")
       );
       const summary = node("summary", "", "查看诊断依据");
       const evidence = textValue(diagnosis.evidence_excerpt, object(after.understanding_signal).response_excerpt || "降级路径未返回语义证据");
@@ -2920,7 +3195,10 @@
     select("#liveSwitchLabel").textContent = "会话终止";
     select("#liveSwitchLabel").title = "会话终止";
     select("#liveSwitchLabel").dataset.switched = "true";
-    select("#selectionReason").textContent = textValue(action.termination_reason || session.termination_reason, "会话已进入停止状态。");
+    const terminalReason = textValue(action.termination_reason || session.termination_reason, "会话已进入停止状态。");
+    select("#selectionReason").textContent = terminalReason;
+    select("#liveSelectionReason").textContent = terminalReason;
+    select("#liveSelectionReason").hidden = false;
     renderSupportingSkills({});
     select("#actionType").textContent = textValue(object(action.teacher_action).type || action.type, "stop");
     select("#teacherMessage").textContent = textValue(object(action.teacher_action).message, "会话已停止。");
@@ -2955,6 +3233,11 @@
     select("#selectionReason").textContent = modelProposedSkill
       ? `模型提议：${skillName(modelProposedSkill)}（${modelReason}）；最终执行：${textValue(skill.name || skillName(skill.skill_id))}（${finalReason}）`
       : finalReason;
+    const liveReason = modelProposedSkill
+      ? `模型先提议“${skillName(modelProposedSkill)}”，服务端结合当前学情最终选择“${textValue(skill.name || skillName(skill.skill_id))}”：${finalReason}`
+      : finalReason;
+    select("#liveSelectionReason").textContent = liveReason;
+    select("#liveSelectionReason").hidden = false;
     const teacher = object(action.teacher_action);
     select("#actionType").textContent = textValue(teacher.type, "one_action");
     select("#teacherMessage").textContent = textValue(teacher.message);
@@ -2965,6 +3248,7 @@
   function renderSession() {
     const session = app.session;
     if (!session) return;
+    rememberSession(session);
     const scroller = select("#conversationScroll");
     const followLatest = !scroller || scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 96;
     applySessionProfile(session);
@@ -2991,6 +3275,7 @@
     const states = latestHistoryStates();
     const studentState = object(session.student_state);
     renderMastery(studentState, states.before);
+    renderStudentStateTimeline(session);
     const understanding = object(studentState.understanding_signal);
     select("#understandingSignal").textContent = signalLabels[understanding.label] || textValue(understanding.label, "尚未观察");
     select("#responseExcerpt").textContent = textValue(understanding.response_excerpt, "等待第一轮作答。");
@@ -3217,11 +3502,19 @@
     setBusy(true);
     let recoveredFromUnavailableSession = false;
     let recoveredFromConcurrentUpdate = false;
+    let replacedSessionId = "";
     try {
       const startPayload = setupPayload();
-      const replacingActiveSession = app.session?.status === "active"
-        && Boolean(app.session?.session_id);
-      if (replacingActiveSession) {
+      // A profile/goal edit always starts a fresh isolated session.  This
+      // applies to terminal sessions as well as active ones: otherwise the
+      // finished session remains registered on the server and a subsequent
+      // start can accidentally resume stale history or leave the old profile
+      // in the local registry.  The server still verifies the full identity
+      // tuple below, so a concurrent update fails closed and is retried once
+      // with synchronized guards.
+      const replacingCurrentSession = Boolean(app.session?.session_id);
+      if (replacingCurrentSession) {
+        replacedSessionId = app.session.session_id;
         const priorRevision = textValue(
           object(app.session.profile_summary).profile_revision,
           ""
@@ -3315,6 +3608,12 @@
         }
       }
       if (!startedSession) throw new Error("新会话未能建立");
+      if (replacedSessionId) {
+        // Replacement is transactional and retires the old server session;
+        // remove that opaque handle from the navigator instead of offering a
+        // dead “resume” affordance.
+        app.sessionCatalog = app.sessionCatalog.filter((item) => item.session_id !== replacedSessionId);
+      }
       app.sessionInitialMastery = {...startPayload.student_profile.initial_mastery};
       app.activeProfileId = app.selectedProfileId;
       app.draftingReplacement = false;
@@ -3747,6 +4046,43 @@
   }
 
   function bindEvents() {
+    const openNewSessionDraft = () => {
+      if (app.session) {
+        if (!app.draftingReplacement) beginReplacementDraft({resetControl: true});
+      } else {
+        handleSetupButton();
+      }
+      showSetupForm(true);
+      if (window.matchMedia("(max-width: 860px)").matches) setSidebar(true);
+      window.requestAnimationFrame(() => select("#conceptInput")?.focus());
+    };
+    select("#newSessionShortcut")?.addEventListener("click", openNewSessionDraft);
+    select("#emptyStartButton")?.addEventListener("click", openNewSessionDraft);
+    select("#sessionSearch")?.addEventListener("input", (event) => renderSessionCatalog(event.target.value));
+    select("#sessionSearch")?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      const first = select("#sessionHistoryList .session-history-item");
+      if (first) {
+        event.preventDefault();
+        first.click();
+      }
+    });
+    select("#clearSessionCatalogButton")?.addEventListener("click", () => {
+      app.sessionCatalog = [];
+      if (app.session) rememberSession(app.session);
+      renderSessionCatalog(select("#sessionSearch")?.value || "");
+      showToast("已清除本页最近会话列表；服务端会话未被删除。 ");
+    });
+    select("#commandPaletteButton")?.addEventListener("click", openCommandPalette);
+    select("#commandPaletteClose")?.addEventListener("click", closeCommandPalette);
+    select("#commandPaletteBackdrop")?.addEventListener("click", closeCommandPalette);
+    select("#commandPaletteSearch")?.addEventListener("input", () => {
+      app.paletteSelection = 0;
+      renderCommandPaletteItems();
+    });
+    for (const button of document.querySelectorAll("#commandPaletteItems [data-palette-command]")) {
+      button.addEventListener("click", () => executePaletteCommand(button.dataset.paletteCommand));
+    }
     for (const input of document.querySelectorAll("input[type='range']")) {
       input.addEventListener("input", () => {
         if (input.nextElementSibling) input.nextElementSibling.value = input.value;
@@ -3948,6 +4284,40 @@
       }
     });
     document.addEventListener("keydown", (event) => {
+      const commandModifier = event.metaKey || event.ctrlKey;
+      if (commandModifier && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        if (app.commandPaletteOpen) closeCommandPalette(); else openCommandPalette();
+        return;
+      }
+      if (commandModifier && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        closeCommandPalette();
+        openNewSessionDraft();
+        return;
+      }
+      if (app.commandPaletteOpen) {
+        const visible = [...document.querySelectorAll("#commandPaletteItems [data-palette-command]")].filter((item) => !item.hidden);
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          if (visible.length) {
+            app.paletteSelection = (app.paletteSelection + (event.key === "ArrowDown" ? 1 : -1) + visible.length) % visible.length;
+            renderCommandPaletteItems();
+          }
+          return;
+        }
+        if (event.key === "Enter") {
+          event.preventDefault();
+          const selected = visible[app.paletteSelection];
+          if (selected) executePaletteCommand(selected.dataset.paletteCommand);
+          return;
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeCommandPalette();
+          return;
+        }
+      }
       trapResponsiveDrawerFocus(event);
       if (event.key !== "Escape") return;
       closeDrawers({restoreFocus: true});
@@ -4011,7 +4381,9 @@
     renderPhase(null);
     renderLearningCommandBar(null, {});
     renderRecoveryConsole(null, {});
+    renderStudentStateTimeline(null);
     showSetupForm(true);
+    renderSessionCatalog();
     setControlMode("auto");
     syncReplacementDraftUi();
     try {

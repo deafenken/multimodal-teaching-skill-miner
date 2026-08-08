@@ -12,8 +12,10 @@ from teaching_skill_miner.teacher_agent_benchmark_v2 import (
     BENCHMARK_VERSION,
     PREDICTIONS_SCHEMA,
     TeachingAgentBenchmarkV2Error,
+    _terminal_guard_lifecycle_receipt,
     _fingerprint,
     score_benchmark_v2,
+    predictions_from_live_cases,
     validate_benchmark_gold,
     validate_benchmark_inputs,
     validate_predictions,
@@ -407,6 +409,91 @@ def test_fallback_loop_summary_may_have_no_selected_skill(artifacts) -> None:
     validate_predictions(predictions, inputs)
 
 
+def test_live_benchmark_pads_turns_after_terminal_without_readvance(
+    artifacts, monkeypatch
+) -> None:
+    inputs, _gold, library = artifacts
+    advance_calls: list[str] = []
+
+    def fake_session(*_args, **_kwargs):
+        return {
+            "status": "active",
+            "round": 0,
+            "skill_library": deepcopy(library),
+            "integrity": {"content_sha256": "0" * 64},
+            "current_action": {
+                "primary_skill": {"skill_id": "skill_diagnostic_questioning"},
+                "supporting_skills": [],
+                "teacher_action": {
+                    "type": "probe_prior_knowledge",
+                    "message": "先说出你的思路。",
+                },
+                "action_provenance": {"route_adjudication": {"changed": False}},
+                "decision_origin": "model",
+            },
+            "student_state": {"misconceptions": []},
+            "context_memory": {
+                "semantic_summary": {
+                    "continuity_recall": {
+                        "status": "not_requested",
+                        "evidence_refs": [],
+                    }
+                }
+            },
+            "history": [],
+            "agent_runtime": {
+                "agent_loop_fallback_count": 0,
+                "planner_fallback_count": 0,
+                "action_fallback_count": 0,
+                "assessment_failure_count": 0,
+                "last_agent_loop": None,
+            },
+        }
+
+    def fake_advance(session, *, learner_response, client, options):
+        advance_calls.append(learner_response)
+        updated = deepcopy(session)
+        updated["status"] = "succeeded"
+        updated["agent_runtime"]["agent_loop_fallback_count"] = 1
+        return updated
+
+    class _FakeClient:
+        def public_status(self):
+            return {"provider": "test", "model": "terminal-guard"}
+
+    monkeypatch.setattr(
+        "teaching_skill_miner.teacher_agent_benchmark_v2.start_live_teacher_agent_session",
+        fake_session,
+    )
+    monkeypatch.setattr(
+        "teaching_skill_miner.teacher_agent_benchmark_v2.advance_live_teacher_agent_session",
+        fake_advance,
+    )
+
+    predictions = predictions_from_live_cases(inputs, library, _FakeClient())
+
+    assert len(advance_calls) == len(inputs["cases"])
+    assert all(
+        len(predicted["turns"]) == len(source["turns"])
+        for predicted, source in zip(predictions["cases"], inputs["cases"])
+    )
+    assert all(
+        turn["terminal"]
+        and turn["teacher_message"] == ""
+        and turn["lifecycle_receipt"]["status"] == "aborted"
+        for predicted in predictions["cases"]
+        for turn in predicted["turns"][1:]
+    )
+    assert all(
+        turn["fallback_counts"]["agent_loop_fallback_count"] == 0
+        for predicted in predictions["cases"]
+        for turn in predicted["turns"][1:]
+    )
+    assert predictions["runtime"]["fallback_totals"]["agent_loop_fallback_count"] == len(
+        inputs["cases"]
+    )
+
+
 def test_unsealed_lifecycle_telemetry_is_rejected(artifacts) -> None:
     inputs, gold, _library = artifacts
     predictions = _perfect_predictions(inputs, gold)
@@ -524,6 +611,84 @@ def test_resealed_lifecycle_status_retyping_and_post_terminal_event_are_rejected
     post_terminal["cases"][0]["turns"][0]["lifecycle_receipt"] = post_terminal_receipt
     with pytest.raises(TeachingAgentBenchmarkV2Error, match="after terminal"):
         validate_predictions(post_terminal, inputs)
+
+
+def test_terminal_flags_and_status_contract_cannot_be_forged(artifacts) -> None:
+    inputs, gold, library = artifacts
+
+    def reseal(receipt: dict) -> None:
+        for event in receipt["events"]:
+            event["event_sha256"] = _fingerprint(
+                {key: value for key, value in event.items() if key != "event_sha256"}
+            )
+        receipt["phases"] = [
+            {
+                "phase": event["event"],
+                "status": event["status"],
+                "sequence": event["sequence"],
+            }
+            for event in receipt["events"]
+        ]
+        receipt["checkpoint_sha256"] = _fingerprint(
+            {key: value for key, value in receipt.items() if key != "checkpoint_sha256"}
+        )
+
+    commit_predictions = _perfect_predictions(inputs, gold)
+    commit_turn = commit_predictions["cases"][0]["turns"][0]
+    commit_turn["loop_summary"] = _sealed_loop_summary(
+        commit_turn["primary_skill_id"], bounded=False
+    )
+    commit_receipt = _sealed_lifecycle_receipt(commit_turn, commit_turn["loop_summary"])
+    commit_receipt["events"][-1].pop("committed")
+    reseal(commit_receipt)
+    commit_turn["lifecycle_receipt"] = commit_receipt
+    with pytest.raises(TeachingAgentBenchmarkV2Error, match="committed=true"):
+        validate_predictions(commit_predictions, inputs)
+
+    abort_predictions = _perfect_predictions(inputs, gold)
+    case = inputs["cases"][0]
+    session = start_teacher_agent_session(
+        deepcopy(inputs["goals"][case["goal_ref"]]),
+        deepcopy(inputs["student_profiles"][case["student_profile_ref"]]),
+        deepcopy(library),
+    )
+    abort_receipt = _terminal_guard_lifecycle_receipt({**session, "status": "succeeded"})
+    abort_receipt["events"][-1].pop("aborted")
+    reseal(abort_receipt)
+    abort_predictions["cases"][0]["turns"][0]["lifecycle_receipt"] = abort_receipt
+    with pytest.raises(TeachingAgentBenchmarkV2Error, match="aborted=true"):
+        validate_predictions(abort_predictions, inputs)
+
+    blocked_predictions = _perfect_predictions(inputs, gold)
+    blocked = build_turn_lifecycle_receipt(
+        session,
+        loop_trace=None,
+        plan=None,
+        output_action=None,
+        lifecycle_events=[
+            {"event": "observe", "observed": False},
+            {"event": "assess", "signal": "partial", "confidence": 0.8},
+            {
+                "event": "route",
+                "selected_skill_id": "skill_diagnostic_questioning",
+                "route_authority": "validated_agent_loop",
+            },
+            {
+                "event": "act",
+                "selected_skill_id": "skill_diagnostic_questioning",
+                "action_type": "probe_prior_knowledge",
+                "action_materialized": True,
+            },
+            {"event": "commit", "committed": True, "round": 0},
+        ],
+        turn_outcome="commit",
+        commit_round=0,
+    )
+    blocked["verification"]["status"] = "fallback"
+    reseal(blocked)
+    blocked_predictions["cases"][0]["turns"][0]["lifecycle_receipt"] = blocked
+    with pytest.raises(TeachingAgentBenchmarkV2Error, match="status/outcome/verification"):
+        validate_predictions(blocked_predictions, inputs)
 
 
 def test_resealed_terminal_polarity_and_status_contract_are_rejected(artifacts) -> None:

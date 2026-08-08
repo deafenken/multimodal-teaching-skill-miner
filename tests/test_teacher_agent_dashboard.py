@@ -440,7 +440,16 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertIn("模型实际读取的请求快照", html)
         self.assertIn('id="learnerResponse"', html)
         self.assertIn("Skill 选择依据", html)
+        self.assertIn('id="liveSelectionReason"', html)
+        self.assertIn('id="studentStateTimeline"', html)
         self.assertIn("renderContextMemory(session)", script)
+        self.assertIn("const replacingCurrentSession = Boolean(app.session?.session_id)", script)
+        self.assertNotIn(
+            'const replacingActiveSession = app.session?.status === "active"',
+            script,
+        )
+        self.assertIn("renderStudentStateTimeline(session)", script)
+        self.assertIn('select("#liveSelectionReason").hidden = false', script)
         self.assertIn("snapshot.operation", script)
         self.assertIn("snapshot.session_round_before_request", script)
         self.assertIn("本区不会混入这些处理后结果", script)
@@ -2498,6 +2507,67 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                     snapshot.resume({"session_id": stopped["session_id"]}),
                     stopped,
                 )
+
+    def test_terminal_session_replacement_is_atomic_and_does_not_retain_old_state(
+        self,
+    ) -> None:
+        """Starting a new profile after handoff retires the terminal session."""
+
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.v2_library_path,
+            self.input_path,
+            self.cases_path,
+            client=_FakeLiveClient(),
+        )
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "terminal-replacement-start-001",
+                "remote_processing_acknowledged": True,
+            }
+        )
+        stopped = snapshot.command(
+            self._command_body(started, "stop", key="terminal-replacement-stop-002")
+        )
+        self.assertEqual(stopped["status"], "terminated_unable")
+
+        replacement_profile = deepcopy(snapshot.demo_input["student_profile"])
+        replacement_profile.update(
+            {
+                "profile_ref": "terminal-replacement-profile",
+                "learner_level": "advanced",
+                "initial_mastery": {
+                    "prerequisite": 0.8,
+                    "conceptual": 0.7,
+                    "procedural": 0.65,
+                    "transfer": 0.6,
+                },
+            }
+        )
+        replacement = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": replacement_profile,
+                "profile_revision": "terminal-replacement-profile-v2",
+                "profile_display_name": "终止后新学生",
+                "start_idempotency_key": "terminal-replacement-start-003",
+                "replace_session_id": stopped["session_id"],
+                **self._replacement_guards(stopped),
+                "remote_processing_acknowledged": True,
+            }
+        )
+        self.assertNotEqual(replacement["session_id"], stopped["session_id"])
+        self.assertEqual(set(snapshot.sessions), {replacement["session_id"]})
+        self.assertEqual(replacement["rounds_completed"], 0)
+        self.assertEqual(replacement["history"], [])
+        self.assertEqual(
+            replacement["profile_summary"]["profile_revision"],
+            "terminal-replacement-profile-v2",
+        )
+        self.assertEqual(snapshot.resume({"session_id": replacement["session_id"]}), replacement)
+        with self.assertRaisesRegex(TeacherAgentDashboardError, "no longer available"):
+            snapshot.resume({"session_id": stopped["session_id"]})
 
     def test_session_capacity_rejects_when_every_eviction_candidate_is_busy(
         self,

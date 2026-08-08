@@ -983,19 +983,19 @@ class TeacherAgentUiContractTests(unittest.TestCase):
         self.assertIn(".agent-trace-grid, .agent-trace-outcome-grid", responsive)
         self.assertIn("grid-template-columns: 1fr", responsive)
 
-    def test_terminal_session_profile_switch_starts_fresh_without_question_guard(
+    def test_any_session_profile_switch_starts_fresh_with_identity_guard(
         self,
     ) -> None:
         start = self.script.split("async function startSession(event)", 1)[1].split(
             "async function sendCommand", 1
         )[0]
         self.assertIn(
-            'const replacingActiveSession = app.session?.status === "active"',
+            'const replacingCurrentSession = Boolean(app.session?.session_id)',
             start,
         )
-        self.assertIn("if (replacingActiveSession)", start)
+        self.assertIn("if (replacingCurrentSession)", start)
         self.assertLess(
-            start.index("if (replacingActiveSession)"),
+            start.index("if (replacingCurrentSession)"),
             start.index("replace_expected_question_id"),
         )
         replacement_ui = self.script.split("function syncReplacementDraftUi", 1)[

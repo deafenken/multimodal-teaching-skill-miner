@@ -643,9 +643,7 @@ def _validate_lifecycle_event_semantics(
                     )
             terminal_name = "commit"
         else:  # abort
-            if not seen_observe and event.get("reason_codes") != [
-                "session_already_terminal"
-            ]:
+            if not seen_observe:
                 raise TeachingAgentBenchmarkV2Error(
                     f"{field}.events[{index}] abort precedes observe"
                 )
@@ -785,7 +783,6 @@ def _validate_lifecycle_event_semantics(
             )
     elif outcome == "abort" or status == "aborted":
         if successful_names not in (
-            ["abort"],
             ["observe", "abort"],
             ["observe", "assess", "abort"],
         ):
