@@ -8,6 +8,10 @@
 
 当前仓库已经实现这一工程闭环。`deepseek-v4-flash` 负责语义理解、问题对齐诊断、Skill 路由和当前教师动作候选；确定性控制器负责状态边界、Skill 合法性、重复上限、一次一动作和终止条件。默认 `safe_generative` 执行器只在模型话语与最终 Skill 的 `action_type`、单动作、提问性、问题契约和防答案泄露规则全部一致，且主/支持 Skill 未被控制器改写时保留该话语。若只是不满足动作契约且固定路由修复门禁通过，生产入口最多追加一次只重写当前动作的 action-only repair；未启用、不适用或修复仍失败时，才使用服务端确定性 materializer。三者共同构成一个受约束 Agent，不能把它简化成“只调用一次大模型”，也不能把规则层说成另一个模型。
 
+### 针对 run19 短板的当前冻结回归
+
+run19 暴露了两个工程短板：allowed Skill 命中 `0.350000`，有界路线完成 `0.400000`。本轮没有修改历史 receipt，而是修复了三处真实逻辑：合法 post-assessment Loop 提议在归一化候选中强制置首并去重；Loop 契约检查改用当前轮 provisional session，避免旧误解/旧无进展状态误拒路线；最后一个有界步骤若已有合法 Skill 与 focus，运行时直接提交路线，不再为“说 route_ready”额外调用模型。冻结当前工作树的 run25（6 case / 20 turn，作者构造 development split）为 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`，run fingerprint `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。这是 development regression，不是 Accuracy、专家锁箱、部署准确率或真实学习效果。
+
 | 题目要求 | 当前实现 | 可验证状态 |
 |---|---|---|
 | 新教学目标与成功条件 | 概念、目标、材料、四维阈值、最大轮数；自动展开为 4 个可观察子目标 | 已实现并有单测 |
@@ -346,7 +350,9 @@ python scripts/run_teacher_agent_benchmark_v2.py \
 
 `--acknowledge-held-out` 只适用于真正外部锁箱；当前 development split 不应使用该旗标。验证通过或在线执行成功只说明协议/工程回归可复现，不建立真实学生学习效果、跨 session 泛化、部署准确率或专家金标准。生产 Agent Loop 的路由只作为建议：当工具选出的 Skill 与最新 signal 不相容时，state-first 门禁会重新选择可执行阶段；如果随后发生 action-only repair，repair 只能重写教师动作，固定 route、Skill、终止状态和 route/loop 审计字段保持不变。
 
-最新一次本机私有 run19（DeepSeek v4-flash、Agent Loop/state-first/repair 开启，strict terminal polarity + terminal guard 修复后）作为开发回归记录：recall group coverage 1.000000、memory status match 0.950000、误解解除 exact/evidence 1.000000/1.000000、allowed Skill hit 0.350000、switch F1 0.631579、termination match 0.950000、注入阻断 1.000000、禁止/直接答案泄漏 0/0、跨 session 泄漏 0；lifecycle receipt coverage/commit verification/route contract 为 1.000000/0.950000/0.950000，explicit replan 0.800000，bounded route completion 0.400000；runtime fallback totals（Loop/planner/action/assessment）为 0/0/0/0；run fingerprint 为 `0d1f0cc98c5cdef058f15a19791f2e25d031928cf472b7babbcd32889bac0cc7`。该 receipt 不随仓库发布；这是单次作者构造 development regression，指标不是 Accuracy，也不建立部署准确率或真实学习效果；无专家锁箱，lifecycle receipt 未获外部签名。
+下方 run19 数值是历史基线；当前冻结 run25 才是本轮修复后的最新 development regression（指标与边界见上文），避免把旧基线误读为当前结果。
+
+历史 run19（DeepSeek v4-flash、Agent Loop/state-first/repair 开启，strict terminal polarity + terminal guard 修复后）作为开发回归记录：recall group coverage 1.000000、memory status 0.950000、误解解除 exact/evidence 1.000000/1.000000、allowed Skill hit 0.350000、switch F1 0.631579、termination match 0.950000、注入阻断 1.000000、禁止/直接答案泄漏 0/0、跨 session 泄漏 0；lifecycle receipt coverage/commit verification/route contract 为 1.000000/0.950000/0.950000，explicit replan 0.800000，bounded route completion 0.400000；runtime fallback totals（Loop/planner/action/assessment）为 0/0/0/0；run fingerprint 为 `0d1f0cc98c5cdef058f15a19791f2e25d031928cf472b7babbcd32889bac0cc7`。该 receipt 不随仓库发布；这是单次作者构造 development regression，指标不是 Accuracy，也不建立部署准确率或真实学习效果；无专家锁箱，lifecycle receipt 未获外部签名。
 
 ### 7.3 20 episode 多轮对抗开发 benchmark
 

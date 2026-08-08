@@ -10,6 +10,7 @@ from teaching_skill_miner.teacher_agent import start_teacher_agent_session
 from teaching_skill_miner.teacher_agent_loop import (
     PLAN_SCHEMA,
     TeachingAgentLoopOptions,
+    public_agent_loop_trace,
     run_teaching_agent_loop,
 )
 
@@ -276,6 +277,46 @@ class TeachingAgentLoopTests(unittest.TestCase):
         self.assertEqual(
             result["loop_state"]["selected_skill_id"],
             "skill_diagnostic_questioning",
+        )
+
+    def test_final_bound_commits_validated_route_without_bounded_fallback(self) -> None:
+        model = _ScriptedModel(
+            [
+                _tool(
+                    _call(
+                        "select_skills",
+                        {"primary_skill_id": "skill_diagnostic_questioning"},
+                    ),
+                    _call("set_next_focus", {"next_focus": "prerequisite"}),
+                ),
+                _tool(_call("inspect_student_state")),
+            ]
+        )
+
+        result = run_teaching_agent_loop(
+            self._session(),
+            model,
+            options=TeachingAgentLoopOptions(max_steps=2),
+        )
+
+        self.assertEqual(result["status"], "route_ready")
+        self.assertEqual(
+            result["termination_reason"],
+            "final bounded step reached with a validated route",
+        )
+        self.assertFalse(result["deterministic_fallback"])
+        self.assertTrue(
+            any(
+                event["type"] == "route_ready"
+                and event["step"] == 2
+                for event in result["events"]
+            )
+        )
+        public = public_agent_loop_trace(result)
+        self.assertTrue(public["bounded_route_completion"])
+        self.assertEqual(
+            public["termination_reason"],
+            "final bounded step reached with a validated route",
         )
 
     def test_termination_tool_checks_every_mastery_threshold(self) -> None:

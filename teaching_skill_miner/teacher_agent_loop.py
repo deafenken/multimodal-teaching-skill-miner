@@ -771,6 +771,32 @@ def run_teaching_agent_loop(
                 previous_results.append(result)
             if terminal:
                 break
+            # A route is a local contract, not a prose acknowledgement from
+            # the model.  If the final bounded step has already produced a
+            # valid Skill + focus (possibly on an earlier step), commit that
+            # last validated route now instead of spending an extra model
+            # call solely to say ``route_ready``.  This keeps the loop bounded
+            # while making the completion decision explicit and auditable.
+            if (
+                step == options.max_steps
+                and state.get("selected_skill_id")
+                and state.get("next_focus") in _FOCUS
+            ):
+                terminal = {
+                    "status": "route_ready",
+                    "action": None,
+                    "reason": "final bounded step reached with a validated route",
+                }
+                events.append(
+                    {
+                        "type": "route_ready",
+                        "step": step,
+                        "skill_id": state["selected_skill_id"],
+                        "next_focus": state["next_focus"],
+                        "reason": "final bounded step reached with a validated route",
+                    }
+                )
+                break
             continue
         if plan["kind"] == "terminate":
             if plan["outcome"] == "success" and not readiness_checked:
@@ -1055,9 +1081,16 @@ def public_agent_loop_trace(result: Mapping[str, Any]) -> dict[str, Any]:
     state = result.get("loop_state", {})
     if not isinstance(state, Mapping):
         state = {}
-    bounded_route_completion = (
-        result.get("termination_reason")
-        == "max_steps exceeded; using the last validated route"
+    # Every returned loop result is bounded by ``max_steps``.  Completion
+    # therefore means that a validated Skill + focus was committed within that
+    # bound, whether the model explicitly emitted ``route_ready`` or the
+    # runtime committed an already-valid route on the final bounded step.
+    # The termination reason remains available for diagnosing boundary
+    # commits; it is not used as the completion definition.
+    bounded_route_completion = bool(
+        result.get("status") == "route_ready"
+        and str(state.get("selected_skill_id") or "").strip()
+        and str(state.get("next_focus") or "").strip() in _FOCUS
     )
     public = {
         "schema": LOOP_SCHEMA,

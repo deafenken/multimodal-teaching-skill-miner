@@ -1,5 +1,11 @@
 # 项目完备性状态
 
+## run19 短板修复后的冻结开发回归
+
+历史 run19 暴露了 `allowed_skill_hit_rate=0.35` 与 `bounded_route_completion_rate=0.40`。本轮修复了合法 post-assessment Loop 路由被泛化 fallback 抢先、旧 session 契约状态误拒绝当前路由，以及最后边界步无法提交已验证路线三个问题；并补充了画像切换、活动会话替换、刷新恢复和响应式网页回归。冻结当前工作树的 run25（6 case / 20 turn，作者构造 development split）结果为：allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`、lifecycle receipt coverage `1.000000`、commit/route contract `0.850000/0.850000`、prompt-injection block `1.000000`、cross-session leakage `0`。run fingerprint：`4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。这些数字仅作 development regression，不是 Accuracy、部署准确率、专家锁箱或真实学习效果；私有 predictions 不进入仓库。
+
+状态表中仍出现的 run19 数值均是可追溯的历史基线，不能当作当前最新结果；当前最新冻结结果以本段 run25 为准。
+
 ## 已形成闭环的工程能力
 
 | 能力 | 状态 | 验收入口 |

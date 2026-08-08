@@ -15,6 +15,8 @@
 
 当前题目二运行契约为 V15（`teaching_agent_assess_route_act_v15_correction_chain_taxonomy_contract`）。文档中的 `action_only_repair`、`continuity_recall`、`cancel_turn`、纠错链 canonical taxonomy 和 `transport_cancellation_supported` 均按该版本语义解释。
 
+历史 run19 的 allowed-Skill hit `0.350000` 与 bounded route completion `0.400000` 已由当前代码针对性修复。冻结 run25（6 case / 20 turn，作者构造 development split）达到 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`，run fingerprint `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。这组数值仅是开发回归，不是 Accuracy、部署准确率、专家锁箱或真实学习效果；私有 predictions receipt 不发布。
+
 ## 2. 核心教学闭环
 
 | 编号 | 验收问题 | 状态 | 当前交付与证据 | 边界或剩余工作 |
@@ -89,6 +91,8 @@
 | D05 | 是否有 oracle 上界参照 | 已有开发证据 | 读取 gold signal 的结构化路由器命中 0.964286 | 它使用金标准信息，不是同条件基线 |
 | D06 | 是否报告在线运行稳定性 | 已有开发证据 | 28 例失败率 0；P50 994.887 ms，P95 1250.134 ms | 只代表本次单轮 benchmark 运行环境，不是完整 live Session 延迟、SLA 或部署压测 |
 | D06a | 是否有多轮上下文与行为 benchmark | 已实现评估管线 | 20 个作者构造 episode、65 个学生回答回合和 1 次画像替换操作，覆盖长期记忆、图片证据、知识纠错、Skill 切换、画像隔离、提示注入、终止与恢复；Schema、blind payload、评分器和 paired runner 已测试。兼容名 `current` 固定为 `deterministic_legacy`，`safe_generative_executor` 使用生产 integrated `safe_generative`。为保持 paired 评分的请求拓扑可解释，benchmark executor 当前沿用 `LiveAgentOptions` 的兼容默认 `agent_loop_enabled=false`，两臂每轮都有 1 次主 plan；安全候选臂仅在选项启用、候选动作不匹配且 eligibility 通过时至多追加 1 次不能改 diagnosis/primary/support/termination/route 的 fixed-route action-only repair。报告分别记录 `request_topology`、`action_provenance`、repair 使用情况、`validated_model_plan_count_delta` 和端到端 turn latency；传输重试不计为额外教学动作，repair 不计为第二个 validated plan | 未经专家复核、不是提示词开发后的锁箱集；benchmark 的单 plan 拓扑不能替代生产多步 Loop 的在线质量，调用拓扑、动作来源、plan 计数和 latency 必须分开解释。另有最新私有 v2 run19（strict terminal polarity + terminal guard 修复后，run fingerprint `0d1f0cc98c5cdef058f15a19791f2e25d031928cf472b7babbcd32889bac0cc7`）记录 recall/memory 1.000000/0.950000、误解解除 exact/evidence 1.000000/1.000000、allowed-Skill hit 0.350000、switch F1 0.631579、终止匹配 0.950000；lifecycle coverage/commit/route contract 为 1.000000/0.950000/0.950000，explicit replan 0.800000，bounded completion 0.400000，四类 runtime fallback 均为 0。这仍是单次 development regression，不是 Accuracy、部署准确率或真实学习效果结论；无专家锁箱，lifecycle receipt 未获外部签名 |
+> D06a 行中的 run19 是历史基线；本轮冻结 run25 的结果为 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`（fingerprint `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`）。两者均为作者构造 development regression，不是 Accuracy、专家锁箱、部署准确率或真实学习效果。
+
 | D06b | 多轮 gold 是否泄露给模型 | 已实现并测试 | runner 递归排除 `gold`、允许信号/Skill、必答词、延迟回忆词、终止/切换期望等全部评分字段；报告固定 `gold_sent_to_model=false`，不保存学生/教师正文、prompt 或供应商响应体 | fixture 与代码仍由同一项目开发者构造；不泄露 gold 不等于专家独立性或真实学生外部效度 |
 | D06c | 是否有独立 input/gold 的产品级 benchmark v2 | 已实现并测试 | `data/teacher_agent_benchmark_v2_development.json` 含 6 个 development case、20 个 turn 的公共 input；`*_gold.json` 独立保存记忆、误解、Skill 切换、注入、跨 session 和 outcome 期望；predictions 受 input fingerprint 绑定，且只允许运行时安全字段。`scripts/run_teacher_agent_benchmark_v2.py --validate-only` 与 `tests/test_teacher_agent_benchmark_v2.py` 已通过 | development fixture 作者构造、未专家复核、未锁箱；报告指标是各产品维度接口，不是统一 Accuracy、真实学习效果或部署准确率 |
 | D07 | 是否有完整机制回归 | 已实现并测试 | 4 条结构化合成轨迹；3 成功、1 安全转人工 | 使用 gold structured signals，不检验自由文本诊断 |

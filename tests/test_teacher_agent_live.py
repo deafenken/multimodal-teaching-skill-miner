@@ -5879,6 +5879,93 @@ class LiveTeacherAgentTests(unittest.TestCase):
             json.dumps(audit, ensure_ascii=False),
         )
 
+    def test_state_first_route_does_not_treat_beginner_prior_as_lesson_exposure(
+        self,
+    ) -> None:
+        """Retrieval review requires explicit history or high-confidence mastery."""
+
+        for prerequisite, expected_skill in (
+            (0.40, "skill_concrete_example_bridge"),
+            (0.80, "skill_retrieval_review"),
+        ):
+            with self.subTest(prerequisite=prerequisite):
+                profile = deepcopy(self.demo["student_profile"])
+                profile["initial_mastery"]["prerequisite"] = prerequisite
+                profile["conversation_history"] = []
+                profile["background_history"] = []
+                initial = _plan(
+                    signal="not_observed",
+                    confidence=0.0,
+                    skill_id="skill_diagnostic_questioning",
+                )
+                session = start_live_teacher_agent_session(
+                    self.demo["goal"], profile, self.library, _client([initial])
+                )
+                audit = _state_first_route_adjudication(
+                    session,
+                    current_selected_id="skill_socratic_understanding_check",
+                    model_selected_id="skill_concrete_example_bridge",
+                    initial=False,
+                    signal="confused",
+                    confidence=0.8,
+                    answer_alignment="ambiguous",
+                    response="我还是不知道该从哪里开始。",
+                    engagement="medium",
+                    misconception_tag=None,
+                    needs_human_review=False,
+                )
+                self.assertEqual(audit["selected_skill_id"], expected_skill)
+
+    def test_state_first_route_repairs_earlier_unmet_dimension_before_advancing(
+        self,
+    ) -> None:
+        """A correct conceptual turn must not skip an unmet prerequisite stage."""
+
+        session = start_live_teacher_agent_session(
+            deepcopy(self.demo["goal"]),
+            deepcopy(self.demo["student_profile"]),
+            deepcopy(self.library),
+            _client(
+                [
+                    _plan(
+                        signal="not_observed",
+                        confidence=0.0,
+                        skill_id="skill_diagnostic_questioning",
+                    )
+                ]
+            ),
+        )
+        session["student_state"]["knowledge_mastery"] = {
+            "prerequisite": 0.40,
+            "conceptual": 0.80,
+            "procedural": 0.10,
+            "transfer": 0.05,
+        }
+        session["student_state"]["next_focus"] = {
+            "dimension": "conceptual",
+            "selected_skill_id": "skill_concept_mapping",
+        }
+        session["current_action"]["primary_skill"]["focus_dimension"] = (
+            "conceptual"
+        )
+        _refresh_integrity(session)
+
+        audit = _state_first_route_adjudication(
+            session,
+            current_selected_id="skill_concept_mapping",
+            model_selected_id="skill_self_explanation",
+            initial=False,
+            signal="correct",
+            confidence=1.0,
+            answer_alignment="aligned",
+            response="我能说明状态如何由前置条件决定。",
+            engagement="medium",
+            misconception_tag=None,
+            needs_human_review=False,
+        )
+
+        self.assertEqual(audit["focus_dimension"], "prerequisite")
+
     def test_state_first_route_allows_one_socratic_depth_check_then_switches(
         self,
     ) -> None:

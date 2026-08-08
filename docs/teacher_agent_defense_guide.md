@@ -26,6 +26,8 @@
 
 > 这一版 live prompt 是 V15（`teaching_agent_assess_route_act_v15_correction_chain_taxonomy_contract`）。action-only repair 只修当前动作；请求统计按 `completed_committed_turns_only`，纠错链 taxonomy 只做 teacher-owned 标签归一化，且 `transport_cancellation_supported=false`。这些是工程边界，不是把开发集分数说成部署准确率。
 
+> 针对历史 run19 的两个短板，当前冻结 run25（6 case / 20 turn development regression）为 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`。解释时要强调：这是同一作者构造开发集上的工程回归，不是 Accuracy、专家锁箱、部署准确率或真实学习效果；run fingerprint 为 `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。
+
 本答辩指南以 V15 state-first 契约为准；代码和审计字段使用 `action_only_repair`、`continuity_recall`、`misconception_tag_canonicalized_from_teacher_taxonomy` 与 `cancel_turn` 的固定名称，便于现场复核。
 
 ## 0:30—1:05：01 目标与画像

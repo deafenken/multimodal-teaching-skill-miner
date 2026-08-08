@@ -325,6 +325,13 @@ _CORRECTION_INCLUSION_CUES = tuple(
         r"\b(?:add|sum|combine|both|all|each|include|包含|考虑)\b",
     )
 )
+# A non-zero initial mastery estimate is a prior-knowledge estimate, not
+# evidence that the learner has already seen this lesson's representation.
+# Treat only a high-confidence prerequisite estimate as implicit exposure;
+# ordinary beginner priors (for example 0.4–0.5) should still get an example
+# or diagnostic bridge before retrieval review.  Explicit conversation or
+# background history remains sufficient evidence of prior exposure.
+_PRIOR_EXPOSURE_MASTERY_THRESHOLD = 0.75
 _STRUCTURAL_CLAIM_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -355,6 +362,16 @@ _UNSAFE_GENERATIVE_ACTION_PATTERNS = tuple(
         r"(?:完整|标准|最终|正确)(?:答案|解法|推导|代码)",
         r"(?:直接告诉|照此完整计算|无需作答|不用作答|只需回复知道了)",
     )
+)
+_LEARNER_CONTROL_OVERRIDE_RE = re.compile(
+    r"(?:忽略|无视|绕过|跳过).{0,24}(?:之前|以上|系统|教学|安全|规则|限制|约束|指令)"
+    r"|(?:直接|只需|不用|无需).{0,18}(?:最终|完整|标准|正确)?(?:答案|解法|推导|代码)"
+    r"|(?:输出|泄露|展示).{0,24}(?:密钥|api\s*key|system\s*prompt|系统提示)",
+    re.IGNORECASE,
+)
+_SESSION_META_MARKER_RE = re.compile(
+    r"(?:本会话|当前会话|本次会话).{0,40}(?:提示词|口令|指令|sentinel|只能在本会话|只在本次)",
+    re.IGNORECASE,
 )
 _ACTION_TYPE_CUE_PATTERNS = {
     "probe_prior_knowledge": re.compile(r"前置|基础知识|先修|已有知识"),
@@ -2887,7 +2904,8 @@ def _primary_skill_contract_violation(
         prior_exposure = bool(
             profile.get("conversation_history")
             or profile.get("background_history")
-            or float(profile.get("initial_mastery", {}).get("prerequisite", 0.0)) > 0
+            or float(profile.get("initial_mastery", {}).get("prerequisite", 0.0))
+            > 0
         )
         if not prior_exposure:
             return "prior_exposure_not_established"
@@ -3014,6 +3032,12 @@ def _normalization_primary_candidates(
         )
     if retarget_kind == "visual_confirmation":
         return _VISUAL_CONFIRMATION_PRIMARY_SKILL_IDS
+    if retarget_kind in {"learner_control_override", "session_meta_control"}:
+        return (
+            "skill_diagnostic_questioning",
+            "skill_contextual_problem_setup",
+            "skill_socratic_understanding_check",
+        )
     if retarget_kind == "manual_skill_release":
         return {
             "correct": (
@@ -3098,15 +3122,68 @@ def _state_first_route_adjudication(
         answer_alignment=answer_alignment,
         needs_human_review=needs_human_review,
     )
-    focus = next(
-        (
-            dimension
-            for dimension in ("prerequisite", "conceptual", "procedural", "transfer")
-            if prospective_mastery[dimension] < thresholds[dimension]
-        ),
-        "transfer",
-    )
+    dimensions = ("prerequisite", "conceptual", "procedural", "transfer")
+    unmet_dimensions = [
+        dimension
+        for dimension in dimensions
+        if prospective_mastery[dimension] < thresholds[dimension]
+    ]
     used_roles = _used_primary_roles(session)
+    current_action = session.get("current_action", {})
+    current_primary = (
+        current_action.get("primary_skill", {})
+        if isinstance(current_action, Mapping)
+        else {}
+    )
+    previous_focus = str(
+        current_primary.get("focus_dimension")
+        if isinstance(current_primary, Mapping)
+        else ""
+    ).strip()
+    if previous_focus not in dimensions:
+        state_focus = session.get("student_state", {}).get("next_focus", "")
+        if isinstance(state_focus, Mapping):
+            state_focus = state_focus.get("dimension", "")
+        previous_focus = str(state_focus or "").strip()
+    if previous_focus not in dimensions:
+        previous_focus = ""
+    # Do not let a low, teacher-provided prerequisite prior pull every later
+    # answer back to the first unmet dimension.  A learner's current action
+    # focus is the strongest local stage signal: confused/partial/no-response
+    # stays on that stage, while a correct answer advances only after the
+    # current stage reaches its threshold.
+    if initial or signal == "not_observed":
+        focus = "prerequisite"
+    elif previous_focus and signal in {"confused", "no_response", "partial", "misconception"}:
+        focus = previous_focus
+    elif previous_focus and signal == "correct":
+        previous_index = dimensions.index(previous_focus)
+        earlier_unmet_dimension = next(
+            (
+                dimension
+                for dimension in dimensions[:previous_index]
+                if prospective_mastery[dimension] < thresholds[dimension]
+            ),
+            None,
+        )
+        if earlier_unmet_dimension is not None:
+            # A stage advance must not leave an earlier prerequisite/conceptual
+            # dimension below threshold merely because the current action was
+            # focused on a later dimension.
+            focus = earlier_unmet_dimension
+        elif prospective_mastery[previous_focus] < thresholds[previous_focus]:
+            focus = previous_focus
+        else:
+            focus = next(
+                (
+                    dimension
+                    for dimension in dimensions[previous_index + 1 :]
+                    if prospective_mastery[dimension] < thresholds[dimension]
+                ),
+                next(iter(unmet_dimensions), "transfer"),
+            )
+    else:
+        focus = next(iter(unmet_dimensions), "transfer")
     previous_id = str(
         session.get("current_action", {})
         .get("primary_skill", {})
@@ -3121,11 +3198,23 @@ def _state_first_route_adjudication(
         else current_no_progress + (0 if initial else 1)
     )
     profile = session.get("student_profile", {})
-    prior_exposure = bool(
-        profile.get("conversation_history")
-        or profile.get("background_history")
-        or float(profile.get("initial_mastery", {}).get("prerequisite", 0.0)) > 0
+    explicit_prior_exposure = bool(
+        profile.get("conversation_history") or profile.get("background_history")
     )
+    estimated_prior_exposure = float(
+        profile.get("initial_mastery", {}).get("prerequisite", 0.0)
+    ) >= _PRIOR_EXPOSURE_MASTERY_THRESHOLD
+    # On the first automatic route, a beginner prior is not enough evidence to
+    # skip the example/diagnostic bridge.  After at least one learner turn,
+    # the bounded profile estimate may be used as a weak retrieval cue; an
+    # explicit history record always qualifies.  This keeps the state-first
+    # route conservative without making safe fallback retrieval unusable.
+    prior_exposure = bool(
+        explicit_prior_exposure
+        or estimated_prior_exposure
+        or (not initial and float(profile.get("initial_mastery", {}).get("prerequisite", 0.0)) > 0)
+    )
+    retrieval_stage_ready = bool(explicit_prior_exposure or estimated_prior_exposure)
     grounded_misconception = bool(signal == "misconception" and misconception_tag)
     active_correction_chain = _active_correction_chain(session)
     substantive_claim = bool(
@@ -3133,6 +3222,8 @@ def _state_first_route_adjudication(
         and not _is_question_response(response)
         and _contains_explicit_claim(response)
     )
+    learner_control_override = bool(_LEARNER_CONTROL_OVERRIDE_RE.search(response))
+    session_meta_control = bool(_SESSION_META_MARKER_RE.search(response))
     reason_present = bool(_ROUTE_REASON_CUE_RE.search(response))
     boundary_present = bool(_ROUTE_BOUNDARY_CUE_RE.search(response))
     socratic_ready = bool(
@@ -3178,6 +3269,13 @@ def _state_first_route_adjudication(
         # make a later correct answer impossible to bind safely.
         preferred_roles = ("assessment", "metacognition", "review")
         route_reason_codes = ["active_correction_chain_requires_verification"]
+    elif learner_control_override or session_meta_control:
+        preferred_roles = ("diagnostic", "context", "assessment")
+        route_reason_codes = [
+            "learner_control_override_requires_safe_reanchor"
+            if learner_control_override
+            else "session_meta_control_requires_safe_reanchor"
+        ]
     elif projected_no_progress >= 2 or engagement == "low":
         preferred_roles = ("engagement", "example", "review", "diagnostic")
         route_reason_codes = ["low_progress_or_engagement_requires_recovery"]
@@ -3244,6 +3342,17 @@ def _state_first_route_adjudication(
             rejection_codes.append("signal_not_applicable")
         if skill.get("role") == "correction" and not grounded_misconception:
             rejection_codes.append("grounded_misconception_missing")
+        if (
+            skill_id == "skill_retrieval_review"
+            and (
+                (initial and not retrieval_stage_ready)
+                or (
+                    not retrieval_stage_ready
+                    and signal in {"partial", "confused"}
+                )
+            )
+        ):
+            rejection_codes.append("contract:prior_exposure_not_established")
         violation = _primary_skill_contract_violation(
             skill_id,
             projected_contract_session,
@@ -4305,6 +4414,10 @@ def _validated_plan(
     action_retarget_kind: str | None = None
     if not initial:
         explicit_confusion = _explicit_confusion(source_excerpt)
+        learner_control_override = bool(
+            _LEARNER_CONTROL_OVERRIDE_RE.search(source_excerpt)
+        )
+        session_meta_control = bool(_SESSION_META_MARKER_RE.search(source_excerpt))
         exact_reference_match: dict[str, str] | None = None
         correction_contract_match: dict[str, str] | None = None
         exact_contract_source = ""
@@ -4321,7 +4434,29 @@ def _validated_plan(
                 correction_contract_match = _correction_target_contract_match(
                     source_excerpt, session
                 )
-        if not source_excerpt:
+        if learner_control_override or session_meta_control:
+            reason_code = (
+                "learner_control_override_normalized"
+                if learner_control_override
+                else "session_meta_control_normalized"
+            )
+            normalization_reasons.append(reason_code)
+            signal = "confused"
+            answer_alignment = "ambiguous"
+            misconception_tag = None
+            confidence = 0.0
+            raw_needs_human_review = True
+            # A control/meta utterance is not evidence of mastery progress,
+            # but it is also not a reason to honor a model-requested stop:
+            # the agent should re-anchor the lesson and continue asking.
+            raw_should_stop = False
+            safe_retarget_required = True
+            action_retarget_kind = (
+                "learner_control_override"
+                if learner_control_override
+                else "session_meta_control"
+            )
+        elif not source_excerpt:
             if signal != "no_response" or answer_alignment != "no_response":
                 normalization_reasons.append("empty_response_forced_no_response")
             signal = "no_response"
@@ -4543,6 +4678,14 @@ def _validated_plan(
     elif "empty_response_forced_no_response" in normalization_reasons:
         diagnosis_reason = "未收到可用于判断的回答；本轮按未作答处理。"
     elif (
+        "learner_control_override_normalized" in normalization_reasons
+        or "session_meta_control_normalized" in normalization_reasons
+    ):
+        diagnosis_reason = (
+            "本轮输入包含教学控制或会话元信息，不能作为知识掌握证据；"
+            "先重新锚定当前教学目标并继续提问。"
+        )
+    elif (
         "high_impact_diagnosis_without_bound_evidence_downgraded"
         in normalization_reasons
     ):
@@ -4670,13 +4813,19 @@ def _validated_plan(
         normalization_reasons.append("model_skill_not_applicable_to_signal")
         if action_retarget_kind is None:
             action_retarget_kind = "signal_applicability"
-    # The Agent Loop can correctly inspect state yet still return a route whose
-    # Skill only accepts ``not_observed`` while the final diagnosis is already
-    # ``partial``/``correct`` (or while a non-authoritative related-answer
-    # normalization is active).  Keep that route advisory: let the state-first
-    # adjudicator choose the executable stage before the generic fallback order
-    # turns every such case into a broad Socratic action.  Trusted answer,
-    # visual-confirmation and high-impact evidence guards remain higher priority.
+    # In post-assessment mode the private route session carries the current
+    # turn's validated signal/misconception projection.  Use it for every
+    # Loop-contract check below; the committed session remains the source of
+    # history and is never mutated by this private view.
+    loop_contract_session = (
+        route_session if isinstance(route_session, Mapping) else session
+    )
+    # A loop route can be locally applicable yet stale for the final
+    # assessment (for example, a Skill that only accepts ``not_observed``
+    # after the learner has supplied a partial/correct answer).  In that
+    # narrow case the state-first adjudicator may repair it; otherwise a
+    # validated post-assessment route remains authoritative and is not
+    # silently replaced by a broad fallback Skill.
     agent_loop_state_repair_exclusions = {
         "visual_confirmation",
         "verified_reference_answer",
@@ -4686,7 +4835,11 @@ def _validated_plan(
     }
     agent_loop_route_needs_state_repair = bool(
         agent_loop_route_requested
-        and automatic_applicability_guard
+        and (
+            automatic_applicability_guard
+            or action_retarget_kind
+            in {"learner_control_override", "session_meta_control"}
+        )
         and action_retarget_kind not in agent_loop_state_repair_exclusions
         and not correction_guard_required
         and not visual_confirmation_required
@@ -4696,7 +4849,12 @@ def _validated_plan(
         if manual_skill_id
         else _primary_skill_contract_violation(
             selected_id,
-            session,
+            # A post-assessment Loop proposal is validated against the
+            # private current-turn projection.  Checking the pre-turn
+            # session here would resurrect an already-resolved misconception
+            # or stale engagement counter and reject an otherwise executable
+            # route after the proposal had passed the projected contract.
+            loop_contract_session if agent_loop_route_requested else session,
             initial=initial,
             signal=signal,
             confidence=confidence,
@@ -4713,6 +4871,34 @@ def _validated_plan(
         )
         if action_retarget_kind is None:
             action_retarget_kind = "primary_contract_violation"
+    loop_route_preservation_exclusions = {
+        "visual_confirmation",
+        "verified_reference_answer",
+        "verified_short_concept",
+        "verified_prerequisite_example",
+        "ungrounded_high_impact_diagnosis",
+        "learner_control_override",
+        "session_meta_control",
+        "empty_response",
+    }
+    loop_route_contract_safe = bool(
+        agent_loop_route_requested
+        and agent_loop_skill_id in skills
+        and skills[agent_loop_skill_id]["role"] in PRIMARY_ROLES
+        and signal in set(skills[agent_loop_skill_id].get("applicable_signals", []))
+        and not correction_guard_required
+        and not primary_contract_guard_required
+        and action_retarget_kind not in loop_route_preservation_exclusions
+        and _primary_skill_contract_violation(
+            agent_loop_skill_id,
+            loop_contract_session,
+            initial=initial,
+            signal=signal,
+            confidence=confidence,
+            response=source_excerpt,
+        )
+        is None
+    )
     if (
         correction_guard_required
         or manual_applicability_guard
@@ -4730,7 +4916,8 @@ def _validated_plan(
             normalization_reasons=normalization_reasons,
         )
         preferred_ids = (
-            contract_fallbacks
+            ((agent_loop_skill_id,) if loop_route_contract_safe else ())
+            + contract_fallbacks
             if action_retarget_kind == "visual_confirmation"
             else contract_fallbacks
             + (("skill_misconception_contrast",) if allow_correction_candidate else ())
@@ -4741,6 +4928,21 @@ def _validated_plan(
                 "skill_retrieval_review",
             )
         )
+        if loop_route_contract_safe:
+            # A safe loop proposal is the route authority.  It may already be
+            # present in a generic normalization fallback list, but that list
+            # is ordered for conservative non-loop recovery and would
+            # otherwise put a broad Skill (for example Socratic) ahead of the
+            # validated loop choice.  Move the proposal to the front and
+            # remove duplicates while preserving the remaining fallback order.
+            preferred_ids = (
+                agent_loop_skill_id,
+                *(
+                    skill_id
+                    for skill_id in preferred_ids
+                    if skill_id != agent_loop_skill_id
+                ),
+            )
         candidates = [
             skill_id
             for skill_id in preferred_ids
@@ -4749,7 +4951,7 @@ def _validated_plan(
             and signal in set(skills[skill_id].get("applicable_signals", []))
             and _primary_skill_contract_violation(
                 skill_id,
-                session,
+                loop_contract_session if agent_loop_route_requested else session,
                 initial=initial,
                 signal=signal,
                 confidence=confidence,
@@ -4769,7 +4971,7 @@ def _validated_plan(
                 and signal in set(skill.get("applicable_signals", []))
                 and _primary_skill_contract_violation(
                     skill_id,
-                    session,
+                    loop_contract_session if agent_loop_route_requested else session,
                     initial=initial,
                     signal=signal,
                     confidence=confidence,
@@ -4783,6 +4985,10 @@ def _validated_plan(
                 "no safe primary Skill accepts the normalized related answer"
             )
         selected_id = candidates[0]
+        if loop_route_contract_safe and selected_id == agent_loop_skill_id:
+            normalization_reasons.append(
+                "agent_loop_route_preserved_after_safe_normalization"
+            )
     route_adjudication: dict[str, Any] = {
         "schema": "teaching_skill_miner.state_first_route_adjudication.v1",
         "enabled": False,
@@ -5610,6 +5816,32 @@ def _live_turn_lifecycle_receipt(
             )[:8]
             if str(item)
         ]
+        # Project only a bounded allowlist of deterministic normalization
+        # codes into the lifecycle route event.  This makes a replan
+        # explainable (for example, an ungrounded high-impact diagnosis or a
+        # primary Skill contract violation) without persisting learner text,
+        # model prose, or hidden benchmark labels.
+        allowed_normalization_codes = {
+            "high_impact_diagnosis_without_bound_evidence_downgraded",
+            "model_skill_not_applicable_to_signal",
+            "agent_loop_route_rejected_by_server_contract",
+            "agent_loop_route_preserved_after_safe_normalization",
+            "learner_control_override_normalized",
+            "session_meta_control_normalized",
+            "visual_evidence_requires_student_confirmation",
+            "explicit_confusion_overrode_model_label",
+            "empty_response_forced_no_response",
+            "low_confidence_label_downgraded",
+        }
+        for raw_reason in diagnosis.get("normalization_reasons", []) or []:
+            reason = str(raw_reason).strip()
+            if (
+                reason in allowed_normalization_codes
+                or reason.startswith("primary_skill_contract_violation:")
+                or reason.startswith("state_first_route_adjudication:")
+            ):
+                final_reason_codes.append(reason[:120])
+        final_reason_codes = list(dict.fromkeys(final_reason_codes))[:8]
         route_authority_data = decision.get("route_authority", {})
         proposed_skill_id = (
             str(route_authority_data.get("loop_selected_skill_id") or "").strip()

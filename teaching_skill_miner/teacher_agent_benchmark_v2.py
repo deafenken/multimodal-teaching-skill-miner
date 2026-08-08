@@ -477,10 +477,24 @@ def _validate_loop_summary(value: Any, *, field: str = "loop_summary") -> None:
         raise TeachingAgentBenchmarkV2Error(f"{field}.tool_call_count does not match events")
     if value.get("retry_count") != retry_count:
         raise TeachingAgentBenchmarkV2Error(f"{field}.retry_count does not match events")
-    if bounded_route_completion is True and value.get("termination_reason") != (
-        "max_steps exceeded; using the last validated route"
-    ):
-        raise TeachingAgentBenchmarkV2Error(f"{field}.bounded_route_completion is inconsistent")
+    if bounded_route_completion is True:
+        if value.get("status") != "route_ready":
+            raise TeachingAgentBenchmarkV2Error(
+                f"{field}.bounded_route_completion requires route_ready status"
+            )
+        if not str(value.get("selected_skill_id") or "").strip():
+            raise TeachingAgentBenchmarkV2Error(
+                f"{field}.bounded_route_completion requires selected_skill_id"
+            )
+        if str(value.get("next_focus") or "").strip() not in {
+            "prerequisite",
+            "conceptual",
+            "procedural",
+            "transfer",
+        }:
+            raise TeachingAgentBenchmarkV2Error(
+                f"{field}.bounded_route_completion requires a valid next_focus"
+            )
     _require_digest(value.get("trace_sha256"), field=f"{field}.trace_sha256")
     material = dict(value)
     material.pop("trace_sha256", None)

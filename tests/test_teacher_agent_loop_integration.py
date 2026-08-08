@@ -663,6 +663,82 @@ class TeacherAgentLoopIntegrationTests(unittest.TestCase):
             "route-key", json.dumps(updated, ensure_ascii=False)
         )
 
+    def test_safe_loop_route_stays_first_when_normalization_fallback_contains_it(
+        self,
+    ) -> None:
+        """A valid loop proposal must outrank generic related-answer fallbacks."""
+
+        initial_plan = _live_plan(
+            signal="not_observed",
+            skill_id="skill_diagnostic_questioning",
+            action_type="probe_prior_knowledge",
+            message="请先说出一个前置概念。",
+        )
+        followup_plan = _live_plan(
+            signal="partial",
+            skill_id="skill_socratic_understanding_check",
+            action_type="socratic_comprehension_probe",
+            message="请说明你的判断依据。",
+        )
+        # The short, term-like learner response below is not explicit
+        # confusion, so the server conservatively normalizes a model
+        # ``confused`` label to ``partial / related_but_not_answer``.  The
+        # generic fallback order for that normalization starts with Socratic,
+        # then context, then concrete-example.  The loop's concrete-example
+        # proposal is nevertheless contract-safe and must remain authoritative.
+        followup_plan["diagnosis"]["signal"] = "confused"
+        followup_plan["diagnosis"]["answer_alignment"] = "ambiguous"
+        responses = [
+            initial_plan,
+            _selection_plan(),
+            _route_ready("首轮路由已完成。"),
+            followup_plan,
+            _selection_plan(
+                primary_skill_id="skill_concrete_example_bridge",
+                supporting_skill_ids=[],
+                next_focus="conceptual",
+            ),
+            _route_ready("当前回答只给出术语，先保留最小例子桥接。"),
+        ]
+        client = _deepseek_script_client(responses)
+        options = LiveAgentOptions(
+            agent_loop_enabled=True,
+            agent_loop_post_assessment_enabled=True,
+            state_first_route_adjudication_enabled=True,
+            maximum_agent_steps=4,
+            agent_loop_model_retries=0,
+        )
+        session = start_live_teacher_agent_session(
+            deepcopy(self.demo["goal"]),
+            deepcopy(self.demo["student_profile"]),
+            deepcopy(self.library),
+            client,
+            options=options,
+        )
+        updated = advance_live_teacher_agent_session(
+            session,
+            learner_response="状态",
+            client=client,
+            options=options,
+        )
+
+        action = updated["current_action"]
+        self.assertEqual(
+            action["primary_skill"]["skill_id"],
+            "skill_concrete_example_bridge",
+        )
+        authority = updated["history"][-1]["model_trace"]["route_authority"]
+        self.assertTrue(authority["route_consistent"])
+        self.assertEqual(
+            authority["loop_selected_skill_id"],
+            authority["final_skill_id"],
+        )
+        reasons = updated["history"][-1]["deepseek_assessment"][
+            "normalization_reasons"
+        ]
+        self.assertIn("agent_loop_route_preserved_after_safe_normalization", reasons)
+        self.assertNotIn("agent_loop_route_rejected_by_server_contract", reasons)
+
     def test_inapplicable_loop_route_is_repaired_by_state_first_stage(self) -> None:
         """A loop route for an initial-only Skill must not become the final action."""
 
