@@ -10,8 +10,10 @@ from teaching_skill_miner.teacher_agent_context import (
     CONTEXT_SCHEMA,
     GOAL_PLAN_SCHEMA,
     LAYERED_CONTEXT_SCHEMA,
+    _teaching_checkpoints,
     build_layered_context,
     build_goal_plan,
+    build_minimal_layered_context,
     build_relevant_history,
     redact_remote_text,
     validate_layered_context,
@@ -19,6 +21,7 @@ from teaching_skill_miner.teacher_agent_context import (
 from teaching_skill_miner.io_utils import read_json
 from teaching_skill_miner.teacher_agent import (
     advance_teacher_agent_session,
+    lesson_required_primary_roles,
     start_teacher_agent_session,
 )
 from teaching_skill_miner.teacher_agent_memory import (
@@ -94,6 +97,61 @@ def _json_length(value: dict) -> int:
             allow_nan=False,
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("phase", "summary_required", "summary_completed", "expected_roles"),
+    [
+        ("orientation", False, False, ["context"]),
+        ("explanation", False, False, ["example"]),
+        ("worked_example", False, False, ["example", "concept_mapping"]),
+        ("guided_practice", False, False, ["scaffolding", "practice"]),
+        ("verification", False, False, ["assessment", "metacognition", "review"]),
+        ("transfer", False, False, ["transfer"]),
+        ("transfer", True, False, ["summary"]),
+        ("transfer", True, True, ["transfer"]),
+    ],
+)
+def test_rich_and_minimal_context_share_server_owned_lesson_role_policy(
+    phase: str,
+    summary_required: bool,
+    summary_completed: bool,
+    expected_roles: list[str],
+) -> None:
+    demo = read_json(ROOT / "data" / "teacher_agent_demo_input.json")
+    goal = deepcopy(demo["goal"])
+    goal["learning_intent"] = "teach_first"
+    session = start_teacher_agent_session(
+        goal,
+        demo["student_profile"],
+        read_json(ROOT / "data" / "teacher_agent_skill_library_v2.json"),
+    )
+    session["lesson_state"].update(
+        {
+            "lesson_phase": phase,
+            "summary_required": summary_required,
+            "summary_completed": summary_completed,
+        }
+    )
+
+    assert list(lesson_required_primary_roles(session)) == expected_roles
+    contexts = (
+        build_layered_context(session, "继续"),
+        build_minimal_layered_context(session, "继续"),
+    )
+    for context in contexts:
+        contract = context["fixed_context"]["teaching_goal"]["lesson_contract"]
+        assert contract["required_primary_roles"] == expected_roles
+        assert contract["summary_required"] is summary_required
+        assert contract["summary_completed"] is summary_completed
+        assert contract["phase_sequence"] == [
+            "orientation",
+            "explanation",
+            "worked_example",
+            "guided_practice",
+            "verification",
+            "transfer",
+        ]
 
 
 def test_layered_context_reinjects_explicit_memory_and_teacher_knowledge_spec() -> None:
@@ -348,8 +406,7 @@ def test_continuity_recall_can_resolve_the_current_unanswered_teacher_action() -
         "teacher_action": {
             "question_id": "q_001",
             "message": (
-                "第一种方法保留完整状态表，第二种方法只保留相邻状态。"
-                "你想先比较哪一种？"
+                "第一种方法保留完整状态表，第二种方法只保留相邻状态。你想先比较哪一种？"
             ),
         },
     }
@@ -363,15 +420,45 @@ def test_continuity_recall_can_resolve_the_current_unanswered_teacher_action() -
     assert recall["status"] == "resolved_evidence_linked"
     assert recall["target"]["kind"] == "teacher_named_alternatives"
     assert recall["target"]["source_round"] == 1
-    assert recall["target"]["evidence_refs"] == [
-        "current_action:r1:teacher_action"
-    ]
+    assert recall["target"]["evidence_refs"] == ["current_action:r1:teacher_action"]
+
+
+@pytest.mark.parametrize(
+    "cue",
+    ("刚才那个我不会", "刚才那个是什么意思"),
+)
+def test_deictic_continuity_prefers_the_current_visible_action(cue: str) -> None:
+    session = _continuity_session()
+    session["round"] = 3
+    session["current_action"] = {
+        "round": 4,
+        "primary_skill": {
+            "skill_id": "skill_conceptual",
+            "focus_dimension": "conceptual",
+            "knowledge_components": ["条件概率"],
+        },
+        "teacher_action": {
+            "question_id": "q_current",
+            "message": "刚才我问的是：条件事件怎样限定当前样本空间？",
+        },
+    }
+
+    context = build_layered_context(session, cue, max_chars=14_000)
+    validate_layered_context(context)
+
+    recall = context["semantic_summary"]["continuity_recall"]
+    assert recall["cue_kind"] == "semantic_topic_reference"
+    assert recall["status"] == "resolved_evidence_linked"
+    assert recall["target"]["kind"] == "current_teacher_action"
+    assert recall["target"]["source_round"] == 4
+    assert recall["target"]["evidence_refs"] == ["current_action:r4:teacher_action"]
+    assert "条件事件怎样限定" in recall["target"]["excerpt"]
 
 
 def test_redact_remote_text_covers_all_required_identifier_types() -> None:
     posix_path = "/" + "Users/alice/private/note.txt"
     source = (
-        "联系 learner@example.edu 或 138-0013-8000，身份证 11010519491231002X；"
+        "联系 learner@example.edu、138-0013-8000 或 +1 415-555-0199，身份证 11010519491231002X；"
         f"材料 https://school.example/a/b；本机 {posix_path}；"
         r"备份 C:\Users\Alice\secret.json。"
     )
@@ -379,6 +466,7 @@ def test_redact_remote_text_covers_all_required_identifier_types() -> None:
 
     assert "learner@example.edu" not in redacted
     assert "138-0013-8000" not in redacted
+    assert "+1 415-555-0199" not in redacted
     assert "11010519491231002X" not in redacted
     assert "https://school.example/a/b" not in redacted
     assert posix_path not in redacted
@@ -386,6 +474,7 @@ def test_redact_remote_text_covers_all_required_identifier_types() -> None:
     assert redacted.count("[REDACTED_LOCAL_PATH]") == 2
     assert [item["kind"] for item in findings] == [
         "email",
+        "phone",
         "phone",
         "cn_id",
         "url",
@@ -832,9 +921,7 @@ def test_layered_context_uses_real_goal_anchor_and_separates_memory_layers() -> 
 
     validate_layered_context(context)
     assert context["schema"] == LAYERED_CONTEXT_SCHEMA
-    assert session["goal"]["knowledge_components"] == [
-        "动态规划的状态与转移"
-    ]
+    assert session["goal"]["knowledge_components"] == ["动态规划的状态与转移"]
     assert context["working_memory"]["current_knowledge_components"] == [
         "动态规划的状态与转移"
     ]
@@ -845,12 +932,16 @@ def test_layered_context_uses_real_goal_anchor_and_separates_memory_layers() -> 
         == "deterministic_aggregate_and_extractive_checkpoints_no_model_generation"
     )
     assert context["candidate_long_term_memory"]["status"] == "candidate_unconfirmed"
-    assert context["candidate_long_term_memory"]["may_override_teacher_profile"] is False
+    assert (
+        context["candidate_long_term_memory"]["may_override_teacher_profile"] is False
+    )
     assert context["budget"]["serialized_chars"] == _json_length(context)
     assert context["budget"]["serialized_chars"] <= context["budget"]["max_chars"]
     # The current answer has one authority location.  Its ledger row is only a
     # pointer, which avoids silently weighting the same evidence twice.
-    assert json.dumps(context, ensure_ascii=False).count("UNIQUE_CURRENT_ANSWER_7d35") == 1
+    assert (
+        json.dumps(context, ensure_ascii=False).count("UNIQUE_CURRENT_ANSWER_7d35") == 1
+    )
 
 
 def test_layered_context_reports_residual_identity_risk_honestly() -> None:
@@ -899,9 +990,78 @@ def test_layered_context_retrieval_and_budget_are_deterministic() -> None:
     assert first["semantic_summary"]["turn_count"] >= 1
     assert first["semantic_summary"]["focus_checkpoints"]
     assert all(
-        item["evidence_refs"]
-        for item in first["semantic_summary"]["focus_checkpoints"]
+        item["evidence_refs"] for item in first["semantic_summary"]["focus_checkpoints"]
     )
+
+
+@pytest.mark.parametrize(
+    "learner_question",
+    [
+        "递推关系分哪几部分",
+        "递推关系分为几部分",
+        "递推关系由什么组成",
+        "递推关系包括哪些部分",
+    ],
+)
+def test_unpunctuated_composition_question_becomes_explicit_checkpoint(
+    learner_question: str,
+) -> None:
+    evidence: list[dict] = []
+    checkpoints = _teaching_checkpoints(
+        [
+            {
+                "round": 1,
+                "focus_dimension": "conceptual",
+                "knowledge_components": ["递推关系"],
+                "signal": "not_recorded",
+                "learner_response": learner_question,
+                "teacher_message": "",
+            }
+        ],
+        selected_rounds=set(),
+        content_limit=240,
+        evidence_excerpt_limit=240,
+        evidence=evidence,
+    )
+
+    checkpoint = next(
+        item for item in checkpoints if item["kind"] == "explicit_learner_question"
+    )
+    assert checkpoint["excerpt"] == learner_question
+    assert checkpoint["status"] == "resolution_not_established"
+    assert checkpoint["evidence_refs"] == ["session_history:r1:learner_response"]
+
+
+@pytest.mark.parametrize(
+    "learner_statement",
+    [
+        "递推关系分为三个部分",
+        "递推关系由初始条件、递推规则和适用范围组成",
+        "递推关系包括初始条件和递推规则",
+        "我把这个问题分成几个部分了",
+    ],
+)
+def test_composition_declaration_is_not_an_explicit_question_checkpoint(
+    learner_statement: str,
+) -> None:
+    checkpoints = _teaching_checkpoints(
+        [
+            {
+                "round": 1,
+                "focus_dimension": "conceptual",
+                "knowledge_components": ["递推关系"],
+                "signal": "not_recorded",
+                "learner_response": learner_statement,
+                "teacher_message": "",
+            }
+        ],
+        selected_rounds=set(),
+        content_limit=240,
+        evidence_excerpt_limit=240,
+        evidence=[],
+    )
+
+    assert all(item["kind"] != "explicit_learner_question" for item in checkpoints)
 
 
 def test_layered_context_keeps_selective_evidence_linked_teaching_checkpoints() -> None:
@@ -983,18 +1143,22 @@ def test_layered_context_keeps_selective_evidence_linked_teaching_checkpoints() 
     assert "explicit_learner_preference_or_constraint" in kinds
     assert "verified_prerequisite" in kinds
     assert "teacher_next_step_statement" in kinds
-    ledger_ids = {
-        item["evidence_id"] for item in context["evidence_ledger"]
-    }
-    assert all(
-        set(item["evidence_refs"]) <= ledger_ids for item in checkpoints
+    ledger_ids = {item["evidence_id"] for item in context["evidence_ledger"]}
+    assert all(set(item["evidence_refs"]) <= ledger_ids for item in checkpoints)
+    assert (
+        next(
+            item for item in checkpoints if item["kind"] == "explicit_learner_question"
+        )["status"]
+        == "resolution_not_established"
     )
-    assert next(
-        item for item in checkpoints if item["kind"] == "explicit_learner_question"
-    )["status"] == "resolution_not_established"
-    assert next(
-        item for item in checkpoints if item["kind"] == "teacher_next_step_statement"
-    )["status"] == "completion_not_established"
+    assert (
+        next(
+            item
+            for item in checkpoints
+            if item["kind"] == "teacher_next_step_statement"
+        )["status"]
+        == "completion_not_established"
+    )
 
 
 def test_later_correct_signal_clears_omitted_unresolved_checkpoint() -> None:
@@ -1070,9 +1234,7 @@ def test_layered_context_rejects_dangling_evidence_and_false_claims() -> None:
 
     legacy_overclaim = deepcopy(context)
     legacy_overclaim["retrieval"]["semantic_summary_covers_omitted_turns"] = True
-    legacy_overclaim["budget"]["serialized_chars"] = _json_length(
-        legacy_overclaim
-    )
+    legacy_overclaim["budget"]["serialized_chars"] = _json_length(legacy_overclaim)
     with pytest.raises(ValueError, match="retrieval metadata"):
         validate_layered_context(legacy_overclaim)
 
@@ -1176,23 +1338,21 @@ def test_minimum_budget_retains_current_answer_for_large_legal_session_shape() -
     assert context["semantic_summary"]["teaching_checkpoints"] == []
     assert context["retrieval"]["omitted_turns_accounted_for_statistically"] is True
     assert context["claim_boundary"]["omitted_turn_semantics_are_exhaustive"] is False
-    assert context["working_memory"]["current_knowledge_components"] == [
-        "状态转移"
-    ]
-    assert "UNIQUE_MINIMUM_CONTEXT_43c1" in (
-        context["working_memory"]["current_learner_response"]
-    )
-    assert json.dumps(context, ensure_ascii=False).count(
+    assert context["working_memory"]["current_knowledge_components"] == ["状态转移"]
+    assert (
         "UNIQUE_MINIMUM_CONTEXT_43c1"
-    ) == 1
+        in (context["working_memory"]["current_learner_response"])
+    )
+    assert (
+        json.dumps(context, ensure_ascii=False).count("UNIQUE_MINIMUM_CONTEXT_43c1")
+        == 1
+    )
 
 
 def test_current_response_truncation_preserves_decisive_tail() -> None:
     session = _session()
     response = (
-        "我先解释思路："
-        + "中间推理" * 1200
-        + "；最终答案是 dp[i]=dp[i-1]+dp[i-2]。"
+        "我先解释思路：" + "中间推理" * 1200 + "；最终答案是 dp[i]=dp[i-1]+dp[i-2]。"
     )
 
     context = build_layered_context(

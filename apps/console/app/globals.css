@@ -1,0 +1,223 @@
+@import "tailwindcss";
+@import "katex/dist/katex.min.css";
+
+:root {
+  color-scheme: dark;
+  --app-bg: #171714;
+  --app-sidebar: #1f1f1c;
+  --app-surface: #24231f;
+  --app-surface-raised: #292824;
+  --app-surface-soft: #1b1b18;
+  --app-overlay: #2c2b27;
+  --app-border: #34332e;
+  --app-border-strong: #4b4942;
+  --app-focus-border: #77736b;
+  --app-text: #f2eee6;
+  --app-text-soft: #ded9cf;
+  --app-muted: #aaa69d;
+  --app-faint: #77736b;
+  --app-hover: #2b2a26;
+  --app-selected: #3a3934;
+  --app-accent: #d97857;
+  --app-accent-hover: #e38664;
+  --app-accent-soft: #31231d;
+  --app-accent-border: #5d4136;
+  --app-accent-text: #e3a076;
+  --app-success: #67a18f;
+  --app-success-soft: #22312c;
+  --app-warning: #d39a5f;
+  --app-warning-soft: #34291f;
+  --app-blue: #4d9bff;
+  --app-purple: #c2b0ff;
+  --app-danger: #e39a80;
+  --app-danger-soft: #30221e;
+  --app-shadow: rgba(0, 0, 0, .35);
+  --app-scrollbar: #4a4942;
+  --background: var(--app-bg);
+  --foreground: var(--app-text);
+  --panel: var(--app-sidebar);
+  --panel-strong: var(--app-surface-raised);
+  --border: var(--app-border);
+  --muted: var(--app-muted);
+  --accent: #d97857;
+  --accent-blue: var(--app-blue);
+  --drawer: var(--app-bg);
+  --drawer-foreground: var(--app-text);
+  --drawer-border: var(--app-border);
+  --inspector-bg: var(--app-bg);
+  --inspector-rail: var(--app-sidebar);
+  --inspector-card: var(--app-surface-raised);
+  --inspector-control: var(--app-surface);
+  --inspector-border: var(--app-border);
+  --inspector-text: var(--app-text);
+  --inspector-muted: var(--app-muted);
+  --radius: .625rem;
+}
+
+[data-console-theme="light"] {
+  color-scheme: light;
+  --app-bg: #f8f7f3;
+  --app-sidebar: #efeee8;
+  --app-surface: #f3f1eb;
+  --app-surface-raised: #fffefa;
+  --app-surface-soft: #f5f3ed;
+  --app-overlay: #fffefa;
+  --app-border: #dfdcd3;
+  --app-border-strong: #c8c3b8;
+  --app-focus-border: #8b877f;
+  --app-text: #2d2b27;
+  --app-text-soft: #48453f;
+  --app-muted: #716e67;
+  --app-faint: #9b978e;
+  --app-hover: #e7e4dc;
+  --app-selected: #ddd9cf;
+  --app-accent: #c96443;
+  --app-accent-hover: #b95739;
+  --app-accent-soft: #f5e4dc;
+  --app-accent-border: #dfb3a2;
+  --app-accent-text: #9d4c31;
+  --app-success: #4d8876;
+  --app-success-soft: #e1eee9;
+  --app-warning: #a96d32;
+  --app-warning-soft: #f5eadc;
+  --app-blue: #347ed1;
+  --app-purple: #7358b3;
+  --app-danger: #a8513c;
+  --app-danger-soft: #f9e8e1;
+  --app-shadow: rgba(55, 48, 38, .14);
+  --app-scrollbar: #bdb8ae;
+}
+
+[data-console-theme="dark"] {
+  color-scheme: dark;
+}
+
+[data-console-density="compact"] .teachlab-main-header { height: 2.5rem; }
+[data-console-density="compact"] .teachlab-message-list { gap: 1rem; padding-top: 1rem; padding-bottom: 10rem; }
+[data-console-density="compact"] .teachlab-composer { padding: .55rem; }
+[data-console-density="compact"] aside[aria-label="会话列表"] > nav { margin-top: .5rem; }
+[data-console-density="compact"] aside[aria-label="会话列表"] section { margin-top: .75rem; }
+[data-console-density="compact"] aside[aria-label="会话列表"] section > div { gap: .1rem; }
+[data-console-density="compact"] .teachlab-markdown { line-height: 1.55; }
+[data-console-density="compact"] .teachlab-markdown p,
+[data-console-density="compact"] .teachlab-markdown ul,
+[data-console-density="compact"] .teachlab-markdown ol,
+[data-console-density="compact"] .teachlab-markdown blockquote,
+[data-console-density="compact"] .teachlab-markdown pre,
+[data-console-density="compact"] .teachlab-markdown .katex-display { margin-bottom: .45rem; }
+
+* { box-sizing: border-box; }
+html, body { width: 100%; min-height: 100%; }
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "SF Pro Text", "Segoe UI", "PingFang SC", sans-serif;
+  text-rendering: optimizeLegibility;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+button, input, textarea { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, textarea:focus-visible, input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 62%, transparent);
+  outline-offset: 2px;
+}
+
+.teachlab-composer textarea:focus-visible {
+  outline: none;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--app-scrollbar); border: 3px solid transparent; border-radius: 99px; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
+
+[data-console-reducemotion="true"] *,
+[data-console-reduce-motion="true"] * {
+  scroll-behavior: auto !important;
+  transition-duration: .01ms !important;
+  animation-duration: .01ms !important;
+}
+
+@keyframes message-enter {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.message-enter { animation: message-enter 180ms ease-out both; }
+
+.teachlab-markdown { overflow-wrap: anywhere; }
+.teachlab-markdown > :first-child { margin-top: 0; }
+.teachlab-markdown > :last-child { margin-bottom: 0; }
+.teachlab-markdown p,
+.teachlab-markdown ul,
+.teachlab-markdown ol,
+.teachlab-markdown blockquote,
+.teachlab-markdown pre,
+.teachlab-markdown .katex-display { margin: 0 0 .8rem; }
+.teachlab-markdown h1,
+.teachlab-markdown h2,
+.teachlab-markdown h3,
+.teachlab-markdown h4 { margin: 1.2rem 0 .55rem; color: var(--app-text); font-weight: 620; line-height: 1.35; }
+.teachlab-markdown h1 { font-size: 1.28rem; }
+.teachlab-markdown h2 { font-size: 1.16rem; }
+.teachlab-markdown h3,
+.teachlab-markdown h4 { font-size: 1rem; }
+.teachlab-markdown ul,
+.teachlab-markdown ol { padding-left: 1.45rem; }
+.teachlab-markdown ul { list-style: disc; }
+.teachlab-markdown ol { list-style: decimal; }
+.teachlab-markdown li + li { margin-top: .2rem; }
+.teachlab-markdown li > p { margin-bottom: .25rem; }
+.teachlab-markdown strong { color: var(--app-text); font-weight: 650; }
+.teachlab-markdown a { color: var(--app-blue); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--app-blue) 45%, transparent); text-underline-offset: 3px; }
+.teachlab-markdown a:hover { text-decoration-color: currentColor; }
+.teachlab-markdown blockquote { border-left: 2px solid var(--app-border-strong); padding-left: .9rem; color: var(--app-muted); }
+.teachlab-markdown :not(pre) > code { border: 1px solid var(--app-border); border-radius: .35rem; background: var(--app-surface-soft); padding: .08rem .34rem; color: var(--app-purple); font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: .88em; }
+.teachlab-markdown pre { max-width: 100%; overflow-x: auto; border: 1px solid var(--app-border); border-radius: .65rem; background: var(--app-surface-soft); padding: .85rem 1rem; color: var(--app-text-soft); }
+.teachlab-markdown pre code { border: 0; background: transparent; padding: 0; font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; font-size: .82rem; line-height: 1.6; white-space: pre; }
+.teachlab-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0 0 .8rem; }
+.teachlab-markdown th,
+.teachlab-markdown td { border: 1px solid var(--app-border); padding: .42rem .65rem; text-align: left; vertical-align: top; }
+.teachlab-markdown th { background: var(--app-surface-soft); color: var(--app-text); font-weight: 620; }
+.teachlab-markdown hr { margin: 1rem 0; border: 0; border-top: 1px solid var(--app-border); }
+.teachlab-markdown .katex-display { max-width: 100%; overflow-x: auto; overflow-y: hidden; padding: .25rem 0; }
+.teachlab-markdown input[type="checkbox"] { margin-right: .45rem; accent-color: var(--app-accent); }
+
+@keyframes teachlab-mascot-float {
+  0%, 100% { transform: translateY(0) rotate(-1deg); }
+  50% { transform: translateY(-8px) rotate(1deg); }
+}
+
+@keyframes teachlab-mascot-glow {
+  0%, 100% { opacity: .24; transform: scale(.92); }
+  50% { opacity: .42; transform: scale(1.04); }
+}
+
+.teachlab-mascot {
+  animation: teachlab-mascot-float 4.8s ease-in-out infinite;
+  filter: drop-shadow(0 16px 22px rgba(0, 0, 0, .28));
+}
+
+.teachlab-mascot-glow {
+  animation: teachlab-mascot-glow 4.8s ease-in-out infinite;
+  background: color-mix(in srgb, var(--app-accent) 28%, transparent);
+}
+
+[data-console-reduce-motion="true"] .teachlab-mascot,
+[data-console-reduce-motion="true"] .teachlab-mascot-glow {
+  animation: none;
+}
+
+@media (hover: none) {
+  .group\/activity summary,
+  .group\/activity button,
+  article.group > div > div:last-child > div {
+    opacity: 1;
+  }
+}

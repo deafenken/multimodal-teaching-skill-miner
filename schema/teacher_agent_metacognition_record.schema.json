@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_metacognition_record.schema.json",
+  "title": "Teaching Agent per-KC learner calibration projection",
+  "type": "object",
+  "required": ["schema", "learner_key", "curriculum_namespace", "knowledge_component_id", "source_ref_sha256", "version", "paired_count", "jol_total_percent", "actual_total_percent", "squared_error_total", "classification_counts", "strategy_statistics", "last_pairing", "external_calibration_established", "validity_note", "mean_learner_jol_percent", "mean_authoritative_score_percent", "signed_calibration_bias_points", "brier_score"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.metacognition_record.v1"},
+    "learner_key": {"type": "string", "pattern": "^learner_[0-9a-f]{64}$"},
+    "curriculum_namespace": {"type": "string", "pattern": "^curriculum_[0-9a-f]{64}$"},
+    "knowledge_component_id": {"type": "string", "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"},
+    "source_ref_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "version": {"type": "integer", "minimum": 1},
+    "paired_count": {"type": "integer", "minimum": 1},
+    "jol_total_percent": {"type": "integer", "minimum": 0},
+    "actual_total_percent": {"type": "integer", "minimum": 0},
+    "squared_error_total": {"type": "integer", "minimum": 0},
+    "classification_counts": {
+      "type": "object",
+      "required": ["aligned", "overconfident", "underconfident"],
+      "properties": {
+        "aligned": {"type": "integer", "minimum": 0},
+        "overconfident": {"type": "integer", "minimum": 0},
+        "underconfident": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "strategy_statistics": {
+      "type": "object",
+      "propertyNames": {"enum": ["retrieval", "self_explanation", "decomposition", "worked_example", "analogy", "elimination", "diagram", "checking"]},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["paired_count", "actual_total_percent", "mean_authoritative_score_percent"],
+        "properties": {
+          "paired_count": {"type": "integer", "minimum": 1},
+          "actual_total_percent": {"type": "integer", "minimum": 0},
+          "mean_authoritative_score_percent": {"type": "number", "minimum": 0, "maximum": 100}
+        },
+        "additionalProperties": false
+      }
+    },
+    "last_pairing": {
+      "type": "object",
+      "required": ["event_id", "paired_at_utc", "assessment_kind", "authoritative_outcome", "calibration_classification"],
+      "properties": {
+        "event_id": {"type": "string", "pattern": "^mco_[0-9a-f]{64}$"},
+        "paired_at_utc": {"type": "string"},
+        "assessment_kind": {"enum": ["verification", "transfer", "delayed_review"]},
+        "authoritative_outcome": {"enum": ["correct", "partial", "incorrect"]},
+        "calibration_classification": {"enum": ["aligned", "overconfident", "underconfident"]}
+      },
+      "additionalProperties": false
+    },
+    "external_calibration_established": {"const": false},
+    "validity_note": {"type": "string", "minLength": 1},
+    "mean_learner_jol_percent": {"type": "number", "minimum": 0, "maximum": 100},
+    "mean_authoritative_score_percent": {"type": "number", "minimum": 0, "maximum": 100},
+    "signed_calibration_bias_points": {"type": "number", "minimum": -100, "maximum": 100},
+    "brier_score": {"type": "number", "minimum": 0, "maximum": 1}
+  },
+  "additionalProperties": false
+}

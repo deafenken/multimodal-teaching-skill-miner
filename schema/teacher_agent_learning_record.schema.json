@@ -1,0 +1,259 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_learning_record.schema.json",
+  "title": "Teaching Agent durable per-learner review projection",
+  "type": "object",
+  "required": [
+    "schema",
+    "learner_key",
+    "version",
+    "updated_at_utc",
+    "knowledge_components"
+  ],
+  "properties": {
+    "schema": {
+      "const": "teaching_skill_miner.learner_learning_record.v1"
+    },
+    "learner_key": {
+      "$ref": "#/$defs/learnerKey"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "updated_at_utc": {
+      "$ref": "#/$defs/utcTimestamp"
+    },
+    "knowledge_components": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^curriculum_[0-9a-f]{64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/component"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "learnerKey": {
+      "type": "string",
+      "pattern": "^learner_[0-9a-f]{64}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "safeReference": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$"
+    },
+    "utcTimestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+    },
+    "component": {
+      "type": "object",
+      "required": [
+        "learner_key",
+        "curriculum_namespace",
+        "knowledge_component_id",
+        "source_ref_sha256",
+        "version",
+        "schedule"
+      ],
+      "properties": {
+        "learner_key": {
+          "$ref": "#/$defs/learnerKey"
+        },
+        "curriculum_namespace": {
+          "type": "string",
+          "pattern": "^curriculum_[0-9a-f]{64}$"
+        },
+        "knowledge_component_id": {
+          "type": "string",
+          "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"
+        },
+        "source_ref_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "schedule": {
+          "$ref": "#/$defs/schedule"
+        }
+      },
+      "additionalProperties": false
+    },
+    "schedule": {
+      "type": "object",
+      "required": [
+        "state",
+        "due_at_utc",
+        "interval_days",
+        "repetition",
+        "lapse_count",
+        "last_reviewed_at_utc",
+        "last_outcome",
+        "source_observation_id",
+        "source_evidence_sha256",
+        "active_review_id",
+        "active_lease_id",
+        "lease_expires_at_utc",
+        "suspension_reason"
+      ],
+      "properties": {
+        "state": {
+          "enum": ["scheduled", "in_progress", "suspended", "retired"]
+        },
+        "due_at_utc": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "interval_days": {
+          "enum": [1, 3, 7, 14, 30, 60]
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6
+        },
+        "lapse_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_reviewed_at_utc": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "last_outcome": {
+          "enum": ["correct", "partial", "incorrect"]
+        },
+        "source_observation_id": {
+          "$ref": "#/$defs/safeReference"
+        },
+        "source_evidence_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "active_review_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^review_[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_lease_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^lease_[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lease_expires_at_utc": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/utcTimestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "suspension_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "in_progress"
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "active_review_id": {
+                "type": "string"
+              },
+              "active_lease_id": {
+                "type": "string"
+              },
+              "lease_expires_at_utc": {
+                "type": "string"
+              },
+              "suspension_reason": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "active_review_id": {
+                "type": "null"
+              },
+              "active_lease_id": {
+                "type": "null"
+              },
+              "lease_expires_at_utc": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": ["suspended", "retired"]
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "suspension_reason": {
+                "type": "string"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "suspension_reason": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

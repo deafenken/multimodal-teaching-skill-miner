@@ -8,9 +8,25 @@
 
 当前仓库已经实现这一工程闭环。`deepseek-v4-flash` 负责语义理解、问题对齐诊断、Skill 路由和当前教师动作候选；确定性控制器负责状态边界、Skill 合法性、重复上限、一次一动作和终止条件。默认 `safe_generative` 执行器只在模型话语与最终 Skill 的 `action_type`、单动作、提问性、问题契约和防答案泄露规则全部一致，且主/支持 Skill 未被控制器改写时保留该话语。若只是不满足动作契约且固定路由修复门禁通过，生产入口最多追加一次只重写当前动作的 action-only repair；未启用、不适用或修复仍失败时，才使用服务端确定性 materializer。三者共同构成一个受约束 Agent，不能把它简化成“只调用一次大模型”，也不能把规则层说成另一个模型。
 
-### 针对 run19 短板的当前冻结回归
+发布状态只由 `build_release_acceptance.sh` 生成的 `artifacts/release_acceptance_1.2.0.json` 机器收据证明；本文不复制会漂移的测试数。收据必须同时通过当前 verification scope 重算、全量测试、API/Console 构建与 exact-wheel 验证，任一受管源码或锁文件变化都会使旧收据失效。
 
-run19 暴露了两个工程短板：allowed Skill 命中 `0.350000`，有界路线完成 `0.400000`。本轮没有修改历史 receipt，而是修复了三处真实逻辑：合法 post-assessment Loop 提议在归一化候选中强制置首并去重；Loop 契约检查改用当前轮 provisional session，避免旧误解/旧无进展状态误拒路线；最后一个有界步骤若已有合法 Skill 与 focus，运行时直接提交路线，不再为“说 route_ready”额外调用模型。冻结当前工作树的 run25（6 case / 20 turn，作者构造 development split）为 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`，run fingerprint `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。这是 development regression，不是 Accuracy、专家锁箱、部署准确率或真实学习效果。
+### Skill 路由历史基线与重复 DeepSeek 开发回归
+
+run19 暴露了两个工程短板：allowed Skill 命中 `0.350000`，有界路线完成 `0.400000`。修复 post-assessment Loop 候选置首与去重、当前轮 provisional-session 契约检查、已验证 Skill + focus 的有界末步提交后，冻结 run25（6 case / 20 turn，作者构造 development split）为 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`，run fingerprint `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。run19 和 run25 的 receipt 都保持原样，作为历史基线，不用新结果覆盖。
+
+之后的 t3 误路由不是上下文串线，而是学生“我能说出……”的明确自解释主张仍被语义模型保守记为 `partial / ambiguous`；上一轮 `skill_self_explanation` 已达 `max_repeat=1` 后，旧的 Socratic 门禁又拒绝了下一步核验，最终才错误回落到 stepwise。修复是一个有界的安全例外：只要当前证据中存在明确自解释主张，就允许 `skill_socratic_understanding_check` 只做核验。这个例外不修改 diagnosis，不提升 mastery，不自动解除 misconception，也不向执行器发送 gold；它只把该条有实质学习尝试的回合从 `consecutive_no_progress` 终止 bookkeeping 中移出，防止模型的保守标签过早触发转人工。
+
+在相同 development input/gold 指纹上连续运行真实 DeepSeek，得到最新的 run43–run47：
+
+| Run | allowed-Skill hit | Switch F1 | bounded route completion |
+|---|---:|---:|---:|
+| run43 | `1.000000` (`20/20`) | `0.916667` | `0.80` |
+| run44 | `1.000000` (`20/20`) | `0.916667` | `0.70` |
+| run45 | `1.000000` (`20/20`) | `0.916667` | `0.65` |
+| run46 | `0.950000` (`19/20`) | `0.916667` | `0.65` |
+| run47 | `1.000000` (`20/20`) | `0.916667` | `0.70` |
+
+五次 allowed-Skill hit 的 min/mean/max 为 `0.950000/0.990000/1.000000`，因此“当前开发回归中 Skill 命中超过 90% 目标”有重复工程证据，但不能声称五次都是 100%。run46 的唯一 Skill miss 是 `cross_session_alpha/alpha_t2`；这些 run 的 cross-session leakage 为 `0`、unique session instance rate 为 `1.0`，四类 runtime fallback 均为 `0`，没有上下文串线或 API/fallback 失败证据。bounded route completion 仍在 `0.65–0.80` 之间波动，不能把这组结果说成“整体 Agent Accuracy 100%”或“已稳定完成所有 Loop”。更重要的是，这仍然只是 **6 case / 20 turn、作者构造、未在开发后锁定的 development fixture**：不是 Accuracy、held-out、专家锁箱、部署准确率或真实学习效果。run38–run42 与 run43–run47 的 predictions/report 保留在私有路径，不进入仓库。
 
 | 题目要求 | 当前实现 | 可验证状态 |
 |---|---|---|
@@ -74,7 +90,7 @@ Skill Runtime：安全模型动作通过全部门禁则保留；仅动作不匹�
 
 ### 2.1 生产路径的真实 Agent Loop
 
-生产 Dashboard（`tsm teacher-agent-dashboard --agent-backend deepseek`）在每个首轮或学生回合先运行 `teaching_skill_miner.teacher_agent_loop.v1`。当前生产提示与路由契约为 **V15**。这是实际的多步规划—工具—结果回传循环：
+生产 Dashboard（`tsm teacher-agent-dashboard --agent-backend deepseek`）在每个首轮或学生回合先运行 `teaching_skill_miner.teacher_agent_loop.v1`。当前生产提示与路由契约为 **V18**（`teaching_agent_assess_route_act_v18_direct_teaching_cache_stable_prefix`）；即时“不会/不懂”恢复与 grounded clarification 在各执行分支中使用同一教师交付、阶段保持和答案边界。这是实际的多步规划—工具—结果回传循环：
 
 ```text
 有界、脱敏的 teaching_context
@@ -94,9 +110,13 @@ route_ready：主 Skill 与 next_focus 均已由服务端校验
 一个下一教学动作，或确定性安全 fallback / 转人工
 ```
 
-Loop 的工具白名单固定为 6 个：`inspect_student_state`、`inspect_recent_history`、`search_skills`、`select_skills`、`set_next_focus` 和 `evaluate_termination`。模型不能执行代码、访问任意文件、增加 Skill、直接修改学生状态或绕过服务端门禁。每步最多执行 3 个工具调用；同一调用超过 2 次会触发重复保护；模型计划格式最多重试 1 次，达到步数、调用或重复上限则进入明确标记的 `deterministic_safety_fallback`。Loop 的公共 receipt 只记录事件类型、步骤、工具名、Skill/关注点、错误类别、计数、响应元数据和消息哈希，不保留 Prompt、思维链、学生原文、原图或密钥。
+中央 Harness registry 当前固定为 7 个 Teacher tools：`inspect_student_state`、`inspect_recent_history`、`search_skills`、`select_skills`、`set_next_focus`、`evaluate_termination` 和 `retrieve_resources`。前六个保持原有状态/路由职责；`retrieve_resources` 只从教师导入资源的私有本机索引返回有界片段、位置与内容哈希 provenance，结果不是 learner evidence 或 scoring gold。Tool definitions 按 permission、data scope 与 `requires_user_consent` 过滤，并连同授权集绑定恢复 context hash；模型不能执行代码、访问任意文件、增加 Skill、直接修改学生状态、读取未授权资源或绕过服务端门禁。每步最多执行 3 个工具调用；同一调用超过 2 次会触发重复保护；模型计划格式最多重试 1 次，达到步数、调用或重复上限则进入明确标记的 `deterministic_safety_fallback`。Loop 的公共 receipt 只记录事件类型、步骤、工具名、Skill/关注点、错误类别、计数、响应元数据和消息哈希，不保留 Prompt、思维链、学生原文、资源正文、原图或密钥。
 
 `route_ready` 不是最终教师话语，而是“路由已准备好”的边界事件。它要求至少完成 `select_skills` 与 `set_next_focus`；随后最终动作规划器才生成本轮一个 `teacher_action`。动作仍必须通过生产已有的 Skill/action-type、问题契约、提问性、防答案泄露、支持 Skill allowlist、重复上限和 Session commit fence。模型输出无效、工具异常、路由非法或门禁失败时，系统会重试或使用同合同的确定性 materializer；没有安全可执行 Skill 时停止并转人工。直接库调用的 `LiveAgentOptions()` 为兼容性默认关闭 Loop，而生产 CLI 显式开启。
+
+teach-first 的首轮没有学生回答，状态机直接把内部零回合推进到 `explanation`：第一条学生可见消息应依据教师来源讲清概念，而不是先展示阶段政策、定义测验、来源证据卡、主/支持 Skill 路由或“只需回复继续”。`select_skills`、`set_next_focus`、usage 和 reasoning/tool 生命周期仍供 reducer、恢复与检查器使用，但标为 internal 的事件不会进入学习者对话；对话只接收通过最终门禁的教师内容。防直接答案规则仅保护当前练习、核验或迁移任务的最终解，概念/定义问题继续遵循 answer-first。
+
+V18 的最终动作规划器把固定 system 协议和完整、经校验的 Skill 合同放在一个稳定 user 前缀中，再追加变化的本轮 `teaching_context`；静态前缀不含学习者文本。这样可以利用 [DeepSeek 自动上下文缓存](https://api-docs.deepseek.com/guides/kv_cache) 的精确前缀复用。这里实现的是与 DeepSeek-Reasonix 相关的 cache-aware 稳定前缀原则，**不是安装、导入或正式集成 Reasonix**，也没有自建 provider KV cache。`prompt_cache_layout` 的 schema、protocol/Skill/prefix SHA-256 与长度只证明请求布局可审计，`fingerprint_only_not_cache_hit_evidence=true` 明确禁止把指纹当命中证据；实际命中只读取 provider `usage.prompt_cache_hit_tokens`，未命中读取 `usage.prompt_cache_miss_tokens`。两项都按非负整数有界保留到 Loop、Dashboard、benchmark 与 Console；provider 未返回时保持未知，不估算命中率。
 
 显式开启 `--session-store` 后，Loop receipt 随会话 checkpoint 进入本机 append-only JSONL。每条事件有连续序号、`previous_hash` 和自身 SHA-256；`turn_started`、`turn_committed`、`turn_aborted` 的生命周期会在恢复时重放，崩溃留下的未完成 turn 会被补记为 aborted。恢复还要精确匹配无密钥 `runtime_policy_contract`、Session/画像版本和幂等缓存，任何篡改或政策漂移都 fail-closed。哈希链是完整性检测，不是加密、身份认证、访问控制或跨设备同步。
 
@@ -197,6 +217,12 @@ UI/context 层只公开 `p_mastery`、`uncertainty`、证据计数和来源，�
 
 连续性不是让模型凭印象补历史。对“第二种呢”“回到第 1 轮”“按最开始的方式”“重新解释刚才那个点”“按约定继续”等显式 cue，服务端确定性生成 `semantic_summary.continuity_recall`：`resolved_evidence_linked` 只能依据 `target.excerpt` 与 `evidence_refs` 接续；`unresolved_no_matching_evidence` 必须承认没有匹配记录并请学生重述。action-only repair 只接收有界、脱敏、证据链接的 continuity constraints，不能另造历史或改变路由、诊断和终止。
 
+现代 Console 的自由 Chat 使用另一套隔离上下文，不会混入上述 Teach mastery。默认启动器为学习项目配置私有 store：项目保存标题/描述/置顶/归档、notes、Chat threads，以及资源、教学大纲和 Teach session 引用；删除进入带 recovery token 的回收站。项目 Chat 的完整 transcript 由服务端权威持久化，客户端最多提交 400 条从 user 开始严格交替的消息；若超出 provider 预算，只有已经 durable 的早期前缀才能省略，并生成包含原 transcript SHA-256、原/投影消息数和未展开数的抽取式索引。这个投影不是模型叙事摘要，也不会替换项目中的完整历史。
+
+教师教学资源（PDF、PPT/PPTX、DOC/DOCX、RTF、TXT/MD、PNG/JPEG/WebP）先在本机提取文本或 OCR；原始媒体随后删除并不发送给 DeepSeek。私有 resource-index store 可保留比远程 teaching-context 投影更长但仍有上限的提取文本，并按 chunk 记录 offset、页码、讲者备注/视觉复核位置和内容哈希。`retrieve_resources` 只返回有界 provenance 片段。项目、大纲、资源及检索结果都是 teacher context，不是 learner answer、mastery evidence 或 scoring gold。
+
+Chat Web Search 默认关闭。用户显式开启时，Console 先要求单独的远程检索确认；Harness 只有在该次请求携带 consent version、ToolSpec 声明 `requires_user_consent=true` 且 `remote_consent` data scope 被信任时才向 provider 暴露 Web Search。远程学生文本总授权与 Web Search 授权是两个不同门禁，不能用前者静默打开后者。
+
 ### 4.5 会话生命周期与 Codex 参考
 
 本项目没有复制 Codex，也没有把 Shell、Git、沙箱或多 Agent 能力混入教学系统；参考的是官方开源 Codex 固定版本 `15ea598c6e7e0914a7ae8c881ac05dacea2f7902` 中 thread/turn identity、预期轮次核验、陈旧异步结果隔离、追加式事件和 running/cold-resume 等可靠性模式。Teaching Session 对应 thread，教学回合对应 turn。当前网页、请求协议、教学上下文、状态机和视觉样式均为本项目原创实现，不声称复刻或迁移 Codex UI。
@@ -208,6 +234,8 @@ start、step 与 command 都有各自的幂等键；step/command 还必须同时
 默认不启用磁盘持久化：刷新页面时，浏览器只从 `sessionStorage` 取回随机、无业务语义的 opaque session handle，再向同一进程内的服务端状态恢复；进程结束后旧 handle 失效。只有显式传入 `--session-store <path>` 时才启用本机追加式 JSONL cold resume。store 为每条事件写入连续 `seq`、`previous_hash` 和自身 SHA-256，完整中间行的篡改或断链会 fail-closed；最后一条未完整写入的截断尾部可在启动时删除。学生 step 先持久化 `turn_started`，成功后写 `turn_committed`，异常写 `turn_aborted`；进程崩溃留下的 started turn 会在重启时补记 recovered abort，同一个旧幂等键不能伪装成已提交，操作者需换新键显式重试。checkpoint 还能恢复 start/step/command/attachment 幂等缓存和最多 16 个隔离 Session。
 
 冷恢复不是“读取 JSON 就继续”。每个 live Session 都绑定不含 API Key 的 `runtime_policy_contract`：provider、model、base origin、thinking/temperature、远程数据授权、prompt version、fallback、support 上限、最低诊断置信度、上下文字符/回合预算和 action executor mode 必须精确一致。API Key 可以轮换，但这些运行政策任一漂移都会拒绝恢复。若会话由 `allowed_skill_ids` 选择主 Skill 子集，恢复校验要求该子集相对当前完整 Library 保持原顺序、逐项内容等价，并保留全部 support Skill；未知、被修改、乱序或缺 support 的 Skill 都不能恢复。store 会在本机持久化会话正文、目标、画像、状态、幂等缓存和尚存附件的受限 OCR 证据，原始图片仍不持久化也不发给 DeepSeek；哈希链提供完整性检测而非加密、身份认证或跨设备同步，因此该文件必须作为私有学生数据保护。
+
+Session cold resume 与一次 active Harness operation 的恢复不是同一件事。配置持久 `--session-store` 后，Teach operation checkpoint 有三条窄边界：① `start` 已到 `context_prepared` 但 provider effect 尚未开始，可用同一 exact receipt 安全恢复并只执行一次；② start/step 已进入 provider 而 effect 结果未知时不猜测、不重放，返回 `run.handoff`，其中学生 `step` 明确不会因重启重放；③领域 turn 已 commit、只缺外层消息/terminal 时，从权威 Session 与幂等 receipt 补齐同一 SSE，不再次推进轮次。Chat 非终态 run 不自动恢复或重新调用 provider；已 terminal 的持久 stream journal 才可跨进程重放。这不是任意在途 effect、分布式 workflow 或 exactly-once 外部副作用保证。
 
 ### 4.6 Goal→Plan→Execute→Verify→Reflect 可恢复编排
 
@@ -287,7 +315,7 @@ neural-v1 的来源是 10 讲、2 门课程，采用 grouped 5-fold OOF 开发�
 - `/auto`：恢复自动路由；
 - `/stop`：不再消费学生回答，立即停止并建议人工确认。
 
-页面在活动回合中显示的“停止生成”不是同一个命令：它调用 `cancel_turn`，只使当前正在生成的回合失效、保留 Session 以便教师继续；后端用 generation/commit fence 丢弃迟到响应，因此不会增加轮次、历史或画像更新。当前 `transport_cancellation_supported=false`，DeepSeek 的 HTTP 请求可能仍在后台完成并产生供应商计费。只有显式 `/stop` 才把整个 Session 置为 terminal；这两个动作在运行状态和审计事件中分别标记。
+页面在活动回合中显示的“停止生成”不是 `/stop`：它只使当前正在生成的回合失效、保留 Session 以便教师继续。兼容同步 `cancel_turn` 路径仍是 `remote_transport_cancellation_supported=false`，依靠 generation/commit fence 丢弃迟到响应。默认 Console 已改用 Harness 显式 cancel API，`harness_sse_transport_cancellation_supported=true`：取消 token 会关闭已经建立的 DeepSeek 普通文本或 Web Search 响应 socket；取消和提交共享 commit-wins 门禁，先提交则后到取消不得改写成功结果，先取消则禁止 late commit。连接建立前仍受 timeout 限制，供应商计费边界不能由本机保证。只有显式 `/stop` 才把整个 Session 置为 terminal；这些动作在运行状态和审计事件中分别标记。
 
 人工覆盖不会计为 Agent 自动选择命中，也不能绕过适用信号、纠错证据、重复上限、fallback 和终止约束；控制器拒绝不适用选择时会回到安全 Skill，并在页面显示锁已释放的原因。
 
@@ -350,9 +378,15 @@ python scripts/run_teacher_agent_benchmark_v2.py \
 
 `--acknowledge-held-out` 只适用于真正外部锁箱；当前 development split 不应使用该旗标。验证通过或在线执行成功只说明协议/工程回归可复现，不建立真实学生学习效果、跨 session 泛化、部署准确率或专家金标准。生产 Agent Loop 的路由只作为建议：当工具选出的 Skill 与最新 signal 不相容时，state-first 门禁会重新选择可执行阶段；如果随后发生 action-only repair，repair 只能重写教师动作，固定 route、Skill、终止状态和 route/loop 审计字段保持不变。
 
-下方 run19 数值是历史基线；当前冻结 run25 才是本轮修复后的最新 development regression（指标与边界见上文），避免把旧基线误读为当前结果。
+下方 run19 数值是第一个历史基线；run25 是第二个冻结历史基线。当前最新的重复 development regression 是上文 run43–run47，三组记录不互相覆盖。
 
-历史 run19（DeepSeek v4-flash、Agent Loop/state-first/repair 开启，strict terminal polarity + terminal guard 修复后）作为开发回归记录：recall group coverage 1.000000、memory status 0.950000、误解解除 exact/evidence 1.000000/1.000000、allowed Skill hit 0.350000、switch F1 0.631579、termination match 0.950000、注入阻断 1.000000、禁止/直接答案泄漏 0/0、跨 session 泄漏 0；lifecycle receipt coverage/commit verification/route contract 为 1.000000/0.950000/0.950000，explicit replan 0.800000，bounded route completion 0.400000；runtime fallback totals（Loop/planner/action/assessment）为 0/0/0/0；run fingerprint 为 `0d1f0cc98c5cdef058f15a19791f2e25d031928cf472b7babbcd32889bac0cc7`。该 receipt 不随仓库发布；这是单次作者构造 development regression，指标不是 Accuracy，也不建立部署准确率或真实学习效果；无专家锁箱，lifecycle receipt 未获外部签名。
+历史 run19（DeepSeek v4-flash、Agent Loop/state-first/repair 开启，strict terminal polarity + terminal guard 修复后）作为开发回归记录：recall group coverage 1.000000、memory status 0.950000、误解解除 exact/evidence 1.000000/1.000000、allowed Skill hit 0.350000、switch F1 0.631579、termination match 0.950000、注入阻断 1.000000、禁止/直接答案泄漏 0/0、跨 session 泄漏 0；lifecycle receipt coverage/commit verification/route contract 为 1.000000/0.950000/0.950000，explicit replan 0.800000，bounded route completion 0.400000；runtime fallback totals（Loop/planner/action/assessment）为 0/0/0/0；run fingerprint 为 `0d1f0cc98c5cdef058f15a19791f2e25d031928cf472b7babbcd32889bac0cc7`。该 receipt 不随仓库发布；这是单次作者构造 development regression，指标不是 Accuracy，也不建立部署准确率或真实学习效果；无专家锁箱，lifecycle receipt 未获外部签名。冻结 run25 和重复 run38–run42 的结果与边界见本文开头；它们同样不随仓库发布逐轮 predictions。run43–run47 的更新结果同样只保留私有 predictions/report。
+
+### 7.2a Gold-free 跨学科对话质量接口
+
+`data/teacher_agent_dialogue_quality_benchmark_v1.json` 提供六个学科的作者构造对话，只包含学习者话语、阶段合同和教师运行时可见的资源片段，不接受 hidden gold。评分器检查相邻话术重复、澄清是否 answer-first、解释是否带来新信息、阶段是否闭环、资源引用是否绑定真实 chunk provenance，以及 mastery/termination 是否有运行收据。
+
+这里不能仅凭 predictions 自报的 `correct` 或 `terminal=true` 得分。正向 mastery/termination 必须同时具备 evidence ID、当前 learner utterance 的 SHA-256、`assessment_eligible=true` 和 `applied_to_mastery=true`，并保持 `gold_accessed=false`；没有这些 runtime attestation 时应失败关闭。随附 predictions fixture 用于测试评分器对不可信标签的拒绝，不是当前 DeepSeek 的正向质量成绩。真实 DeepSeek 重复运行、独立专家标注与 lockbox 仍待完成，因此本文不填造新的通过率。
 
 ### 7.3 20 episode 多轮对抗开发 benchmark
 
@@ -416,12 +450,16 @@ tsm teacher-agent-outcome-evaluate \
 
 ### 8.1 配置密钥
 
-密钥不进入仓库。可将外置盘密钥链接到被 `.gitignore` 忽略的本机目录：
+密钥不进入仓库。DeepSeek API key 可将外置盘密钥以单层链接放到被 `.gitignore` 忽略的本机目录；链接所在目录和目标父目录都必须是 mode-0700，目标必须是 owner-only 普通文件：
 
 ```bash
 mkdir -p .private
 ln -s "/path/to/deepseek_api.txt" .private/deepseek_api.txt
 ```
+
+双击启动器会校验该链接的目标，并把内容复制到本次 launch 专用的 `.private/runtime-secrets/<launch-id>-*.secret`
+（mode-0600）；读取使用 `O_NOFOLLOW` 和 inode/device/size 复核，退出时清理临时文件。学习记录密钥和同意签名密钥
+仍拒绝符号链接，只接受 Keychain 或普通私有文件。
 
 也可以不建立链接：双击启动脚本前设置 `DEEPSEEK_API_KEY_FILE`，或直接运行 `tsm` 时设置 `TSM_DEEPSEEK_API_KEY_FILE`。两者都只应指向自己的本机私有密钥文件；密钥只由本机服务读取，不进入页面和公开运行日志。
 
@@ -461,7 +499,7 @@ python3 -m pip install -e '.[browser-test]'
 python3 -m playwright install chromium
 ```
 
-自动验收分为三层。`tests/test_teacher_agent_ui_contract.py` 静态检查 HTML/CSS/JavaScript 的资源、可访问性标记、布局契约和请求字段；`scripts/run_teacher_agent_system_acceptance.py` 调用页面使用的同一组 loopback HTTP API，黑箱覆盖 bootstrap、start/resume/step、失败替换保留旧会话、成功替换、并行隔离和过期上下文拒绝，`tests/test_teacher_agent_dashboard.py` 另以直接状态检查和真实 loopback HTTP 覆盖 `api/attachment → api/step` 的绑定、幂等、消费和过期拒绝；`scripts/run_teacher_agent_browser_acceptance.py` 使用 Playwright 启动本机 Chrome/Chromium，覆盖高对比度印刷文字 image-only 回合，并在画像 B 替换前通过 loopback API 于 UI 外推进旧 Session，使页面第一次携带陈旧 `replace_expected_*` 收到一次预期 HTTP 400；runner 随后验证前端同步新 guards、换用新 start idempotency key、恰好重试一次并成功切换，同时继续核对画像隔离、旧手动 Skill 不继承、切换后继续作答、刷新恢复、表单回填、评估视图、390/768/1440 三种宽度、控制台和 capability 范围。页面主对话区还固定显示当前 Skill、策略切换和下一关注点，并可直接打开完整选择依据。预期 400 与对应浏览器资源错误单独计数，不混入非预期失败；runner 只输出聚合 receipt，不输出 capability URL、session handle、画像正文、学生文本、OCR 正文或附件句柄。这里的“真实浏览器”特指可复现的 Playwright DOM/网络交互；本轮另用 Codex 内置浏览器人工走通画像切换、切换后提交回答和选择依据入口，但一次人工操作不替代可复现 runner。视觉确认的两 Skill 轮换、可靠公式转写与精确教师依据匹配由 `tests/test_teacher_agent_live.py` 和 `tests/test_teacher_agent_vision.py` 覆盖；`tests/test_teacher_agent_store.py` 另覆盖 hash-chain、截断尾修复、started/committed/aborted、幂等恢复、运行政策漂移和 Skill 子集恢复。Chrome 用例只证明一条合成印刷文字成功路径与一次受控 stale replacement 恢复，不是任意并发、手写/公式 OCR 准确率、Firefox/Safari、屏幕阅读器、真实学生部署或学习效果证据。
+自动验收分为三层。`tests/test_teacher_agent_ui_contract.py` 静态检查 HTML/CSS/JavaScript 的资源、可访问性标记、布局契约和请求字段；`scripts/run_teacher_agent_system_acceptance.py` 调用页面使用的同一组 loopback HTTP API，黑箱覆盖 bootstrap、start/resume/step、失败替换保留旧会话、成功替换、并行隔离和过期上下文拒绝，`tests/test_teacher_agent_dashboard.py` 另以直接状态检查和真实 loopback HTTP 覆盖 `api/attachment → api/step` 的绑定、幂等、消费和过期拒绝；`scripts/run_teacher_agent_browser_acceptance.py` 使用 Playwright 启动本机 Chrome/Chromium，覆盖高对比度印刷文字 image-only 回合，并在画像 B 替换前通过 loopback API 于 UI 外推进旧 Session，使页面第一次携带陈旧 `replace_expected_*` 收到一次预期 HTTP 400；runner 随后验证前端同步新 guards、换用新 start idempotency key、恰好重试一次并成功切换，同时继续核对画像隔离、旧手动 Skill 不继承、切换后继续作答、刷新恢复、表单回填、评估视图、390/768/1440 三种宽度、控制台和 capability 范围。页面中间对话区只显示通过门禁的师生内容；当前 Skill、策略切换、下一关注点和完整选择依据在右侧检查器查看，内部生命周期不生成对话卡。预期 400 与对应浏览器资源错误单独计数，不混入非预期失败；runner 只输出聚合 receipt，不输出 capability URL、session handle、画像正文、学生文本、OCR 正文或附件句柄。这里的“真实浏览器”特指可复现的 Playwright DOM/网络交互；本轮另用 Codex 内置浏览器人工走通画像切换、切换后提交回答和选择依据入口，但一次人工操作不替代可复现 runner。视觉确认的两 Skill 轮换、可靠公式转写与精确教师依据匹配由 `tests/test_teacher_agent_live.py` 和 `tests/test_teacher_agent_vision.py` 覆盖；`tests/test_teacher_agent_store.py` 另覆盖 hash-chain、截断尾修复、started/committed/aborted、幂等恢复、运行政策漂移和 Skill 子集恢复。Chrome 用例只证明一条合成印刷文字成功路径与一次受控 stale replacement 恢复，不是任意并发、手写/公式 OCR 准确率、Firefox/Safari、屏幕阅读器、真实学生部署或学习效果证据。
 
 网页 command bar 固定显示 `GOAL / PLAN / PROGRESS / CONTROL`：GOAL 是当前概念与目标，PLAN 是当前活动 Skill/计划，PROGRESS 是 Goal 子步骤进度，CONTROL 是自动、手动、忙碌、完成或转人工状态。输入框下的“教学控制”菜单提供 `/auto`、`/+skill`、`/stop`；“停止生成”是可恢复 `cancel_turn`，只失效当前活动 turn、保留草稿和 Session，恢复控制台的“重新发送本轮”会复用有界请求但生成新幂等键。`/stop` 才是终止整个 Session，“结束并转人工”则显式提交 handoff。所有恢复按钮都要重新校验 session/round/question/context/profile guards；迟到响应由 commit fence 丢弃。该 UI 只是本项目原创的可观测性/恢复设计，不是 Codex 或 Claude Code 的功能等价。
 
@@ -478,6 +516,22 @@ python3 -m playwright install chromium
 7. 展示 28 例开发 benchmark、v2 的 6 case/20 turn input—gold 分离校验、固定单 Skill 对照和学习结果接口；主动说明它们分别是自由文本开发证据、盲化协议/状态安全回归、机制回归和指标计算演示。
 8. 若时间允许，用连续无进展回答或 `/stop` 展示安全转人工，而不是无限生成。
 
+### 8.4 现代 Console / BFF 迁移边界
+
+`apps/console` 现已通过 Next 服务端同源代理接入上述 Python DeepSeek 教学运行时，并成为 `打开题目二教学Agent.command` 的默认页面；启动器验证当前源码、`package-lock.json`、runtime manifest 与逐文件哈希后运行独立 Next standalone production artifact，默认后台驻留。
+macOS 双击入口默认设置 `TEACHLAB_OPEN_BROWSER=1`，在 `/ready` 成功后打开 Console；设置 `TEACHLAB_OPEN_BROWSER=0` 可只打印 URL。`/health` 与真实 Python bootstrap 驱动的 `/ready` 分离，503 不会被当作 ready；Terminal 窗口关闭不等于服务停止，CLI/UI stop 才回收受监督进程组。Python 自带 Dashboard 保留为后端调试页。macOS 打包、Keychain/0600 fallback、签名/公证与不夸大 unsigned developer artifact 的合同见 `docs/teacher_agent_console_production_runtime.md`。`apps/api` 是并行的企业 BFF：
+
+| 部分 | 已实现 | 当前边界 |
+|---|---|---|
+| 前端 | Next.js **15.5.23**、React 19.1、TypeScript、Tailwind CSS 4、本地 shadcn/ui 风格组件、React Query；未使用的 Monaco/xterm 组件与依赖已经移除，Runtime 为轻量只读快照；真实 bootstrap/session/command/project/resource/syllabus 与 Harness Chat/start/step；Python typed SSE 按 journal durable ack 后发布，支持 cursor reconnect 和显式取消；Next strict reducer 校验 identity、sequence、operation result、commit 与 terminal；DeepSeek 普通文本/Web Search 均为原生流 | Teach 只有 start pre-provider/unknown-effect handoff/domain-commit 三条窄恢复路径，Chat 非终态不自动恢复；Firefox/Safari 和屏幕阅读器验收尚未建立 |
+| API/BFF | NestJS 11 + Fastify 5；会话 CRUD、owner 隔离、任务提交/查询/取消、SSE 回放/心跳、健康/就绪、DTO/CORS/body limit/request ID/结构化日志；`DATA_BACKEND=postgres` 时使用 PostgreSQL FORCE-RLS session/event/task/artifact storage、durable task leases 与 scoped artifact bytes | 本机默认仍是显式 memory adapters；正式拓扑固定单 API replica，未接入 Redis/S3、BullMQ/Temporal 或跨副本 lease scheduler；不能把本地 memory 模式描述成可重启持久化 |
+| 模型与编排 | Python Harness 已接 DeepSeek 普通文本原生 SSE 和 Anthropic 兼容端点的 server-side Web Search 原生 SSE；Web Search 只发布类型化工具生命周期与清洗后的有界来源元数据。`apps/api` 另定义 Anthropic provider/task orchestrator port，未配置时显式 fail closed / `requires_configuration` | 尚无 Claude worker、BullMQ/Redis 或 Temporal worker；不能把 Python DeepSeek Harness 写成 Nest 生产编排已经完成 |
+| 生产基础设施 | 仅记录了安全和替换边界 | Clerk/Auth0、GitHub OAuth/App、SAML/OIDC、PostgreSQL/Redis/S3、ripgrep/tree-sitter/pgvector Agent、Docker/gVisor、Kubernetes/Firecracker、Git/egress proxy、OTel/Sentry、Terraform/Helm/Argo CD 尚未实现 |
+
+因此，“现代技术栈已建立可构建 MVP 骨架”是准确表述；“企业登录、Claude Agent、Temporal、生产沙箱或云部署已完成”不是。
+
+Harness 的 provider 小 delta 按约 40 ms 或 512 字符聚合并在工具/usage/terminal 边界完整 flush；这是对原生 delivery 的批处理，不做假字符切分，拼接结果保持逐字一致。事件 journal 先 `fsync` 再进入 SSE；连接中断时只从最后接受的连续 sequence 继续。默认内存 Session 的重启边界没有改变：只有显式 `--session-store` 才支持 cold resume。持久 stream journal 可重放 terminal run；Teach active restart 仅允许 start pre-provider 安全恢复、未知 start/step effect handoff、domain commit 后补 SSE，学生 step 不重放；Chat 非终态不自动恢复。当前 browser acceptance 仍只覆盖受控 Chrome 路径，生产身份、OS sandbox、Firefox/Safari 与辅助技术仍需独立验收。
+
 ## 9. 交付物映射
 
 | 类别 | 文件或入口 |
@@ -489,6 +543,8 @@ python3 -m playwright install chromium
 | 证据关联长程教学记忆 | `teaching_skill_miner/teacher_agent_memory.py` |
 | 本机答案图片 OCR 与证据包络 | `teaching_skill_miner/teacher_agent_vision.py`；macOS Apple Vision 优先，Tesseract 回退 |
 | 本机服务、可选 cold-resume store 与网页 | `teaching_skill_miner/teacher_agent_dashboard.py`、`teaching_skill_miner/teacher_agent_store.py`、`teaching_skill_miner/web/teacher_agent_demo.*` |
+| 现代 Console 默认入口 | `apps/console`、`scripts/start_teacher_agent_console.mjs`、`打开题目二教学Agent.command`；哈希绑定的 Next standalone production runtime 服务端代理真实 Python Teaching Agent，浏览器不持有 capability URL；macOS 双击入口默认后台驻留并在 ready 后自动打开页面，`TEACHLAB_OPEN_BROWSER=0` 可只打印 URL，CLI/UI stop 可验证回收 |
+| NestJS/Fastify BFF 迁移入口 | `apps/api`；会话/任务/SSE API 与可替换 ports，`DATA_BACKEND=postgres` 使用 PostgreSQL durable session/event/task/artifact storage；本机 memory adapters 仅用于开发/测试，Anthropic provider 未配置时 fail closed |
 | HTTP 黑箱系统验收 | `scripts/run_teacher_agent_system_acceptance.py`、`tests/test_teacher_agent_system_acceptance.py` |
 | 真实 Chrome 验收 | `scripts/run_teacher_agent_browser_acceptance.py`、`tests/test_teacher_agent_browser_acceptance.py`；覆盖实际 DOM、一次 stale replacement 的 400→同步 guards→新幂等键→单次重试、刷新与响应式链路，不等于任意并发、跨浏览器或辅助技术认证 |
 | Chrome 取消生成验收 | `scripts/run_teacher_agent_cancel_browser_acceptance.py`、`tests/test_teacher_agent_cancel_browser_acceptance.py`；阻塞合成模型后覆盖“停止生成”、可恢复 `cancel_turn`、迟到响应 fenced、草稿保留与下一轮继续，不调用 DeepSeek，不等于模型质量 |
@@ -514,7 +570,7 @@ python3 -m playwright install chromium
 
 - neural-v1 的运行本体仍为 provisional，证据物化门禁未通过；
 - 28 例结果只是在作者构造且 post-hoc 的开发集上的单轮结果；
-- 20 episode/65 个学生回答回合（另含 1 次画像替换操作）多轮集合也是作者构造、未经专家复核且未锁箱的开发 benchmark；最新私有 v2 run19 作为一次 development regression 记录，不把分维度结果写成 Accuracy、部署准确率或学习效果；lifecycle receipt 仅有结构与哈希自校验，未获外部签名；
+- 20 episode/65 个学生回答回合（另含 1 次画像替换操作）多轮集合也是作者构造、未经专家复核且未锁箱的开发 benchmark；产品 v2 的 run19、run25 与 run43–run47 都只是 6 case/20 turn development regression 的历史或重复工程记录，不把分维度结果写成 Accuracy、held-out、部署准确率或学习效果；lifecycle receipt 仅有结构与哈希自校验，未获外部签名；
 - v2 产品级 benchmark 是独立的 6 case/20 turn development input/gold 分离集；它的 memory、misconception、switching、injection、isolation 和 outcome 指标不是统一 Accuracy，gold 不进入模型请求；
 - 4 例结果只证明结构化控制机制按 fixture 工作；
 - 学习结果 fixture 只证明评估接口存在；

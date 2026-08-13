@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schema/learning_project_deletion_receipt.schema.json",
+  "title": "Content-free learning project deletion receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "receipt_id", "project_id", "deleted_at", "request_token_sha256", "target_set_sha256", "deleted_counts", "retained_shared_counts", "storage_cleanup_state", "content_retained_in_receipt", "user_managed_export_copies_deleted", "user_managed_export_copies_status", "backup_scope"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.project_deletion_receipt.v1"},
+    "receipt_id": {"type": "string", "pattern": "^delete_[0-9a-f]{32}$"},
+    "project_id": {"type": "string", "pattern": "^project_[0-9a-f]{24}$"},
+    "deleted_at": {"type": "string", "format": "date-time"},
+    "request_token_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "target_set_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "deleted_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "retained_shared_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "storage_cleanup_state": {"const": "completed"},
+    "content_retained_in_receipt": {"const": false},
+    "user_managed_export_copies_deleted": {"const": false},
+    "user_managed_export_copies_status": {"const": "not_verifiable_by_running_app"},
+    "backup_scope": {"const": "configured_live_stores_only"}
+  }
+}

@@ -6,7 +6,7 @@
 
 ## 演示前准备
 
-1. 提前把密钥链接到 `.private/deepseek_api.txt`，双击 `打开题目二教学Agent.command`。
+1. 提前把 DeepSeek 密钥以单层链接放到 `.private/deepseek_api.txt`（链接目录和目标父目录 mode-0700、目标 owner-only）；双击 `打开题目二教学Agent.command`。启动器会校验目标并在本次 launch 物化为 0600 临时文件，默认 ready 后自动打开 Console。
 2. 确认页首显示 `DeepSeek` 和 `deepseek-v4-flash`，不要在降级状态下声称正在调用模型。
 3. 保留默认的“动态规划的状态与转移”案例，现场更稳定；若老师要求新题，再修改目标。
 4. 浏览器缩放保持 100%，默认停在“学习”视图；右侧“学习检查器”保持展开。
@@ -24,11 +24,15 @@
 
 > 生产页面还打开了 state-first 路由：模型先提候选，控制器按掌握短板、误解、参与度、无进展次数和 Skill 契约确定优先层，模型只在同层作 tie-break。页面忙碌时的“停止生成”只取消当前回合并保留 Session；显式 `/stop` 才结束整个 Session，`transport_cancellation_supported=false` 表示远程请求本身仍可能完成。
 
-> 这一版 live prompt 是 V15（`teaching_agent_assess_route_act_v15_correction_chain_taxonomy_contract`）。action-only repair 只修当前动作；请求统计按 `completed_committed_turns_only`，纠错链 taxonomy 只做 teacher-owned 标签归一化，且 `transport_cancellation_supported=false`。这些是工程边界，不是把开发集分数说成部署准确率。
+> 这一版 live prompt 是 V18（`teaching_agent_assess_route_act_v18_direct_teaching_cache_stable_prefix`）。teach-first 首次学生可见消息直接进入教师来源约束的解释，不输出阶段政策、定义前测、来源证据卡、内部路由或“回复继续”；练习/核验/迁移的最终解仍受门禁。学生明确说不会时，当前题会即时进入教师换表征讲解/示范约束，不等待下一轮历史提交；grounded clarification 只允许绑定教师来源的回答签发记忆回执；action-only repair 只修当前动作且不能覆盖困惑恢复门禁；请求统计按 `completed_committed_turns_only`，纠错链 taxonomy 只做 teacher-owned 标签归一化，且 `transport_cancellation_supported=false`。这些是工程边界，不是把开发集分数说成部署准确率。
 
-> 针对历史 run19 的两个短板，当前冻结 run25（6 case / 20 turn development regression）为 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`。解释时要强调：这是同一作者构造开发集上的工程回归，不是 Accuracy、专家锁箱、部署准确率或真实学习效果；run fingerprint 为 `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。
+> V18 采用 cache-aware 稳定前缀：固定 system 协议与完整 Skill 合同排在动态 turn 前，以利用 DeepSeek 自动上下文缓存。它没有安装或正式集成 DeepSeek-Reasonix；只能说实现了与其相关的稳定前缀原则。`prompt_cache_layout` 哈希不是缓存命中证据，实际计数只能看 provider `usage.prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，字段缺失时不估算。
 
-本答辩指南以 V15 state-first 契约为准；代码和审计字段使用 `action_only_repair`、`continuity_recall`、`misconception_tag_canonicalized_from_teacher_taxonomy` 与 `cancel_turn` 的固定名称，便于现场复核。
+> 历史 run19 的 allowed-Skill hit / switch F1 / bounded completion 为 `0.350000/0.631579/0.400000`，冻结 run25 为 `0.450000/0.818182/0.750000`（fingerprint `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`）；两者均保留为历史基线。修复“明确自解释证据被保守记为 `partial / ambiguous`，且自解释 Skill 已达重复上限后 Socratic 核验被误拒”后，相同 6 case / 20 turn development input/gold 指纹上的最新真实 DeepSeek run38–run42 allowed-Skill hit 为 `1.00/1.00/0.95/0.95/0.95`，switch F1 均为 `0.916667`，bounded completion 为 `0.75/0.70/0.50/0.80/0.70`。安全例外只允许 Socratic 核验，不提升掌握、不解除误解、不读 gold；run40–run42 的唯一 Skill miss 均为 `cross_session_alpha/alpha_t2`，但跨 session 泄漏与四类 fallback 均为 0。答辩只能说“当前五次开发回归的 Skill 命中均超过 90% 目标”，不能说“Agent Accuracy 或部署准确率为 100%”。这是作者构造、未锁箱的 development fixture，不是 held-out、专家锁箱、部署证据或真实学习效果；bounded completion 的波动也必须主动披露。
+
+> 最新 run43–run47 已在同一 v2 development 指纹上复跑：allowed-Skill hit 为 `1.00/1.00/1.00/0.95/1.00`，switch F1 仍为 `0.916667`，bounded completion 为 `0.80/0.70/0.65/0.65/0.70`。run46 的唯一 miss 仍是 `cross_session_alpha/alpha_t2`；所有 t3 的明确自解释回合均进入 self-explanation/Socratic allowlist，跨 session 泄漏和四类 fallback 均为 0。现场仍只能称为 development regression。
+
+本答辩指南以 V18 direct-teaching + cache-stable-prefix + Guide Learning 困惑恢复 + grounded-clarification + state-first 契约为准；代码和审计字段使用 `action_only_repair`、`continuity_recall`、`misconception_tag_canonicalized_from_teacher_taxonomy` 与 `cancel_turn` 的固定名称，便于现场复核。
 
 ## 0:30—1:05：01 目标与画像
 
@@ -46,7 +50,7 @@
 
 指向中间第一条教师消息，再指向右侧当前主 Skill、支持 Skill 和选择依据：
 
-> 现在系统只生成了第一个动作，并停下来等学生回答。这里能看到主 Skill、组合的支持 Skill和选择原因；一个主 Skill 负责本轮教学意图，支持 Skill 只约束提示力度或等待方式，所以组合 Skill 也不会一次输出多个回合。
+> 现在系统第一条消息已经直接讲当前概念，然后停下来等学生回答；对话里不会出现“本阶段不考前置知识”“来源证据卡”“回复继续”或内部工具卡。主 Skill、支持 Skill 和选择原因只在右侧检查器查看；一个主 Skill 负责本轮教学意图，支持 Skill 只约束提示力度或等待方式，所以组合 Skill 也不会一次输出多个回合。
 
 再指向 `decision origin` 或运行状态：
 

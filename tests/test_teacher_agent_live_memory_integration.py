@@ -37,12 +37,10 @@ ROOT = Path(__file__).resolve().parents[1]
 LIBRARY = read_json(ROOT / "data/teacher_agent_skill_library_v2.json")
 DEMO = read_json(ROOT / "data/teacher_agent_demo_input.json")
 ACTION_TYPES = {
-    str(skill["skill_id"]): str(skill["action_type"])
-    for skill in LIBRARY["skills"]
+    str(skill["skill_id"]): str(skill["action_type"]) for skill in LIBRARY["skills"]
 }
 FOCUS_BY_SKILL = {
-    str(skill["skill_id"]): str(skill["focus_dimension"])
-    for skill in LIBRARY["skills"]
+    str(skill["skill_id"]): str(skill["focus_dimension"]) for skill in LIBRARY["skills"]
 }
 
 
@@ -79,12 +77,8 @@ def _plan(
             "misconception_tag": None,
             "misconception_description": "",
             "resolved_misconception_tags": [],
-            "response_quality": (
-                "empty" if signal == "not_observed" else "partial"
-            ),
-            "engagement_level": (
-                "unknown" if signal == "not_observed" else "medium"
-            ),
+            "response_quality": ("empty" if signal == "not_observed" else "partial"),
+            "engagement_level": ("unknown" if signal == "not_observed" else "medium"),
             "needs_human_review": needs_human_review,
         },
         "decision": {
@@ -182,21 +176,16 @@ def test_live_start_initializes_goal_profile_bound_teaching_memory() -> None:
     )
 
     memory = session["teaching_memory"]
-    expected = initialize_teaching_memory(
-        session["goal"], session["student_profile"]
-    )
+    expected = initialize_teaching_memory(session["goal"], session["student_profile"])
     assert memory["schema"] == TEACHING_MEMORY_SCHEMA
     assert memory["history_version"] == 0
     assert memory["last_observed_round"] == 0
     assert memory["compaction_generation"] == 0
-    assert memory["fixed_context_fingerprint"] == expected[
-        "fixed_context_fingerprint"
-    ]
+    assert memory["fixed_context_fingerprint"] == expected["fixed_context_fingerprint"]
     assert session["history"] == []
-    assert (
-        session["context_memory"]["semantic_summary"]["teaching_memory"]
-        == project_teaching_memory(memory)
-    )
+    assert session["context_memory"]["semantic_summary"][
+        "teaching_memory"
+    ] == project_teaching_memory(memory)
 
 
 def test_valid_model_turns_commit_monotonic_memory_and_history_trace() -> None:
@@ -324,9 +313,7 @@ def test_evidence_linked_memory_survives_nine_turn_bounded_context() -> None:
             "answer_type": "explanation",
             "target_concepts": ["两种状态保存方法的差异"],
             "accepted_aliases": ["第一种", "第二种"],
-            "success_criteria": [
-                "学生用自己的话解释第二种为何保存更少状态"
-            ],
+            "success_criteria": ["学生用自己的话解释第二种为何保存更少状态"],
         },
     )
     later_skills = [
@@ -381,12 +368,10 @@ def test_evidence_linked_memory_survives_nine_turn_bounded_context() -> None:
     assert memory["history_version"] == 9
     assert memory["compaction_generation"] == 1
     assert all(
-        turn.get("round") != 1
-        for turn in context["working_memory"]["recent_turns"]
+        turn.get("round") != 1 for turn in context["working_memory"]["recent_turns"]
     )
     assert any(
-        "不要直接上公式" in item["statement"]
-        for item in memory["active_preferences"]
+        "不要直接上公式" in item["statement"] for item in memory["active_preferences"]
     )
     assert any(
         "第二种为什么更省空间" in item["question"]
@@ -488,13 +473,17 @@ def test_live_session_view_projects_student_model_parameters() -> None:
         DEMO["goal"], DEMO["student_profile"], LIBRARY, _client([_initial_plan()])
     )
     raw_model = session["student_state"]["student_model"]
-    assert any("alpha" in row and "beta" in row for row in raw_model["dimensions"].values())
+    assert any(
+        "alpha" in row and "beta" in row for row in raw_model["dimensions"].values()
+    )
 
     view = live_session_view(session)
     projected = view["student_state"]["student_model"]
-    assert projected["source"] == "deterministic_evidence_weighted_estimator"
+    assert projected["source"] == "deterministic_per_kc_bkt_estimator"
     for row in projected["dimensions"].values():
         assert "alpha" not in row
         assert "beta" not in row
     # The projection must not mutate the persisted replay state.
-    assert all("alpha" in row and "beta" in row for row in raw_model["dimensions"].values())
+    assert all(
+        "alpha" in row and "beta" in row for row in raw_model["dimensions"].values()
+    )

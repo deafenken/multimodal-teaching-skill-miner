@@ -14,6 +14,8 @@ import json
 import re
 from typing import Any, Mapping, Sequence
 
+from .teacher_agent_discourse import classify_learner_discourse_text
+from .teacher_agent import lesson_required_primary_roles
 from .teacher_agent_memory import (
     TEACHING_MEMORY_PROJECTION_SCHEMA,
     project_teaching_memory,
@@ -25,9 +27,7 @@ from .student_model import project_student_model
 CONTEXT_SCHEMA = "teaching_skill_miner.teacher_agent_context.v1"
 LAYERED_CONTEXT_SCHEMA = "teaching_skill_miner.layered_teacher_context.v1"
 GOAL_PLAN_SCHEMA = "teaching_skill_miner.teacher_agent_goal_plan.v1"
-CONTINUITY_RECALL_SCHEMA = (
-    "teaching_skill_miner.teacher_agent_continuity_recall.v1"
-)
+CONTINUITY_RECALL_SCHEMA = "teaching_skill_miner.teacher_agent_continuity_recall.v1"
 
 DEFAULT_LAYERED_CONTEXT_CHARS = 14_000
 MINIMUM_LAYERED_CONTEXT_CHARS = 6_000
@@ -62,7 +62,11 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "phone",
-        re.compile(r"(?<!\d)(?:\+?86[\s-]?)?1[3-9]\d(?:[\s-]?\d){8}(?!\d)"),
+        re.compile(
+            r"(?<!\d)(?:(?:\+?86[\s.-]?)?1[3-9]\d(?:[\s.-]?\d){8}"
+            r"|(?:\+?1[\s.-]?)?(?:\([2-9]\d{2}\)|[2-9]\d{2})"
+            r"[\s.-]?\d{3}[\s.-]?\d{4})(?!\d)"
+        ),
     ),
     (
         "local_path",
@@ -98,8 +102,29 @@ _COMMON_POSIX_PATH_PREFIXES = (
     "/workspace/",
 )
 _EXPLICIT_LEARNER_QUESTION_RE = re.compile(
-    r"(?:[?？]\s*$|(?:为什么|怎么|如何|哪一步|哪里|是否|能否|是不是|会不会))"
+    r"(?:[?？]\s*$|(?:为什么|怎么|如何|哪一步|哪里|是否|能否|是不是|会不会)|"
+    r"分(?:成|为)?(?:哪几|哪些|几)(?:个)?部分|"
+    r"由(?:什么|哪些|哪几(?:个)?).{0,12}(?:组成|构成)|"
+    r"(?:包括|包含)(?:什么|哪些|哪几(?:个)?)(?:部分|要素|成分|内容)?|"
+    r"(?:有|涉及)(?:哪几|几)(?:个)?(?:部分|要素|成分|内容))"
 )
+_EXPLICIT_LEARNER_QUESTION_DECLARATION_RE = re.compile(
+    r"^(?:我|我们).{0,40}(?:把|将).{0,40}(?:分成|分为).{0,20}"
+    r"(?:个|部分)(?:了)?[！!。.]*$"
+)
+
+
+def _is_explicit_learner_question_text(value: Any) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if classify_learner_discourse_text(text).is_question:
+        return True
+    return bool(_EXPLICIT_LEARNER_QUESTION_RE.search(text)) and not bool(
+        _EXPLICIT_LEARNER_QUESTION_DECLARATION_RE.search(text)
+    )
+
+
 _EXPLICIT_LEARNER_REQUEST_RE = re.compile(
     r"(?:^|[，。！？；,.!?;\s])(?:请|能不能|可不可以|我(?:希望|想要|更喜欢|需要)|不要|别)"
 )
@@ -153,6 +178,28 @@ _SEMANTIC_HISTORY_CUE_RE = re.compile(
     r"之前.{0,16}(?:讲|提|说|学|问|讨论)|"
     r"前面.{0,16}(?:讲|提|说|学|问|讨论)|"
     r"刚才.{0,16}(?:讲|提|说|学|问|讨论|个))",
+    re.IGNORECASE,
+)
+_CURRENT_ACTION_DEICTIC_CUE_RE = re.compile(
+    r"(?:刚才|刚刚|方才|前面)\s*(?:的)?\s*(?:这|那)?(?:一)?个"
+    r"(?:问题|概念|例子|步骤|部分|内容|说法|东西|点)?|"
+    r"(?:刚才|刚刚|方才)\s*(?:问|说|讲|提)(?:到)?(?:的)?\s*"
+    r"(?:这个|那个|内容|问题)",
+    re.IGNORECASE,
+)
+_RECENT_REPETITION_COMPLAINT_CUE_RE = re.compile(
+    r"(?:之前|刚才|前面).{0,24}(?:不是)?(?:说|讲|表示|告诉).{0,12}"
+    r"(?:不会|不懂|没懂|不知道|不明白|没明白)|"
+    r"(?:我都|我已经|已经).{0,16}(?:说|表示|告诉).{0,10}"
+    r"(?:不会|不懂|没懂|不知道|不明白|没明白)|"
+    r"(?:怎么|为什么|为何).{0,16}(?:又|还|重复|再).{0,12}"
+    r"(?:问|让我答|让我说|让我解释)",
+    re.IGNORECASE,
+)
+_LEARNER_DIFFICULTY_SIGNAL_RE = re.compile(
+    r"^(?:我)?(?:还是|仍然|真的|完全|确实|也)?"
+    r"(?:不会|不懂|没懂|不知道|不明白|没明白|答不出|说不出|看不懂)"
+    r"(?:了|啊|呀|呢|吧|。|！|!|？|\?|\s)*$",
     re.IGNORECASE,
 )
 _LEARNER_FUTURE_AGENDA_RE = re.compile(
@@ -342,9 +389,16 @@ def _event_view(event: Mapping[str, Any], fallback_round: int) -> dict[str, Any]
     action = event.get("action", {})
     primary = action.get("primary_skill", {}) if isinstance(action, Mapping) else {}
     teacher = action.get("teacher_action", {}) if isinstance(action, Mapping) else {}
-    signal = event.get("structured_signal", {})
-    if not isinstance(signal, Mapping):
-        signal = {}
+    mastery_signal = event.get("structured_signal", {})
+    if not isinstance(mastery_signal, Mapping):
+        mastery_signal = {}
+    pedagogical_signal = event.get("pedagogical_signal", {})
+    signal = (
+        pedagogical_signal
+        if isinstance(pedagogical_signal, Mapping)
+        and _as_nonempty_string(pedagogical_signal.get("label"))
+        else mastery_signal
+    )
     focus = None
     if isinstance(primary, Mapping):
         focus = _as_nonempty_string(primary.get("focus_dimension"))
@@ -438,7 +492,9 @@ def _query_terms(value: str) -> set[str]:
     """Return small deterministic lexical anchors without a tokenizer/model."""
 
     terms: set[str] = set()
-    for token in re.findall(r"[A-Za-z][A-Za-z0-9_\-]{1,}|[\u4e00-\u9fff]{2,}", str(value)):
+    for token in re.findall(
+        r"[A-Za-z][A-Za-z0-9_\-]{1,}|[\u4e00-\u9fff]{2,}", str(value)
+    ):
         normalized = token.casefold()
         if re.fullmatch(r"[\u4e00-\u9fff]+", normalized):
             for size in (2, 3, 4):
@@ -502,9 +558,10 @@ def _continuity_cue_kind(value: str) -> str | None:
         return "earliest_learner_instruction"
     if _PRIOR_AGREEMENT_CUE_RE.search(text):
         return "prior_agreement_or_agenda"
-    if (
-        _named_alternative_marker_count(text) < 2
-        and _ORDINAL_REFERENCE_CUE_RE.search(text)
+    if _RECENT_REPETITION_COMPLAINT_CUE_RE.search(text):
+        return "recent_repetition_complaint"
+    if _named_alternative_marker_count(text) < 2 and _ORDINAL_REFERENCE_CUE_RE.search(
+        text
     ):
         return "ordinal_reference"
     if _SEMANTIC_HISTORY_CUE_RE.search(text):
@@ -536,11 +593,12 @@ def _history_continuity_candidates(
             continue
         round_number = _safe_round(raw_event.get("round"), fallback_round)
         learner_text = str(
-            raw_event.get("learner_text", raw_event.get("learner_response", ""))
-            or ""
+            raw_event.get("learner_text", raw_event.get("learner_response", "")) or ""
         ).strip()
         action = raw_event.get("action", {})
-        teacher_action = action.get("teacher_action", {}) if isinstance(action, Mapping) else {}
+        teacher_action = (
+            action.get("teacher_action", {}) if isinstance(action, Mapping) else {}
+        )
         teacher_text = (
             str(teacher_action.get("message", "") or "").strip()
             if isinstance(teacher_action, Mapping)
@@ -550,9 +608,7 @@ def _history_continuity_candidates(
         generic_excerpt = teacher_text or learner_text
         if generic_excerpt:
             generic_field = (
-                "action.teacher_action.message"
-                if teacher_text
-                else "learner_response"
+                "action.teacher_action.message" if teacher_text else "learner_response"
             )
             generic_speaker = "teacher" if teacher_text else "learner"
             candidates.append(
@@ -570,9 +626,7 @@ def _history_continuity_candidates(
                     ],
                     "source": "session_history",
                     "field": generic_field,
-                    "knowledge_components": event_view.get(
-                        "knowledge_components", []
-                    ),
+                    "knowledge_components": event_view.get("knowledge_components", []),
                     "teacher_message": teacher_text,
                     "learner_response": learner_text,
                 }
@@ -588,6 +642,20 @@ def _history_continuity_candidates(
                         f"session_history:r{round_number}:learner_response"
                     ],
                     "source": "learner_defined_alternatives",
+                    "field": "learner_response",
+                }
+            )
+        if learner_text and _LEARNER_DIFFICULTY_SIGNAL_RE.search(learner_text):
+            candidates.append(
+                {
+                    "kind": "learner_difficulty_signal",
+                    "speaker": "learner",
+                    "round": round_number,
+                    "excerpt": learner_text,
+                    "evidence_refs": [
+                        f"session_history:r{round_number}:learner_response"
+                    ],
+                    "source": "learner_explicit_difficulty",
                     "field": "learner_response",
                 }
             )
@@ -619,9 +687,13 @@ def _history_continuity_candidates(
                     "field": "action.teacher_action.message",
                 }
             )
-        if teacher_text and isinstance(teacher_action, Mapping) and (
-            teacher_action.get("question_id")
-            or _EXPLICIT_LEARNER_QUESTION_RE.search(teacher_text)
+        if (
+            teacher_text
+            and isinstance(teacher_action, Mapping)
+            and (
+                teacher_action.get("question_id")
+                or _EXPLICIT_LEARNER_QUESTION_RE.search(teacher_text)
+            )
         ):
             candidates.append(
                 {
@@ -651,11 +723,23 @@ def _current_action_continuity_candidates(
     message = str(teacher_action.get("message", "") or "").strip()
     if not message:
         return []
-    round_number = _safe_round(
-        action.get("round"), int(session.get("round", 0)) + 1
-    )
+    round_number = _safe_round(action.get("round"), int(session.get("round", 0)) + 1)
     evidence_ref = f"current_action:r{round_number}:teacher_action"
-    candidates: list[dict[str, Any]] = []
+    # The action currently visible to the learner is the first referent for
+    # phrases such as ``刚才那个``.  It has not been committed to history yet,
+    # so expose one generic, evidence-linked candidate in addition to the
+    # narrower question/alternative/commitment projections below.
+    candidates: list[dict[str, Any]] = [
+        {
+            "kind": "current_teacher_action",
+            "speaker": "teacher",
+            "round": round_number,
+            "excerpt": message,
+            "evidence_refs": [evidence_ref],
+            "source": "current_validated_teacher_action",
+            "field": "current_action.teacher_action.message",
+        }
+    ]
     if _named_alternative_marker_count(message) >= 2:
         candidates.append(
             {
@@ -791,6 +875,18 @@ def _select_continuity_target(
             None,
         )
     if cue_kind == "semantic_topic_reference":
+        if _CURRENT_ACTION_DEICTIC_CUE_RE.search(learner_response):
+            current_targets = [
+                item
+                for item in candidates
+                if item.get("kind") == "current_teacher_action"
+                and item.get("source") == "current_validated_teacher_action"
+            ]
+            if current_targets:
+                return max(
+                    current_targets,
+                    key=lambda item: _safe_round(item.get("round"), 0),
+                )
         eligible = [
             item for item in candidates if item.get("kind") == "historical_turn"
         ]
@@ -850,9 +946,7 @@ def _select_continuity_target(
             and item.get("speaker") == "learner"
         ]
         fallback_items = [
-            item
-            for item in candidates
-            if item.get("kind") == "learner_instruction"
+            item for item in candidates if item.get("kind") == "learner_instruction"
         ]
         eligible = learner_items or fallback_items
         return (
@@ -911,6 +1005,17 @@ def _select_continuity_target(
             if eligible
             else None
         )
+    if cue_kind == "recent_repetition_complaint":
+        eligible = [
+            item
+            for item in candidates
+            if item.get("kind") == "learner_difficulty_signal"
+        ]
+        return (
+            max(eligible, key=lambda item: _safe_round(item.get("round"), 0))
+            if eligible
+            else None
+        )
     return None
 
 
@@ -964,6 +1069,16 @@ def _continuity_recall_layer(
                 excerpt=_bounded_text(excerpt, evidence_excerpt_limit),
             )
         )
+    instruction = (
+        "学生已明确表达过不会或不懂；先承认刚才重复了同一要求，"
+        "不得再次索取同一答案。改为教师先示范、换一种表征或给出更低负荷的"
+        "识别步骤，再只检查一个更小的新点。"
+        if cue_kind == "recent_repetition_complaint"
+        else (
+            "先按目标证据消解当前指代，再生成本轮动作；只使用所引证的原话，"
+            "不得补写未命名的方案、约定、偏好或问题。"
+        )
+    )
     return {
         "schema": CONTINUITY_RECALL_SCHEMA,
         "cue_kind": cue_kind,
@@ -977,10 +1092,7 @@ def _continuity_recall_layer(
             "excerpt": excerpt,
             "evidence_refs": refs,
         },
-        "instruction": (
-            "先按目标证据消解当前指代，再生成本轮动作；只使用所引证的原话，"
-            "不得补写未命名的方案、约定、偏好或问题。"
-        ),
+        "instruction": instruction,
         "selection_policy": "cue_specific_evidence_linked_target",
         "must_not_invent": True,
     }
@@ -1059,9 +1171,7 @@ def _truncate_current_response(value: str, limit: int) -> tuple[str, bool]:
     head = max(1, (remaining * 3) // 5)
     tail = remaining - head
     return (
-        value[:head]
-        + _MIDDLE_TRUNCATION_MARKER
-        + (value[-tail:] if tail else ""),
+        value[:head] + _MIDDLE_TRUNCATION_MARKER + (value[-tail:] if tail else ""),
         True,
     )
 
@@ -1081,7 +1191,9 @@ def _rebuild_context(
     text_limit: int,
     truncated: bool,
 ) -> dict[str, Any]:
-    response, response_cut = _truncate_current_response(learner_response, response_limit)
+    response, response_cut = _truncate_current_response(
+        learner_response, response_limit
+    )
     turns: list[dict[str, Any]] = []
     any_cut = response_cut
     for item in selected:
@@ -1164,21 +1276,18 @@ def build_relevant_history(
 
     def relevance(index: int) -> tuple[int, int, int, int, int, int]:
         event = events[index]
-        query_round_match, query_kc_matches, query_lexical_overlap = (
-            _event_query_score(
-                event,
-                learner_response,
-                requested_round=requested_round,
-                query_terms=response_query_terms,
-            )
+        query_round_match, query_kc_matches, query_lexical_overlap = _event_query_score(
+            event,
+            learner_response,
+            requested_round=requested_round,
+            query_terms=response_query_terms,
         )
         event_kcs = {
             str(item).casefold() for item in event.get("knowledge_components", [])
         }
         kc_match = bool(normalized_kcs and normalized_kcs & event_kcs)
         focus_match = bool(
-            current_focus
-            and event.get("focus_dimension") == current_focus
+            current_focus and event.get("focus_dimension") == current_focus
         )
         return (
             query_round_match,
@@ -1194,7 +1303,9 @@ def build_relevant_history(
     remaining = max(0, max_recent_turns - len(latest_indices))
     selected_indices = latest_indices | set(available[:remaining])
     selected = [events[index] for index in sorted(selected_indices)]
-    omitted = [events[index] for index in range(len(events)) if index not in selected_indices]
+    omitted = [
+        events[index] for index in range(len(events)) if index not in selected_indices
+    ]
 
     finding_counts: Counter[str] = Counter()
     redacted_response = _redact_value(learner_response, finding_counts)
@@ -1362,7 +1473,9 @@ def _teacher_profile_layer(
         if not isinstance(item, Mapping):
             continue
         evidence_id = f"teacher_profile:known_misconception:{index}"
-        description = _bounded_text(item.get("description", ""), min(300, content_limit))
+        description = _bounded_text(
+            item.get("description", ""), min(300, content_limit)
+        )
         known_view.append(
             {
                 "tag": _bounded_text(item.get("tag", ""), 120),
@@ -1489,7 +1602,9 @@ def _bounded_knowledge_spec(value: Any, *, content_limit: int) -> dict[str, Any]
         }
     limit = max(48, min(content_limit, 320))
 
-    def rows(field: str, text_fields: tuple[str, ...], maximum: int) -> list[dict[str, Any]]:
+    def rows(
+        field: str, text_fields: tuple[str, ...], maximum: int
+    ) -> list[dict[str, Any]]:
         raw = value.get(field, [])
         if not isinstance(raw, list):
             return []
@@ -1509,9 +1624,7 @@ def _bounded_knowledge_spec(value: Any, *, content_limit: int) -> dict[str, Any]
         "status": value.get("status", "not_provided"),
         "canonical_claims": rows("canonical_claims", ("statement",), 8),
         "rubric_criteria": rows("rubric_criteria", ("description",), 8),
-        "accepted_alternatives": rows(
-            "accepted_alternatives", ("description",), 6
-        ),
+        "accepted_alternatives": rows("accepted_alternatives", ("description",), 6),
         "reference_steps": rows("reference_steps", ("description",), 8),
         "misconception_catalog": rows(
             "misconception_catalog", ("description", "corrective_principle"), 8
@@ -1553,7 +1666,9 @@ def _minimal_knowledge_spec(
         component = item.get("knowledge_component")
         return {str(component)} if component else set()
 
-    def relevant(rows: list[Mapping[str, Any]], maximum: int) -> list[Mapping[str, Any]]:
+    def relevant(
+        rows: list[Mapping[str, Any]], maximum: int
+    ) -> list[Mapping[str, Any]]:
         selected = [item for item in rows if components_for(item) & active]
         if not selected:
             selected = [item for item in rows if not components_for(item)]
@@ -1933,9 +2048,7 @@ def _latest_unresolved_events(events: Sequence[dict[str, Any]]) -> list[dict[str
         }
 
         def same_issue(candidate: Mapping[str, Any]) -> bool:
-            candidate_focus = str(
-                candidate.get("focus_dimension") or "unspecified"
-            )
+            candidate_focus = str(candidate.get("focus_dimension") or "unspecified")
             candidate_kcs = {
                 str(item).casefold()
                 for item in candidate.get("knowledge_components", [])
@@ -1980,18 +2093,22 @@ def _knowledge_state_layer(
             projected = project_student_model(raw_estimate)
             if int(projected.get("overall", {}).get("evidence_count", 0)) > 0:
                 calibrated_focus = {
-                    "dimension": projected.get("recommended_focus", {}).get("dimension"),
-                    "confidence": projected.get("recommended_focus", {}).get("confidence", 0.0),
-                    "evidence_refs": list(projected.get("recommended_focus", {}).get("evidence_refs", []))[:2],
+                    "dimension": projected.get("recommended_focus", {}).get(
+                        "dimension"
+                    ),
+                    "confidence": projected.get("recommended_focus", {}).get(
+                        "confidence", 0.0
+                    ),
+                    "evidence_refs": list(
+                        projected.get("recommended_focus", {}).get("evidence_refs", [])
+                    )[:2],
                     "source": "deterministic_evidence_weighted_estimator",
                 }
         except (TypeError, ValueError):
             calibrated_focus = None
     mastery_view: list[dict[str, Any]] = []
     for dimension, value in mastery.items():
-        matching = [
-            item for item in events if item.get("focus_dimension") == dimension
-        ]
+        matching = [item for item in events if item.get("focus_dimension") == dimension]
         if matching:
             latest_match = matching[-1]
             latest_round = _safe_round(latest_match.get("round"), 0)
@@ -2075,9 +2192,7 @@ def _knowledge_state_layer(
             {
                 "issue_kind": "unresolved_observed_response",
                 "focus_dimension": event.get("focus_dimension"),
-                "knowledge_components": deepcopy(
-                    event.get("knowledge_components", [])
-                ),
+                "knowledge_components": deepcopy(event.get("knowledge_components", [])),
                 "observed_signal": event.get("signal"),
                 "observation_source": event.get("signal_source") or "not_recorded",
                 "learner_response_excerpt": excerpt,
@@ -2134,7 +2249,9 @@ def _candidate_memory_layer(
         round_number = _safe_round(item.get("round"), 0)
         candidate = item.get("candidate", {})
         evidence_value = item.get("evidence", {})
-        if not isinstance(candidate, Mapping) or not isinstance(evidence_value, Mapping):
+        if not isinstance(candidate, Mapping) or not isinstance(
+            evidence_value, Mapping
+        ):
             continue
         evidence_id = f"adaptive_profile:r{round_number}:validated_diagnosis"
         excerpt = _bounded_text(
@@ -2260,9 +2377,7 @@ def _teaching_checkpoints(
         else:
             evidence_id = f"session_history:r{round_number}:learner_response"
             ledger_field = "learner_response"
-        excerpt = _bounded_text(
-            event.get(text_field, ""), min(140, content_limit)
-        )
+        excerpt = _bounded_text(event.get(text_field, ""), min(140, content_limit))
         refs = [evidence_id]
         evidence.append(
             _evidence_record(
@@ -2357,7 +2472,11 @@ def _teaching_checkpoints(
             (
                 event
                 for event in reversed(omitted)
-                if pattern.search(str(event.get(text_field, "")))
+                if (
+                    _is_explicit_learner_question_text(event.get(text_field, ""))
+                    if kind == "explicit_learner_question"
+                    else bool(pattern.search(str(event.get(text_field, ""))))
+                )
             ),
             None,
         )
@@ -2435,11 +2554,15 @@ def _layered_context_candidate(
         max_chars=history_budget,
     )
     raw_history = session.get("history", [])
-    events = [
-        _event_view(item, index + 1)
-        for index, item in enumerate(raw_history)
-        if isinstance(item, Mapping)
-    ] if isinstance(raw_history, list) else []
+    events = (
+        [
+            _event_view(item, index + 1)
+            for index, item in enumerate(raw_history)
+            if isinstance(item, Mapping)
+        ]
+        if isinstance(raw_history, list)
+        else []
+    )
 
     recent_turns: list[dict[str, Any]] = []
     for item in relevant["recent_turns"]:
@@ -2495,9 +2618,7 @@ def _layered_context_candidate(
             )
         )
 
-    selected_rounds = {
-        _safe_round(item.get("round"), 0) for item in recent_turns
-    }
+    selected_rounds = {_safe_round(item.get("round"), 0) for item in recent_turns}
     checkpoint_by_focus: dict[str, dict[str, Any]] = {}
     for event in events:
         round_number = _safe_round(event.get("round"), 0)
@@ -2524,9 +2645,7 @@ def _layered_context_candidate(
                 "signal": event.get("signal"),
                 "signal_source": event.get("signal_source") or "not_recorded",
                 "skill_id": event.get("skill_id"),
-                "knowledge_components": deepcopy(
-                    event.get("knowledge_components", [])
-                ),
+                "knowledge_components": deepcopy(event.get("knowledge_components", [])),
                 "learner_response_excerpt": excerpt,
                 "evidence_refs": [response_id, signal_id],
             }
@@ -2564,6 +2683,55 @@ def _layered_context_candidate(
     goal = session.get("goal", {})
     if not isinstance(goal, Mapping):
         goal = {}
+    lesson_state = session.get("lesson_state", {})
+    if not isinstance(lesson_state, Mapping):
+        lesson_state = {}
+    exposure = lesson_state.get("knowledge_exposure", {})
+    lesson_intent = str(
+        lesson_state.get(
+            "intent", goal.get("learning_intent", "legacy_diagnostic_first")
+        )
+    )
+    lesson_phase = str(lesson_state.get("lesson_phase", ""))
+    lesson_roles = list(lesson_required_primary_roles(session))
+    lesson_contract = (
+        {
+            "intent": lesson_state.get(
+                "intent", goal.get("learning_intent", "legacy_diagnostic_first")
+            ),
+            "current_lesson_phase": lesson_phase,
+            "required_primary_roles": lesson_roles,
+            "summary_required": bool(lesson_state.get("summary_required", False)),
+            "summary_completed": bool(lesson_state.get("summary_completed", False)),
+            "phase_sequence": [
+                "orientation",
+                "explanation",
+                "worked_example",
+                "guided_practice",
+                "verification",
+                "transfer",
+            ],
+            "knowledge_exposure": [
+                {
+                    "knowledge_component": _bounded_text(
+                        component, min(240, content_limit)
+                    ),
+                    "status": record.get("status"),
+                    "source": record.get("source"),
+                }
+                for component, record in list(exposure.items())[:12]
+                if isinstance(record, Mapping)
+            ]
+            if isinstance(exposure, Mapping)
+            else [],
+            "unseen_independent_recall_prohibited": lesson_state.get("intent")
+            == "teach_first",
+            "exposure_is_mastery": False,
+            "mutable_by_model": False,
+        }
+        if lesson_intent != "legacy_diagnostic_first"
+        else None
+    )
     teaching_memory = _teaching_memory_layer(
         session,
         content_limit=content_limit,
@@ -2578,10 +2746,45 @@ def _layered_context_candidate(
         evidence_excerpt_limit=evidence_excerpt_limit,
         evidence=evidence,
     )
+    teaching_resources = []
+    raw_resources = session.get("teaching_resources", [])
+    if isinstance(raw_resources, list):
+        for resource in raw_resources[:6]:
+            if not isinstance(resource, Mapping):
+                continue
+            extracted_text = _bounded_text(
+                resource.get("extracted_text", ""), content_limit
+            )
+            if not extracted_text:
+                continue
+            teaching_resources.append(
+                {
+                    "resource_id": resource.get("resource_id"),
+                    "display_name": _bounded_text(
+                        resource.get("display_name", ""), 120
+                    ),
+                    "resource_type": resource.get("resource_type"),
+                    "content_sha256": resource.get("content_sha256"),
+                    "page_count": resource.get("page_count"),
+                    "truncated": resource.get("truncated") is True,
+                    "needs_review": resource.get("needs_review") is not False,
+                    "text": extracted_text,
+                    "source": "teacher_imported_resource_local_extraction",
+                    "mutable_by_model": False,
+                }
+            )
     fixed_context = {
         "teaching_goal": {
             "concept": _bounded_text(goal.get("concept", ""), min(240, content_limit)),
             "objective": _bounded_text(goal.get("objective", ""), content_limit),
+            **(
+                {
+                    "learning_intent": lesson_intent,
+                    "lesson_contract": lesson_contract,
+                }
+                if lesson_contract is not None
+                else {}
+            ),
             "knowledge_components": [
                 _bounded_text(item, min(240, content_limit))
                 for item in goal.get("knowledge_components", [])[:12]
@@ -2591,12 +2794,18 @@ def _layered_context_candidate(
             else [],
             "success_thresholds": deepcopy(goal.get("success_thresholds", {})),
             "max_rounds": goal.get("max_rounds"),
+            **(
+                {"syllabus_ref": deepcopy(goal.get("syllabus_ref"))}
+                if isinstance(goal.get("syllabus_ref"), Mapping)
+                else {}
+            ),
             "materials": {
                 str(key): _bounded_text(value, content_limit)
-                for key, value in list(goal.get("materials", {}).items())[:6]
+                for key, value in list(goal.get("materials", {}).items())[:10]
             }
             if isinstance(goal.get("materials", {}), Mapping)
             else {},
+            "teaching_resources": teaching_resources,
             **(
                 {
                     "knowledge_spec": _bounded_knowledge_spec(
@@ -2604,8 +2813,7 @@ def _layered_context_candidate(
                     )
                 }
                 if isinstance(goal.get("knowledge_spec"), Mapping)
-                and goal.get("knowledge_spec", {}).get("status")
-                == "teacher_provided"
+                and goal.get("knowledge_spec", {}).get("status") == "teacher_provided"
                 else {}
             ),
             "source": "teacher_input_normalized_locally",
@@ -2656,14 +2864,9 @@ def _layered_context_candidate(
             "focus_checkpoints": focus_checkpoints,
             "teaching_checkpoints": teaching_checkpoints,
             **({"teaching_memory": teaching_memory} if teaching_memory else {}),
-            **(
-                {"continuity_recall": continuity_recall}
-                if continuity_recall
-                else {}
-            ),
+            **({"continuity_recall": continuity_recall} if continuity_recall else {}),
             "compression_method": (
-                "deterministic_aggregate_and_extractive_checkpoints_"
-                "no_model_generation"
+                "deterministic_aggregate_and_extractive_checkpoints_no_model_generation"
             ),
             "source": "omitted_local_session_history",
             "narrative_inference_added": False,
@@ -2683,9 +2886,7 @@ def _layered_context_candidate(
         "privacy": {
             **deepcopy(relevant.get("privacy", {})),
             "known_pattern_identifiers_redacted": bool(
-                relevant.get("privacy", {}).get(
-                    "known_pattern_identifiers_redacted"
-                )
+                relevant.get("privacy", {}).get("known_pattern_identifiers_redacted")
             ),
             "raw_identity_fields_sent": "not_established",
             "residual_identity_risk": True,
@@ -2700,9 +2901,7 @@ def _layered_context_candidate(
             "retained_teacher_prior_turns": fixed_context[
                 "teacher_provided_student_profile"
             ]["provided_prior_context"]["retained_turn_count"],
-            "retained_candidate_observations": candidate_memory[
-                "retained_for_context"
-            ],
+            "retained_candidate_observations": candidate_memory["retained_for_context"],
             "truncated": bool(degraded or relevant["selection"]["truncated"]),
         },
         "claim_boundary": {
@@ -2722,9 +2921,7 @@ def _layered_context_candidate(
     combined_counts = Counter(relevant.get("privacy", {}).get("finding_counts", {}))
     combined_counts.update(counts)
     redacted["privacy"]["finding_counts"] = dict(sorted(combined_counts.items()))
-    redacted["privacy"]["known_pattern_identifiers_redacted"] = bool(
-        combined_counts
-    )
+    redacted["privacy"]["known_pattern_identifiers_redacted"] = bool(combined_counts)
     _set_serialized_size(redacted)
     return redacted
 
@@ -2751,13 +2948,14 @@ def build_minimal_layered_context(
         or not isinstance(max_chars, int)
         or max_chars < MINIMUM_LAYERED_CONTEXT_CHARS
     ):
-        raise ValueError(
-            f"max_chars must be at least {MINIMUM_LAYERED_CONTEXT_CHARS}"
-        )
+        raise ValueError(f"max_chars must be at least {MINIMUM_LAYERED_CONTEXT_CHARS}")
 
     goal = session.get("goal", {})
     if not isinstance(goal, Mapping):
         goal = {}
+    lesson_state = session.get("lesson_state", {})
+    if not isinstance(lesson_state, Mapping):
+        lesson_state = {}
     profile = session.get("student_profile", {})
     if not isinstance(profile, Mapping):
         profile = {}
@@ -2803,7 +3001,20 @@ def build_minimal_layered_context(
     if not isinstance(adaptive_summary, Mapping):
         adaptive_summary = {}
 
-    for response_limit in (4096, 3072, 2400, 2048, 1536, 1024, 768, 512, 256, 128, 64, 48):
+    for response_limit in (
+        4096,
+        3072,
+        2400,
+        2048,
+        1536,
+        1024,
+        768,
+        512,
+        256,
+        128,
+        64,
+        48,
+    ):
         evidence: list[dict[str, Any]] = []
         current_response_id: str | None = None
         current_response = _bounded_current_response(
@@ -2893,9 +3104,7 @@ def build_minimal_layered_context(
         ]
         if not current_components:
             current_components = [
-                item
-                for item in [_bounded_text(goal.get("concept", ""), 32)]
-                if item
+                item for item in [_bounded_text(goal.get("concept", ""), 32)] if item
             ]
 
         teaching_memory = _teaching_memory_layer(
@@ -2918,6 +3127,28 @@ def build_minimal_layered_context(
             current_components=current_components,
             content_limit=56,
         )
+        teaching_resources = []
+        raw_resources = session.get("teaching_resources", [])
+        if isinstance(raw_resources, list):
+            for resource in raw_resources[:6]:
+                if not isinstance(resource, Mapping):
+                    continue
+                extracted_text = _bounded_text(resource.get("extracted_text", ""), 96)
+                if extracted_text:
+                    teaching_resources.append(
+                        {
+                            "resource_id": resource.get("resource_id"),
+                            "display_name": _bounded_text(
+                                resource.get("display_name", ""), 48
+                            ),
+                            "resource_type": resource.get("resource_type"),
+                            "content_sha256": resource.get("content_sha256"),
+                            "needs_review": resource.get("needs_review") is not False,
+                            "text": extracted_text,
+                            "source": "teacher_imported_resource_local_extraction",
+                            "mutable_by_model": False,
+                        }
+                    )
 
         context: dict[str, Any] = {
             "schema": LAYERED_CONTEXT_SCHEMA,
@@ -2933,10 +3164,52 @@ def build_minimal_layered_context(
                 "teaching_goal": {
                     "concept": _bounded_text(goal.get("concept", ""), 96),
                     "objective": _bounded_text(goal.get("objective", ""), 64),
+                    **(
+                        {
+                            "learning_intent": lesson_state.get("intent"),
+                            "lesson_contract": {
+                                "intent": lesson_state.get("intent"),
+                                "current_lesson_phase": lesson_state.get(
+                                    "lesson_phase"
+                                ),
+                                "required_primary_roles": list(
+                                    lesson_required_primary_roles(session)
+                                ),
+                                "summary_required": bool(
+                                    lesson_state.get("summary_required", False)
+                                ),
+                                "summary_completed": bool(
+                                    lesson_state.get("summary_completed", False)
+                                ),
+                                "phase_sequence": [
+                                    "orientation",
+                                    "explanation",
+                                    "worked_example",
+                                    "guided_practice",
+                                    "verification",
+                                    "transfer",
+                                ],
+                                "unseen_independent_recall_prohibited": lesson_state.get(
+                                    "intent"
+                                )
+                                == "teach_first",
+                                "exposure_is_mastery": False,
+                                "mutable_by_model": False,
+                            },
+                        }
+                        if lesson_state.get("intent") != "legacy_diagnostic_first"
+                        else {}
+                    ),
                     "knowledge_components": current_components,
                     "total_knowledge_component_count": len(components),
                     "success_thresholds": dict(thresholds),
                     "max_rounds": goal.get("max_rounds"),
+                    **(
+                        {"syllabus_ref": deepcopy(goal.get("syllabus_ref"))}
+                        if isinstance(goal.get("syllabus_ref"), Mapping)
+                        else {}
+                    ),
+                    "teaching_resources": teaching_resources,
                     **(
                         {"knowledge_spec": minimal_knowledge_spec}
                         if minimal_knowledge_spec is not None
@@ -2990,14 +3263,10 @@ def build_minimal_layered_context(
                     "knowledge_components": current_components,
                     "target_misconception_tags": [
                         _bounded_text(item, 120)
-                        for item in action.get(
-                            "target_misconception_tags", []
-                        )[:4]
+                        for item in action.get("target_misconception_tags", [])[:4]
                         if _bounded_text(item, 120)
                     ]
-                    if isinstance(
-                        action.get("target_misconception_tags"), list
-                    )
+                    if isinstance(action.get("target_misconception_tags"), list)
                     else [],
                     "teacher_message": _bounded_text(
                         teacher_action.get("message", ""), 160
@@ -3068,9 +3337,7 @@ def build_minimal_layered_context(
                 "retained_for_context": 0,
                 "observations": [],
                 "may_override_teacher_profile": False,
-                "eligible_sources": [
-                    "deepseek_v4_flash_validated_diagnosis"
-                ],
+                "eligible_sources": ["deepseek_v4_flash_validated_diagnosis"],
             },
             "evidence_ledger": _deduplicate_evidence(evidence),
             "retrieval": {
@@ -3149,9 +3416,7 @@ def build_layered_context(
     if isinstance(max_chars, bool) or not isinstance(max_chars, int):
         raise TypeError("max_chars must be an integer")
     if max_chars < MINIMUM_LAYERED_CONTEXT_CHARS:
-        raise ValueError(
-            f"max_chars must be at least {MINIMUM_LAYERED_CONTEXT_CHARS}"
-        )
+        raise ValueError(f"max_chars must be at least {MINIMUM_LAYERED_CONTEXT_CHARS}")
     if isinstance(max_recent_turns, bool) or not isinstance(max_recent_turns, int):
         raise TypeError("max_recent_turns must be an integer")
     if not 0 <= max_recent_turns <= 12:
@@ -3207,7 +3472,10 @@ def _collect_evidence_refs(value: Any) -> list[str]:
 def validate_layered_context(context: Mapping[str, Any]) -> None:
     """Fail closed on malformed budgets, provenance, or dangling evidence."""
 
-    if not isinstance(context, Mapping) or context.get("schema") != LAYERED_CONTEXT_SCHEMA:
+    if (
+        not isinstance(context, Mapping)
+        or context.get("schema") != LAYERED_CONTEXT_SCHEMA
+    ):
         raise ValueError(f"context schema must be {LAYERED_CONTEXT_SCHEMA}")
     required = {
         "snapshot",
@@ -3319,6 +3587,7 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
                 "earliest_learner_instruction",
                 "earlier_unresolved_question",
                 "prior_agreement_or_agenda",
+                "recent_repetition_complaint",
             }
             or not isinstance(continuity_recall.get("cue_excerpt"), str)
             or not continuity_recall.get("cue_excerpt")
@@ -3354,6 +3623,8 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
                 "learner_future_agenda",
                 "teacher_commitment",
                 "teacher_question",
+                "learner_difficulty_signal",
+                "current_teacher_action",
             }
             or recall_target.get("speaker")
             not in {"learner", "teacher", "teacher_profile"}
@@ -3448,9 +3719,7 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
     if (
         not isinstance(privacy, Mapping)
         or not isinstance(privacy.get("remote_text_redacted"), bool)
-        or not isinstance(
-            privacy.get("known_pattern_identifiers_redacted"), bool
-        )
+        or not isinstance(privacy.get("known_pattern_identifiers_redacted"), bool)
         or privacy.get("raw_identity_fields_sent") != "not_established"
         or privacy.get("residual_identity_risk") is not True
         or privacy.get("original_values_retained_in_context") is not False
@@ -3475,14 +3744,20 @@ def validate_layered_context(context: Mapping[str, Any]) -> None:
     ):
         raise ValueError("layered context character budget is invalid")
     ledger = context.get("evidence_ledger")
-    if not isinstance(ledger, list) or not all(isinstance(item, Mapping) for item in ledger):
+    if not isinstance(ledger, list) or not all(
+        isinstance(item, Mapping) for item in ledger
+    ):
         raise ValueError("layered context evidence ledger is invalid")
     identifiers = [str(item.get("evidence_id", "")) for item in ledger]
-    if any(not item for item in identifiers) or len(identifiers) != len(set(identifiers)):
+    if any(not item for item in identifiers) or len(identifiers) != len(
+        set(identifiers)
+    ):
         raise ValueError("layered context evidence IDs must be unique and non-empty")
     dangling = set(_collect_evidence_refs(context)) - set(identifiers)
     if dangling:
-        raise ValueError(f"layered context has dangling evidence refs: {sorted(dangling)}")
+        raise ValueError(
+            f"layered context has dangling evidence refs: {sorted(dangling)}"
+        )
     boundary = context.get("claim_boundary", {})
     if not isinstance(boundary, Mapping) or any(
         boundary.get(field) is not expected

@@ -33,6 +33,8 @@ PUBLIC_DATA_FILES = (
     "teacher_agent_benchmark_v2_development.json",
     "teacher_agent_benchmark_v2_development_gold.json",
     "teacher_agent_demo_input.json",
+    "teacher_agent_dialogue_quality_benchmark_v1.json",
+    "teacher_agent_dialogue_quality_predictions_fixture_v1.json",
     "teacher_agent_evaluation_cases.json",
     "teacher_agent_free_text_benchmark.json",
     "teacher_agent_free_text_benchmark_receipt.json",

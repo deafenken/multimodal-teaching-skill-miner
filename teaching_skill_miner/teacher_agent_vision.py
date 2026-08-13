@@ -25,6 +25,11 @@ import tempfile
 from typing import Any, Iterable, Mapping, Sequence
 import unicodedata
 
+from .teacher_agent_worker_isolation import (
+    WorkerIsolationError,
+    sandboxed_parser_command,
+)
+
 
 VISUAL_EVIDENCE_SCHEMA = "teaching_skill_miner.local_visual_evidence.v1"
 SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -215,8 +220,7 @@ def transcriptions_format_equivalent(left: str, right: str) -> bool:
     """
 
     return bool(
-        _symmetric_equation_variants(left)
-        & _symmetric_equation_variants(right)
+        _symmetric_equation_variants(left) & _symmetric_equation_variants(right)
     )
 
 
@@ -225,9 +229,8 @@ def _symmetric_equation_variants(value: str) -> set[str]:
 
     result = set(_answer_variants(value))
     for candidate in tuple(result):
-        if (
-            candidate.count("=") == 1
-            and not any(operator in candidate for operator in ("!=", "<=", ">=", "=="))
+        if candidate.count("=") == 1 and not any(
+            operator in candidate for operator in ("!=", "<=", ">=", "==")
         ):
             left, right = candidate.split("=", 1)
             if left and right:
@@ -383,7 +386,11 @@ def align_ocr_text_to_answer_references(
         if not isinstance(item, Mapping):
             continue
         criterion_component = str(item.get("knowledge_component", "")).strip()
-        if not active_components or not criterion_component or criterion_component not in active_components:
+        if (
+            not active_components
+            or not criterion_component
+            or criterion_component not in active_components
+        ):
             continue
         criterion_id = str(item.get("criterion_id", "unknown"))
         for accepted in item.get("acceptable_evidence", []) or []:
@@ -488,6 +495,21 @@ def _apple_vision_command() -> str | None:
     return shutil.which(configured)
 
 
+def local_visual_extractor_available() -> bool:
+    """Return whether this host can perform the advertised local OCR step.
+
+    Capability discovery is deliberately side-effect free: it never opens a
+    learner file or starts an OCR subprocess. Invalid deployment configuration
+    is reported as unavailable so callers cannot advertise a format that will
+    later fail closed at upload time.
+    """
+
+    try:
+        return _apple_vision_command() is not None or _tesseract_command() is not None
+    except LocalVisualEvidenceError:
+        return False
+
+
 def _apple_vision_environment(working_dir: Path) -> dict[str, str]:
     """Build a minimal subprocess environment without forwarding API secrets."""
 
@@ -541,20 +563,22 @@ def _run_apple_vision(
     environment = _apple_vision_environment(working_dir)
     try:
         compiled = subprocess.run(
-            [
-                executable,
-                "-fobjc-arc",
-                "-fblocks",
-                "-framework",
-                "Foundation",
-                "-framework",
-                "AppKit",
-                "-framework",
-                "Vision",
-                str(source_path),
-                "-o",
-                str(helper_path),
-            ],
+            sandboxed_parser_command(
+                [
+                    executable,
+                    "-fobjc-arc",
+                    "-fblocks",
+                    "-framework",
+                    "Foundation",
+                    "-framework",
+                    "AppKit",
+                    "-framework",
+                    "Vision",
+                    str(source_path),
+                    "-o",
+                    str(helper_path),
+                ]
+            ),
             check=False,
             capture_output=True,
             timeout=12,
@@ -563,13 +587,13 @@ def _run_apple_vision(
         if compiled.returncode != 0 or not helper_path.is_file():
             raise LocalVisualEvidenceError("Apple Vision OCR helper build failed")
         completed = subprocess.run(
-            [str(helper_path), str(image_path)],
+            sandboxed_parser_command([str(helper_path), str(image_path)]),
             check=False,
             capture_output=True,
             timeout=8,
             env=environment,
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, WorkerIsolationError) as exc:
         raise LocalVisualEvidenceError("Apple Vision OCR process failed") from exc
     if completed.returncode != 0:
         raise LocalVisualEvidenceError("Apple Vision OCR process failed")
@@ -897,22 +921,24 @@ def _run_tesseract(
 ) -> tuple[str, float]:
     try:
         completed = subprocess.run(
-            [
-                executable,
-                str(image_path),
-                "stdout",
-                "--psm",
-                str(page_segmentation_mode),
-                "-l",
-                _ocr_languages(),
-                "tsv",
-            ],
+            sandboxed_parser_command(
+                [
+                    executable,
+                    str(image_path),
+                    "stdout",
+                    "--psm",
+                    str(page_segmentation_mode),
+                    "-l",
+                    _ocr_languages(),
+                    "tsv",
+                ]
+            ),
             check=False,
             capture_output=True,
             timeout=25,
             env=_tesseract_environment(image_path.parent),
         )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, WorkerIsolationError) as exc:
         raise LocalVisualEvidenceError("local OCR process failed") from exc
     if completed.returncode != 0:
         return "", 0.0
@@ -1077,6 +1103,29 @@ def extract_local_visual_evidence(
         "formula_like_text_detected": formula_like_text,
         "formula_accuracy_established": False,
         "formula_transcription_established": formula_transcription_established,
+        # OCR is a transcription layer only.  These explicit negative claims
+        # prevent a later serializer/model prompt from accidentally treating a
+        # high OCR score as visual verification, answer correctness, or
+        # mastery evidence.
+        "transcription_layer": {
+            "status": status,
+            "confidence": round(transcription_confidence, 4),
+            "student_or_teacher_confirmed": False,
+            "semantic_understanding_established": False,
+            "grading_evidence_allowed": False,
+            "mastery_evidence_allowed": False,
+        },
+        "semantic_analysis_layer": {
+            "status": "not_performed",
+            "visual_verification_status": "not_verified",
+            "grading_evidence_allowed": False,
+            "mastery_evidence_allowed": False,
+        },
+        "visual_verification_status": "not_verified",
+        "transcription_is_semantic_understanding": False,
+        "semantic_analysis_is_answer_correctness": False,
+        "grading_evidence_allowed": False,
+        "mastery_evidence_allowed": False,
         "content_style_assessment": "not_classified",
         "handwriting_recognition_established": False,
         "extractor_fallback_used": apple_failed and tesseract_attempted,
@@ -1125,7 +1174,13 @@ def compose_visual_evidence_text(
             "\n".join(
                 [
                     f"[LOCAL_VISUAL_EVIDENCE {index}]",
-                    "原图未发送给远程模型；以下内容由本机 OCR 提取，可能存在识别误差。",
+                    (
+                        "原图已按独立服务端同意回执发送给视觉提供商；"
+                        "以下 OCR 内容仍由本机提取，可能存在识别误差。"
+                        if raw.get("remote_media_sent") is True
+                        else "原图未发送给远程模型；以下内容由本机 OCR 提取，"
+                        "可能存在识别误差。"
+                    ),
                     f"status={status}; confidence={confidence_text}; "
                     f"transcription_confidence={transcription_confidence_text}; "
                     f"corroborated={str(bool(raw.get('ocr_transcription_corroborated'))).lower()}; "
@@ -1137,6 +1192,54 @@ def compose_visual_evidence_text(
                 ]
             )
         )
+        visual_semantics = raw.get("visual_semantics")
+        if isinstance(visual_semantics, Mapping):
+            decision = str(visual_semantics.get("decision", "abstain"))
+            description = str(visual_semantics.get("description", "")).strip()
+            claims = visual_semantics.get("claims", [])
+            bounded_claims = (
+                [
+                    str(claim.get("statement", "")).strip()
+                    for claim in claims
+                    if isinstance(claim, Mapping)
+                    and str(claim.get("statement", "")).strip()
+                ][:6]
+                if isinstance(claims, list)
+                else []
+            )
+            # An abstained provider observation is retained in the audit record
+            # but is not copied into the model prompt.  Confirmation cases may
+            # expose the unresolved candidates only under an explicit label.
+            if decision != "abstain" and (description or bounded_claims):
+                parts.append(
+                    (
+                        "[UNRESOLVED_VISUAL_CANDIDATES; "
+                        if decision == "requires_confirmation"
+                        else "[UNTRUSTED_VISUAL_PROVIDER_OBSERVATION; "
+                    )
+                    + "NOT_A_GRADING_KEY]\n"
+                    + description[:2000]
+                    + "\n"
+                    + "\n".join(f"- {claim[:500]}" for claim in bounded_claims)
+                )
+            conflicts = visual_semantics.get("conflicts", [])
+            uncertainties = visual_semantics.get("uncertainties", [])
+            if (
+                decision in {"requires_confirmation", "abstain"}
+                or conflicts
+                or uncertainties
+            ):
+                parts.append(
+                    "[MULTIMODAL_DECISION_BOUNDARY]\n"
+                    f"decision={decision}; visual_verified=false; "
+                    "grading_allowed=false; mastery_allowed=false\n"
+                    "未核验的视觉观察、转写不确定性或跨层冲突不得用于评分或掌握度更新；"
+                    + (
+                        "请先由学习者或教师确认。"
+                        if decision == "requires_confirmation"
+                        else "当前必须弃权。"
+                    )
+                )
     if consistency["relation"] != "not_comparable":
         consistency_lines = [
             "[TYPED_VISUAL_CONSISTENCY]",

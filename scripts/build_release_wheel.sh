@@ -53,6 +53,8 @@ for relative_path in \
   data/teacher_agent_benchmark_v2_development.json \
   data/teacher_agent_benchmark_v2_development_gold.json \
   data/teacher_agent_demo_input.json \
+  data/teacher_agent_dialogue_quality_benchmark_v1.json \
+  data/teacher_agent_dialogue_quality_predictions_fixture_v1.json \
   data/teacher_agent_evaluation_cases.json \
   data/teacher_agent_free_text_benchmark.json \
   data/teacher_agent_free_text_benchmark_receipt.json \
@@ -84,15 +86,17 @@ do
   copy_release_file "$relative_path"
 done
 
-find "$repo_root/teaching_skill_miner" -type f -name '*.py' -print |
+LC_ALL=C find "$repo_root/teaching_skill_miner" -type f -name '*.py' -print |
+LC_ALL=C sort |
 while IFS= read -r source_path; do
   relative_path=${source_path#"$repo_root/"}
   copy_release_file "$relative_path"
 done
 
+LC_ALL=C sort "$repo_root/release/public_json_resources.txt" |
 while IFS= read -r relative_path; do
   copy_release_file "$relative_path"
-done < "$repo_root/release/public_json_resources.txt"
+done
 
 (
   cd "$source_dir"

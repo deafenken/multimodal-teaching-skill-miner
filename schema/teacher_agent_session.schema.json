@@ -21,6 +21,7 @@
     "skill_library": {"type": "object"},
     "skill_library_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "round": {"type": "integer", "minimum": 0},
+    "lesson_state": {"$ref": "#/$defs/lessonState"},
     "student_state": {
       "type": "object",
       "required": ["knowledge_mastery", "misconceptions", "understanding_signal", "next_focus", "assessment_basis"],
@@ -70,6 +71,66 @@
     }
   },
   "$defs": {
+    "lessonState": {
+      "type": "object",
+      "required": ["schema", "intent", "intent_source", "lesson_phase", "phase_iteration", "last_transition", "knowledge_exposure", "claim_boundary"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_agent_lesson_state.v1"},
+        "intent": {"enum": ["teach_first", "diagnostic_first", "task_first", "legacy_diagnostic_first"]},
+        "intent_source": {"enum": ["explicit_product_request", "legacy_compatibility_default"]},
+        "lesson_phase": {"enum": ["orientation", "explanation", "worked_example", "guided_practice", "verification", "transfer"]},
+        "phase_iteration": {"type": "integer", "minimum": 1},
+        "summary_required": {"type": "boolean"},
+        "summary_completed": {"type": "boolean"},
+        "summary_closure_round_limit": {"const": 3},
+        "summary_closure_rounds_used": {"type": "integer", "minimum": 0, "maximum": 3},
+        "last_transition": {
+          "type": "object",
+          "required": ["from", "to", "round", "reason", "source"],
+          "properties": {
+            "from": {"enum": [null, "orientation", "explanation", "worked_example", "guided_practice", "verification", "transfer"]},
+            "to": {"enum": ["orientation", "explanation", "worked_example", "guided_practice", "verification", "transfer"]},
+            "round": {"type": "integer", "minimum": 0},
+            "reason": {"type": "string", "minLength": 1},
+            "source": {"const": "deterministic_lesson_policy"},
+            "navigation_only": {"type": "boolean"},
+            "learner_evidence_applied": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        },
+        "knowledge_exposure": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 12,
+          "additionalProperties": {"$ref": "#/$defs/lessonExposure"}
+        },
+        "claim_boundary": {
+          "type": "object",
+          "required": ["exposure_is_mastery", "teacher_action_is_learner_evidence", "phase_progress_is_learning_effect", "phase_may_regress", "benchmark_gold_used"],
+          "properties": {
+            "exposure_is_mastery": {"const": false},
+            "teacher_action_is_learner_evidence": {"const": false},
+            "phase_progress_is_learning_effect": {"const": false},
+            "phase_may_regress": {"const": true},
+            "benchmark_gold_used": {"const": false}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "lessonExposure": {
+      "type": "object",
+      "required": ["status", "stage_index", "source", "last_round", "evidence_refs"],
+      "properties": {
+        "status": {"enum": ["unseen", "explained", "example_seen", "guided_practice_completed", "learner_verified"]},
+        "stage_index": {"type": "integer", "minimum": 0, "maximum": 4},
+        "source": {"type": "string", "minLength": 1},
+        "last_round": {"type": ["integer", "null"], "minimum": 0},
+        "evidence_refs": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
     "adaptiveObservations": {
       "type": "array",
       "maxItems": 12,

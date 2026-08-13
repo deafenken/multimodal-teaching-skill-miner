@@ -1,0 +1,439 @@
+{
+  "schema": "teaching_skill_miner.teacher_agent_dialogue_quality_predictions.v1",
+  "benchmark_version": "1.0",
+  "benchmark_id": "dialogue_quality_cross_discipline_v1",
+  "episodes": [
+    {
+      "case_id": "dynamic_programming_unknown",
+      "turns": [
+        {
+          "turn_id": "turn_1",
+          "teacher_message": "没关系，我先直接讲。状态就是解题过程中需要记住的、足以描述一个子问题的信息。例如爬楼梯时，可以让 dp[i] 表示走到第 i 级的方法数，因为后续计算只需要这些较小规模的结果。",
+          "status": "active",
+          "phase_before": "explain",
+          "phase_after": "guided_practice",
+          "phase_closure_receipt": {
+            "closed_phase": "explain",
+            "summary": "状态描述子问题所需信息",
+            "learner_evidence_id": "ev_dp_1",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain"
+          ],
+          "terminal_evidence": {},
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "confused",
+            "mastery_before": {
+              "conceptual": 0.2
+            },
+            "mastery_after": {
+              "conceptual": 0.2
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_dp_1"
+          }
+        },
+        {
+          "turn_id": "turn_2",
+          "teacher_message": "状态指的是一个子问题的精确定义，不是某个孤立的数字。具体来说，dp[i] 里的 i 确定了子问题的规模，dp[i] 的值记录这个子问题的答案；递推再把当前答案连接到更小状态。",
+          "status": "completed",
+          "phase_before": "guided_practice",
+          "phase_after": "complete",
+          "phase_closure_receipt": {
+            "closed_phase": "guided_practice",
+            "summary": "区分状态索引与状态值",
+            "learner_evidence_id": "ev_dp_2",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain",
+            "guided_practice"
+          ],
+          "terminal_evidence": {
+            "independent_recall_verified": true,
+            "gold_accessed": false
+          },
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "correct",
+            "mastery_before": {
+              "conceptual": 0.2
+            },
+            "mastery_after": {
+              "conceptual": 0.32
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_dp_2"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "fraction_division_clarification",
+      "turns": [
+        {
+          "turn_id": "turn_1",
+          "teacher_message": "乘倒数不是凭空出现的口诀，因为除法是在问一个量里包含多少个单位量。把问题写成乘法方程后，为了让未知数单独留下，需要用除数的倒数把它消去。",
+          "status": "active",
+          "phase_before": "explain",
+          "phase_after": "guided_practice",
+          "phase_closure_receipt": {
+            "closed_phase": "explain",
+            "summary": "除法可改写为乘法方程",
+            "learner_evidence_id": "ev_fraction_1",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain"
+          ],
+          "terminal_evidence": {},
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "partial",
+            "mastery_before": {
+              "conceptual": 0.3
+            },
+            "mastery_after": {
+              "conceptual": 0.3
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_fraction_1"
+          }
+        },
+        {
+          "turn_id": "turn_2",
+          "teacher_message": "原因是倒数能把除数变成 1。比如 (4/5)x=2/3，两边同乘 5/4 后，左边的 4/5 与 5/4 相乘为 1，于是只剩 x；这正对应 2/3÷4/5。",
+          "status": "completed",
+          "phase_before": "guided_practice",
+          "phase_after": "complete",
+          "phase_closure_receipt": {
+            "closed_phase": "guided_practice",
+            "summary": "用倒数把未知数系数化为一",
+            "learner_evidence_id": "ev_fraction_2",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain",
+            "guided_practice"
+          ],
+          "terminal_evidence": {
+            "independent_recall_verified": true,
+            "gold_accessed": false
+          },
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "correct",
+            "mastery_before": {
+              "conceptual": 0.3
+            },
+            "mastery_after": {
+              "conceptual": 0.45
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_fraction_2"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "newton_force_pair",
+      "turns": [
+        {
+          "turn_id": "turn_1",
+          "teacher_message": "不是一对作用力与反作用力，因为书的重力和桌面的支持力都作用在书上；它们在书静止时是一对平衡力。力对必须分别作用在两个不同物体上。",
+          "status": "active",
+          "phase_before": "explain",
+          "phase_after": "guided_practice",
+          "phase_closure_receipt": {
+            "closed_phase": "explain",
+            "summary": "力对作用于不同物体",
+            "learner_evidence_id": "ev_force_1",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain"
+          ],
+          "terminal_evidence": {},
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "misconception",
+            "mastery_before": {
+              "conceptual": 0.25
+            },
+            "mastery_after": {
+              "conceptual": 0.25
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_force_1"
+          }
+        },
+        {
+          "turn_id": "turn_2",
+          "teacher_message": "真正成对的是地球对书的引力与书对地球的引力。具体来说，前者作用在书上，后者作用在地球上；大小相等、方向相反，却不会在同一物体上互相抵消。",
+          "status": "completed",
+          "phase_before": "guided_practice",
+          "phase_after": "complete",
+          "phase_closure_receipt": {
+            "closed_phase": "guided_practice",
+            "summary": "识别地球与书之间的力对",
+            "learner_evidence_id": "ev_force_2",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain",
+            "guided_practice"
+          ],
+          "terminal_evidence": {
+            "independent_recall_verified": true,
+            "gold_accessed": false
+          },
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "correct",
+            "mastery_before": {
+              "conceptual": 0.25
+            },
+            "mastery_after": {
+              "conceptual": 0.42
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_force_2"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "photosynthesis_resource",
+      "turns": [
+        {
+          "turn_id": "turn_1",
+          "teacher_message": "讲义给出的输入是二氧化碳和水，能量来源是光；输出包括有机物和氧气。也就是说，叶绿体利用光能把二氧化碳和水转化为有机物，并释放氧气。",
+          "status": "active",
+          "phase_before": "explain",
+          "phase_after": "guided_practice",
+          "phase_closure_receipt": {
+            "closed_phase": "explain",
+            "summary": "区分物质输入、能量来源与输出",
+            "learner_evidence_id": "ev_bio_1",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain"
+          ],
+          "terminal_evidence": {},
+          "resource_uses": [
+            {
+              "resource_id": "res_b93db9da5e3dd6ee78fb",
+              "chunk_id": "res_b93db9da5e3dd6ee78fb_c001",
+              "chunk_content_sha256": "b93db9da5e3dd6ee78fb8a65b16aa5ae9c6f9b563ea3378e5acea5dcd3221fd0",
+              "excerpt": "叶绿体利用光能把二氧化碳和水转化为有机物，并释放氧气。",
+              "response_claim": "叶绿体利用光能把二氧化碳和水转化为有机物，并释放氧气",
+              "gold_accessed": false
+            }
+          ],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "partial",
+            "mastery_before": {
+              "conceptual": 0.2
+            },
+            "mastery_after": {
+              "conceptual": 0.2
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_bio_1"
+          }
+        },
+        {
+          "turn_id": "turn_2",
+          "teacher_message": "能量变化是光能转成储存在有机物化学键中的化学能，而不是光本身变成氧气。因为物质变化和能量转化是两条相关但不同的描述线索。",
+          "status": "completed",
+          "phase_before": "guided_practice",
+          "phase_after": "complete",
+          "phase_closure_receipt": {
+            "closed_phase": "guided_practice",
+            "summary": "光能转化并储存在有机物中",
+            "learner_evidence_id": "ev_bio_2",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain",
+            "guided_practice"
+          ],
+          "terminal_evidence": {
+            "independent_recall_verified": true,
+            "gold_accessed": false
+          },
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "correct",
+            "mastery_before": {
+              "conceptual": 0.2
+            },
+            "mastery_after": {
+              "conceptual": 0.38
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_bio_2"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "industrial_revolution_resource",
+      "turns": [
+        {
+          "turn_id": "turn_1",
+          "teacher_message": "变化是生产从分散的手工劳动转向工厂里的集中机器生产。具体来说，讲义指出蒸汽动力推动了这种集中化，而不是只把原来的手工作坊简单放大。",
+          "status": "active",
+          "phase_before": "explain",
+          "phase_after": "guided_practice",
+          "phase_closure_receipt": {
+            "closed_phase": "explain",
+            "summary": "从分散手工转向集中机器生产",
+            "learner_evidence_id": "ev_history_1",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain"
+          ],
+          "terminal_evidence": {},
+          "resource_uses": [
+            {
+              "resource_id": "res_c27252a0e2bf53533c39",
+              "chunk_id": "res_c27252a0e2bf53533c39_c001",
+              "chunk_content_sha256": "c27252a0e2bf53533c39821cd5af878268aa6e50aa1d8b51abef302c3879e6b6",
+              "excerpt": "工业革命早期的蒸汽动力推动工厂生产从分散手工转向集中机器生产。",
+              "response_claim": "蒸汽动力推动工厂生产从分散手工转向集中机器生产",
+              "gold_accessed": false
+            }
+          ],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "partial",
+            "mastery_before": {
+              "conceptual": 0.25
+            },
+            "mastery_after": {
+              "conceptual": 0.25
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_history_1"
+          }
+        },
+        {
+          "turn_id": "turn_2",
+          "teacher_message": "原因是蒸汽机能稳定驱动大型机器，机器和动力设备又需要共同场地、维护与协作。于是劳动力和生产环节更适合聚集在工厂，产量与分工也随之扩大。",
+          "status": "completed",
+          "phase_before": "guided_practice",
+          "phase_after": "complete",
+          "phase_closure_receipt": {
+            "closed_phase": "guided_practice",
+            "summary": "动力设备促成生产集中与分工",
+            "learner_evidence_id": "ev_history_2",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain",
+            "guided_practice"
+          ],
+          "terminal_evidence": {
+            "independent_recall_verified": true,
+            "gold_accessed": false
+          },
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "correct",
+            "mastery_before": {
+              "conceptual": 0.25
+            },
+            "mastery_after": {
+              "conceptual": 0.4
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_history_2"
+          }
+        }
+      ]
+    },
+    {
+      "case_id": "metaphor_interpretation",
+      "turns": [
+        {
+          "turn_id": "turn_1",
+          "teacher_message": "我先把两个角色拆开：本体是作者真正想写的对象，喻体是借来帮助描述它的另一个对象。例如“月亮像银盘”中，月亮是本体，银盘是喻体。",
+          "status": "active",
+          "phase_before": "explain",
+          "phase_after": "guided_practice",
+          "phase_closure_receipt": {
+            "closed_phase": "explain",
+            "summary": "本体是真正对象，喻体是借来比较的对象",
+            "learner_evidence_id": "ev_language_1",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain"
+          ],
+          "terminal_evidence": {},
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "confused",
+            "mastery_before": {
+              "conceptual": 0.2
+            },
+            "mastery_after": {
+              "conceptual": 0.2
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_language_1"
+          }
+        },
+        {
+          "turn_id": "turn_2",
+          "teacher_message": "本体指句子实际要表现的人或事物，喻体指用来作比较、突出某种特点的形象。换句话说，一个回答“在写谁”，另一个回答“把它比成谁”。",
+          "status": "completed",
+          "phase_before": "guided_practice",
+          "phase_after": "complete",
+          "phase_closure_receipt": {
+            "closed_phase": "guided_practice",
+            "summary": "用在写谁与比成谁区分两者",
+            "learner_evidence_id": "ev_language_2",
+            "gold_accessed": false
+          },
+          "completed_phases": [
+            "explain",
+            "guided_practice"
+          ],
+          "terminal_evidence": {
+            "independent_recall_verified": true,
+            "gold_accessed": false
+          },
+          "resource_uses": [],
+          "learner_evidence": {
+            "source": "learner_response",
+            "label": "correct",
+            "mastery_before": {
+              "conceptual": 0.2
+            },
+            "mastery_after": {
+              "conceptual": 0.36
+            },
+            "gold_accessed": false,
+            "evidence_id": "ev_language_2"
+          }
+        }
+      ]
+    }
+  ]
+}

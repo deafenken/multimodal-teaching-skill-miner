@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:teacher-agent-semantic-lockbox-report:1",
+  "title": "Aggregate-only Teaching Agent semantic lockbox report",
+  "type": "object",
+  "required": ["schema", "benchmark_version", "benchmark_id", "passed", "metrics", "thresholds", "private_case_diagnostics_included", "case_count", "provenance", "claim_boundary", "content_sha256"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.teacher_agent_semantic_lockbox_report.v1"},
+    "benchmark_version": {"const": "1.0"},
+    "benchmark_id": {"$ref": "#/$defs/id"},
+    "passed": {"type": "boolean"},
+    "metrics": {"type": "object", "additionalProperties": {"type": ["number", "null"]}},
+    "thresholds": {"type": "object", "additionalProperties": {"type": "number"}},
+    "private_case_diagnostics_included": {"const": false},
+    "case_count": {"type": "integer", "minimum": 30},
+    "provenance": {"type": "object"},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["expert_gold_signature_verified", "gold_hidden_from_executor", "runtime_observations_derived_from_integrity_checked_sessions", "behavioral_thresholds_met", "deployment_accuracy_established", "real_students_involved", "real_learning_effect_established"],
+      "properties": {
+        "expert_gold_signature_verified": {"const": true},
+        "gold_hidden_from_executor": {"const": true},
+        "runtime_observations_derived_from_integrity_checked_sessions": {"const": true},
+        "behavioral_thresholds_met": {"type": "boolean"},
+        "deployment_accuracy_established": {"const": false},
+        "real_students_involved": {"const": false},
+        "real_learning_effect_established": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

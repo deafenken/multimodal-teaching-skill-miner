@@ -6,6 +6,30 @@
 
 默认演示链路只使用 Python 3.10+ 标准库，不需要网络或 API。项目内置按 2 门课程组织、每门 5 讲的人工释义演示数据，一条命令即可复现工程闭环；它本身不是完整公开课字幕。项目另已对 10/10 MIT OCW 完整讲次完成官方 WebVTT 文件、来源页、字幕文件哈希、页面关联媒体与整段时间轴绑定，并在私有目录真实运行全程音频静音分析、均匀/场景抽帧、Tesseract OCR、板书/幻灯片变化、CLIP 视觉语义和事件融合。这里的字幕闭环只建立来源、文件身份和时间轴覆盖，没有逐字对听内容，也不建立字幕内容准确率或 WER。第三方视频、字幕正文、帧、OCR 文本和嵌入均不打进 wheel。当前准确状态是“完整视频多模态工程证据已闭环；真实双人复核、事件级识别准确率、确认性多模态增益、学习效果和外部部署验证待完成”，详见 [`docs/project_status.md`](docs/project_status.md)。
 
+## 现代 Console / BFF 状态（MVP）
+
+默认桌面入口是 `apps/console`。本机模式由 Next 服务端持有随机 Python capability；认证生产模式则由同源 `apps/api` 完成 OIDC、HttpOnly session、PostgreSQL FORCE RLS 与每个 issuer/tenant/subject 的私有 worker 路由，浏览器从不接收 worker URL/token 或原始身份键。生产实现仍明确限制为单 API replica；同 uid worker + Landlock 是路径隔离，不冒充容器/VM 级多租户隔离。
+
+| 用户要求 | 当前仓库状态 | 仍未实现 |
+|---|---|---|
+| Next.js 15 + React 19 + TypeScript + Tailwind CSS + shadcn/ui | `apps/console` 已使用 Next.js **15.5.23**、React 19.1、TypeScript、Tailwind CSS 4 和本地 shadcn/ui 风格组件；默认启动入口已替换为新三栏工作台，真实创建/恢复会话并提交 DeepSeek turn/command；Python Harness 以 typed SSE 按 durable sequence 发布事件，Next 用严格 reducer 校验 run/turn、连续 sequence、唯一结果、commit 与 terminal 顺序 | 仍需 Firefox/Safari、屏幕阅读器和长期稳定性认证 |
+| 前端状态与检查器 | TanStack React Query 管理真实 bootstrap；Runtime 检查器使用轻量只读快照展示真实 session/context/fallback 状态。未使用的 Monaco/xterm 组件和依赖已经移除，当前页面不再声称挂载编辑器或终端 | 若未来重新加入代码编辑或终端能力，必须接入真实任务流并重新做权限与资源审计 |
+| NestJS + Fastify API/BFF | `apps/api` 已接 OIDC、HttpOnly session/revocation、CSRF、PostgreSQL FORCE RLS、account DSAR、durable task leases/artifacts 与 tenant/owner-scoped Python Harness gateway | 单 API replica；仅 `/api/bootstrap|step|events` compatibility surfaces 在 production 为 410；无分布式 worker scheduler |
+| 登录与权限 | 生产采用严格 OIDC authorization-code+PKCE；破坏性账号操作要求 issuer-bound AAL2 recent step-up；教师高权限操作另走短时 authoritative entitlement | IdP/组织目录、AAL 与角色政策必须由部署方配置并独立运营 |
+| 任务编排与模型 | `apps/api` 提供可替换 task/provider ports；`DATA_BACKEND=postgres` 使用 PostgreSQL durable task leases/events/artifacts，未配置模型时显式报告 `requires_configuration` 并 fail closed | Redis/BullMQ、Temporal、Anthropic Claude streaming/tool use 均未执行真实调用；本机显式 memory adapters 仍仅适用于开发/测试 |
+| Agent、沙箱、Git 与网络 | Python Harness/Teaching Agent 承担当前真实 DeepSeek 教学回归；通用 Harness 提供类型化事件、受限工具执行、持久 journal 和取消门禁 | ripgrep/tree-sitter/pgvector 代码索引、plan→edit→test→rollback 工作流、Docker/gVisor、Kubernetes/EKS/Firecracker、egress/Git proxy 和 GitHub token 隔离尚未实现 |
+| 数据、实时、可观测性与部署 | Durable-first typed SSE、background-task recovery、PostgreSQL、低基数 Prometheus、digest-pinned single-replica Compose/Docker、health/ready 与资源预算均已接 | 未知 provider effect 不自动重放；没有 Redis/S3、多副本 lease scheduler、外部监控栈或 VM 级 sandbox |
+| 学习项目、长 Chat 与教学资源 | 项目、历史、notes、资源/大纲/session 引用和 provenance 检索均持久化；bootstrap 动态声明本机真实可解析扩展名 | 默认 Linux 生产仅广告内置格式及可用 `pdftotext`；legacy Office、OCR、ASR 只有安装/注入对应本地能力后才出现；资源不是 learner evidence/gold |
+
+本地验证命令：
+
+```bash
+cd apps/console && npm run typecheck && npm run build
+cd apps/api && npm run typecheck && npm test && npm run build
+```
+
+更细的接口、适配器和安全边界见 [`apps/console/README.md`](apps/console/README.md) 与 [`apps/api/README.md`](apps/api/README.md)。
+
 ## 一键运行
 
 ```bash
@@ -35,9 +59,21 @@ tsm dashboard --check
 
 题目二已实现逐轮运行的混合 Teaching Agent：`deepseek-v4-flash` 负责理解学生自由文本、判断与当前问题的对齐关系，并提议主/支持 Skill 与当前教师动作；确定性控制器负责显式状态、Skill 白名单、重复上限和终止安全。默认 `safe_generative` 执行模式不会一律丢弃模型话语：只有当模型动作与最终 Skill 的 `action_type`、单动作、提问性、问题契约和防答案泄露规则全部一致，且路由或 support 没有被控制器改写时，模型生成的安全话语才会进入学生界面。若只是动作候选不匹配、生产入口已启用修复且固定路由 eligibility 通过，系统最多追加一次只能重写当前动作的 action-only repair；未启用、不适用或修复仍失败时才使用服务端确定性 materializer。页面通过 `action_provenance.executor_origin` 区分 `deepseek_safe_generative`、`deepseek_action_only_repair` 与 `deterministic_materializer`。系统不会一次性预写多轮对话。每收到一条学生回答，它都会更新四维掌握、误解、当前理解信号、下一关注点和交互统计，再从 v2 Library 的 **13 个主 Skill + 3 个支持 Skill** 中重新选择、组合或切换，并公开理由。每个问题都附带服务端绑定的 `question_id + question_contract`（目标概念、可接受同义表达、回答类型和成功判据）；诊断先判断回答是否真正对齐当前问题，再决定状态和 Skill。相关但没有回答本问的内容会保守记为 `partial / related_but_not_answer`，不会仅因未命中预设词就写成“仍然困惑”，也不会凭一次相邻概念回答确认误解。页面把诊断来源分为原始 `deepseek_v4_flash`、经确定性契约修正的 `deepseek_v4_flash_constrained_by_deterministic_contract`、本问契约精确命中的 `active_question_contract_exact_match`、教师 `knowledge_spec` 精确命中的 `teacher_knowledge_spec_exact_match`，以及不属于自由文本识别结果的 `deterministic_safety_fallback`；不能把后四者笼统冒充未经修正的模型判断。每个通过约束层验证的 DeepSeek 回合还会在 `student_profile.adaptive_observations` 追加一条 `candidate_unconfirmed` 候选画像；候选不会覆盖教师提供字段，规则 fallback 不会生成候选；候选若没有绑定到学生原话，会明确记录 `no_grounded_excerpt` 并强制进入人工复核。在线模式支持 `/+skill 名称`、`/auto` 和 `/stop`：手动 Skill 从收到第一条学生回答后持续锁定，直到教师恢复自动模式，或适用信号、纠错证据、`max_repeat` / fallback 等安全门主动释放，不能借人工命令绕过契约。
 
-本轮针对历史 run19 的两个真实短板做了代码级修复，而不是改写 receipt：合法的 post-assessment Agent Loop 路由现在会在归一化候选中保持首位，并用当前轮 provisional session 做契约检查；有界 Loop 的最后一步会提交已经验证的 Skill + focus，不额外消耗模型调用。冻结当前工作树的 run25（6 个作者构造 case / 20 个回合，development split）得到 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`；历史 run19 为 `0.350000/0.631579/0.400000`。run25 fingerprint 为 `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。这些是开发回归指标，不是统一 Accuracy、专家锁箱、部署准确率或真实学习效果；run25 的私有 predictions receipt 不随仓库发布。
+历史 run19 暴露了 allowed-Skill hit `0.350000` 和 bounded route completion `0.400000`。之后的冻结 run25（6 个作者构造 case / 20 个回合，development split）在合法 post-assessment 路由置首、provisional-session 契约检查和有界末步提交修复后，得到 allowed-Skill hit `0.450000`、switch F1 `0.818182`、bounded route completion `0.750000`；run25 fingerprint 为 `4a93ba704f20eb7666f8d371f473bb85233b7f132106c26127db7c92a11d3b7b`。run19 和 run25 都作为历史开发基线保留，不回写旧 receipt。
 
-生产 dashboard 通过 CLI 显式开启 `state_first_route_adjudication_enabled=true` 与 `action_only_repair_enabled=true`；DeepSeek 只提出候选，状态优先裁决器先按当前掌握维度、误解、参与度、无进展计数和 Skill 契约确定优先层，模型候选只在同一层内作 tie-break。`LiveAgentOptions` 的默认值仍保持关闭，供兼容性的库调用和单元测试使用；手动路由、视觉确认、已有安全 retarget 等路径不会再次进入该裁决器。Socratic 只有在学生已有实质主张、回答与当前问题对齐、理由或边界仍缺失且上一轮不是 Socratic 时才可优先，避免 `partial` 回合被它默认吸收。
+此前两处 t3 误路由经逐轮产物复核确认不是上下文串线：学生已明确做出“我能说出……”式自解释主张时，DeepSeek 仍可能保守记为 `partial / ambiguous`；上一轮 `skill_self_explanation` 已达重复上限后，旧门禁又错误拒绝 Socratic 核验，最终才回落到 stepwise。当前修复只在存在明确自解释证据时，允许 `skill_socratic_understanding_check` 做一次安全核验；它不提升掌握度、不自动解除误解，也不读取 gold。在相同 development input/gold 指纹上重复调用真实 DeepSeek，最新完整落盘的 run43–run47 结果为：
+
+| Run | allowed-Skill hit | Switch F1 | bounded route completion |
+|---|---:|---:|---:|
+| run43 | `1.000000` (`20/20`) | `0.916667` | `0.80` |
+| run44 | `1.000000` (`20/20`) | `0.916667` | `0.70` |
+| run45 | `1.000000` (`20/20`) | `0.916667` | `0.65` |
+| run46 | `0.950000` (`19/20`) | `0.916667` | `0.65` |
+| run47 | `1.000000` (`20/20`) | `0.916667` | `0.70` |
+
+因此，可以说“最新五次开发回归的 allowed-Skill hit 均不低于 95%，超过 90% 工程目标，其中四次为 100%”；不能说“Agent Accuracy 或部署准确率为 100%”。run46 的唯一 Skill miss 仍是 `cross_session_alpha/alpha_t2`：最终主 Skill 为 Socratic，而 gold allowlist 为 concept mapping / self explanation；对应运行的跨 session leakage 仍为 `0`、session instance 唯一率为 `1.0`，四类 runtime fallback 也均为 `0`，因此没有上下文串线或 API/fallback 失败证据。五次运行的误解解除 exact/evidence、prompt-injection 阻断、termination match、lifecycle coverage/commit/route contract 均为 `1.0`，禁止输出、直接答案和跨 session 泄漏均为 `0`。这仍是 **6 case / 20 turn、作者构造且未锁箱的 development fixture**，不是 held-out、专家锁箱、真实学习效果或部署证据。bounded route completion 在五次运行中为 `0.80/0.70/0.65/0.65/0.70`（均值 `0.70`），也明确表明有界 Loop 完成稳定性仍需继续提高。run25、run38–run42 与 run43–run47 的私有 predictions/report 均不随仓库发布。
+
+生产 dashboard 通过 CLI 显式开启 `state_first_route_adjudication_enabled=true` 与 `action_only_repair_enabled=true`；DeepSeek 只提出候选，状态优先裁决器先按当前掌握维度、误解、参与度、无进展计数和 Skill 契约确定优先层，模型候选只在同一层内作 tie-break。`LiveAgentOptions` 的默认值仍保持关闭，供兼容性的库调用和单元测试使用；手动路由、视觉确认、已有安全 retarget 等路径不会再次进入该裁决器。Socratic 通常只有在学生已有实质主张、回答与当前问题对齐、理由或边界仍缺失且上一轮不是 Socratic 时才可优先，避免 `partial` 回合被它默认吸收；唯一有界例外是“已有明确自解释证据，但语义模型保守记为 `partial / ambiguous`，且自解释 Skill 已达重复上限”的安全核验路径。该例外不改 diagnosis、mastery、misconception 或 gold 隔离；仅将这条有实质学习尝试的回合从 `consecutive_no_progress` 终止计数中移出，避免保守标签过早触发转人工。
 
 #### 证据加权学生模型：工作估计，不是校准概率
 
@@ -47,7 +83,11 @@ tsm dashboard --check
 
 #### 真实多步 Agent Loop：规划—工具—观察—路由就绪—动作
 
-生产 Dashboard 的 CLI 同时显式开启 `agent_loop_enabled=true`。当前生产提示与路由契约版本为 **V15**，并沿用 state-first 路由裁决；这一路径不是把一段多轮对话预先写好，也不是一次 Prompt 的别名，而是一个有边界的模型—工具闭环：DeepSeek 先返回结构化规划，服务端执行本地工具，把工具结果放回下一次规划请求，直到得到 `route_ready` 或进入安全降级；`route_ready` 必须已经有经过本地校验的主 Skill 和 `next_focus`，随后才调用最终动作规划器生成本轮唯一教师动作。动作再进入既有的 Skill/action-type、问题契约、提问性、防答案泄露和 Session 版本门禁。
+生产 Dashboard 的 CLI 同时显式开启 `agent_loop_enabled=true`。当前生产提示与路由契约版本为 **V18**（`teaching_agent_assess_route_act_v18_direct_teaching_cache_stable_prefix`），并沿用 state-first 路由裁决；学习者明确说不会或不懂时，当前尚未写入历史的问题会立即绑定为失败任务，教师必须换表征讲解或示范后再做低负担确认，不能重复或换词重问，且本轮不更新掌握度。学习者提出定义、组成、原因、步骤、符号、比较或举例澄清时，统一先回答并绑定允许的教师来源，材料不足则保持问题开放；防直接答案门禁只针对当前练习、核验或迁移任务的最终解，不会拦截概念讲解。这一路径不是把一段多轮对话预先写好，也不是一次 Prompt 的别名，而是一个有边界的模型—工具闭环：DeepSeek 先返回结构化规划，服务端执行本地工具，把工具结果放回下一次规划请求，直到得到 `route_ready` 或进入安全降级；`route_ready` 必须已经有经过本地校验的主 Skill 和 `next_focus`，随后才调用最终动作规划器生成本轮唯一教师动作。动作再进入既有的 Skill/action-type、问题契约、单动作、防答案泄露和 Session 版本门禁。
+
+teach-first 的零回答入口现在直接进入内部 `explanation` 阶段，第一条学生可见消息从教师来源讲清当前概念；它不再把“本阶段不考前置知识”“入口不做定义测验”“来源证据卡”“教学路径/下一学习重点”或“只需回复继续”这类运行政策写进对话。路由、工具与关注点仍参与服务端决策和右侧检查器，但标为 internal 的生命周期事件不会投影成学生对话消息；这不是展示模型思维链。
+
+V18 还把最终动作规划请求组织为“稳定前缀 + 本轮动态后缀”：不变的 system 协议和完整、经服务端校验的 Skill 合同置于学习者上下文之前，静态部分不含学生文本。它利用 [DeepSeek 自动上下文缓存](https://api-docs.deepseek.com/guides/kv_cache) 的精确前缀复用机制，并采用了 DeepSeek-Reasonix 所强调的 cache-aware 稳定前缀思路，但仓库**没有安装或正式集成 Reasonix**，也没有另建 KV 缓存服务。`prompt_cache_layout` 只记录无正文的布局与 SHA-256 指纹，本身不能证明命中；只有 provider `usage` 中实际返回的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 才作为该次请求的命中/未命中计数，并沿 Harness、Dashboard、benchmark 和 Console 类型边界保留。没有这两个字段时不推算命中率，也不把少量本机请求外推成长期生产指标。
 
 Loop 的模型工具权限是固定白名单，模型不能执行 Python、访问文件或自行修改学生记录：
 
@@ -59,10 +99,13 @@ Loop 的模型工具权限是固定白名单，模型不能执行 Python、访�
 | `select_skills` | 提交一个主 Skill 与有界支持 Skill 组合，交由服务端校验 |
 | `set_next_focus` | 设置 `prerequisite / conceptual / procedural / transfer` 之一 |
 | `evaluate_termination` | 按阈值、最新正确性和活跃误解检查是否具备成功终止条件 |
+| `retrieve_resources` | 从教师导入资源的私有本机索引检索有界片段，并返回资源、位置与内容哈希 provenance；结果不作为学生证据或评分 gold |
 
 库级兼容默认上限为每回合最多 6 个 Loop 步骤；生产 Dashboard 为控制延迟和成本显式收紧为 4 步。两种入口都保持每步最多 3 个工具调用、同一调用最多重复 2 次、模型边界错误最多重试 1 次。上限耗尽、重复调用、未知工具、非法参数或模型 JSON 错误都会记录可审计事件并触发确定性安全 fallback。fallback 不冒充 DeepSeek：它仍使用同一 Skill 合同和安全门；没有可执行的安全 Skill 时停止并转人工。公共 `last_agent_loop` receipt 只保留步骤、工具名、状态、计数、短原因、响应元数据和消息哈希，不保存 Prompt、思维链、学生原文、原图或 API Key。运行时还分别统计 Loop、planner、action 和 assessment failure fallback，避免把模型不可用误报成学生无进展。
 
 显式传入 `--session-store` 时，包含 Loop receipt 的会话 checkpoint 会写入本机 append-only JSONL：每行有连续 `seq`、`previous_hash` 和自身 SHA-256，`turn_started → turn_committed/turn_aborted` 由恢复器重放；崩溃遗留的 started turn 会补记为 aborted，旧幂等键、画像版本或运行政策不匹配会 fail-closed。哈希链只提供篡改检测，不是加密、登录、访问控制或跨设备同步，store 仍是需要权限保护的私有学生数据。
+
+现代 Console 还把项目、Chat 与 Teach 分成不同事实边界：项目 store 保存服务端权威的完整 Chat thread、笔记以及资源/大纲/Teach 引用；Chat provider 投影超出预算时仅省略已经持久化的旧前缀，并附抽取式索引、原历史哈希和压缩 receipt，不用模型生成替代性摘要。教学资源进入独立私有索引，`retrieve_resources` 只返回带 provenance 的短片段。项目上下文和教师资源都明确为非 learner evidence、非 scoring gold。Chat 的 Web Search 默认关闭；用户每次首次开启远程搜索授权后，服务端仍以 `requires_user_consent + remote_consent` 双重门禁决定是否向 provider 暴露该工具。
 
 这套编排借鉴了可靠 Agent 常见的 bounded loop、工具 allowlist、幂等/重试和事件审计模式，称为 **Codex-inspired reliability architecture**；项目没有复制或声称等价于 Codex、Claude Code 的内部实现、Shell、Git、沙箱或多 Agent 能力。直接使用库级 `LiveAgentOptions()` 时 Loop 默认关闭以保持兼容；`tsm teacher-agent-dashboard --agent-backend deepseek` 的生产入口会打开它。
 
@@ -72,7 +115,7 @@ Loop 的模型工具权限是固定白名单，模型不能执行 Python、访�
 
 本机真实验收用配置的 `deepseek-v4-flash` 做健康检查和多轮教学；每次运行的步数、工具调用、fallback、路由重规划和事件回执以私有 benchmark/acceptance receipt 为准，不在文档中钉死某一次模型输出。loopback 浏览器验收还覆盖了画像切换后继续作答、刷新恢复当前动作和 Loop 摘要、显式 `/stop` 终止后刷新保持终止，以及页面无项目自身错误日志。它们证明的是本机工程链路和真实 API 可运行，不是开放学生群体的教学质量、学习增益、跨 session 泛化或部署准确率。
 
-忙碌回合中的“停止生成”是可恢复的 `cancel_turn`：它只失效当前活动回合、保留 Session，迟到的 DeepSeek 响应会被 commit fence 丢弃；`transport_cancellation_supported=false`，远程 HTTP 请求本身不支持传输层取消，供应商侧仍可能完成并计费。教师显式发送 `/stop` 才会把整个 Session 置为 terminal，二者在页面和审计记录中分开显示。
+忙碌回合中的“停止生成”只失效当前活动回合并保留 Session；教师显式发送 `/stop` 才会把整个 Session 置为 terminal。兼容的旧同步 `cancel_turn` 路径仍公开 `remote_transport_cancellation_supported=false`，只能依靠 generation/commit fence 丢弃迟到结果。默认 Console 的 Harness 流则调用独立取消 API，`harness_sse_transport_cancellation_supported=true`：取消 token 会关闭已经建立的 DeepSeek 文本或 Web Search 响应 socket，且 cancel 与 domain commit 共享 commit-wins 门禁；若 commit 已先完成，后到取消不得把成功结果改写成 cancelled。连接建立前的 DNS/TCP 阶段仍受请求 timeout 约束，供应商计费边界不能由本机保证。
 
 对“第二种呢”“回到第 1 轮”“按最开始的方式讲”“按约定继续”等明确连续性提示，服务端会确定性生成 `continuity_recall`。`resolved_evidence_linked` 只能按目标摘录和 `evidence_refs` 接续；`unresolved_no_matching_evidence` 必须承认没有找到匹配记录并请学生重述。动作修复请求只接收有界、脱敏、证据链接的 continuity constraints，不得另写一份历史。
 
@@ -82,20 +125,34 @@ Loop 的模型工具权限是固定白名单，模型不能执行 Python、访�
 
 每次模型请求只发送一个经过校验的 `teaching_context`：固定教学目标与教师画像、当前 Goal 计划、当前问题契约、近期逐轮工作记忆、较早历史的确定性统计与证据关联检查点、知识/误解状态、未确认的低权重画像假设，以及对应证据指针。较早历史的 `teaching_checkpoints` 最多保留 6 条，只从被省略回合中的明确师生原话或已记录结构化信号抽取；另有可重放的 `teaching_memory` 只保留学生明确偏好、未解决问题、教师承诺和“第二种”等指代对象，每一项都绑定原始回合证据，不调用模型编写叙事摘要。它们是选择性审计事实，不是完整语义总结；未知的完成或解决状态保持未知，系统明确记录 `omitted_turn_semantics_are_exhaustive=false`。网页“既往上下文（未标注）”按行写入 `background_history`，在上下文中标为 `teacher_provided_unlabeled_background`；它不携带 `signal` 或 `focus_dimension`，不会直接改变初始掌握、当前理解信号或误解，只有之后提交的真实学生回答才触发学情更新。当前回答只出现一次；默认保留最多 10 个相关回合并受 14,000 字符硬上限约束。未显式填写知识点时，直接使用教师输入的教学概念作为最小检索锚点；多知识点目标则只给每轮动作标注当前实际知识点。合法超长会话会逐层裁剪成仍保留当前问题和回答的可验证最小上下文，而不是越过预算或让整轮崩溃。
 
-题目二网页采用原创的 Codex-inspired 学习工作台：左侧是任务与三种合成学生画像，中间只保留实时对话和固定输入框，右侧用“学情 / 方法 / 证据”三页检查器解释状态、Skill 与上下文；冻结 benchmark、基线和学习结果接口移入独立的“实验 / 评估”视图。新版交互增加内存内最近会话导航、`⌘K` 命令面板、`⌘N` 新会话入口、主区可见的 Skill “WHY” 与逐轮学生状态时间线；这些目录项不把学生回答或模型 payload 写入浏览器存储。三张 AI 合成头像不对应真实学生，也不参与能力判断；环形图只表示四项掌握估计的等权平均。参考官方开源 Codex 固定版本 `15ea598c6e7e0914a7ae8c881ac05dacea2f7902` 的仅是 thread/turn identity、预期轮次核验、陈旧异步结果隔离、追加式事件和 cold-resume 可靠性模式，不是品牌、UI、Shell、Git、沙箱或多 Agent 能力；当前网页和教学状态机仍是本项目原创实现。画像切换采用 prepare-then-commit：先完整生成并校验新 Session，再原子提交并退休旧 Session；替换请求还必须匹配旧会话的 `round + question_id + context_version + profile_revision`。前端应用异步响应前也核对请求 epoch、`session_id`、`profile_revision` 和不倒退的 `context_version`，防止慢响应把新画像或新回合覆盖成旧快照。start、step 和 command 都使用独立幂等键；step/command 同时绑定 `session_id + expected_round + expected_question_id + expected_context_version + profile_revision`，过期、跨画像或冲突重放均 fail-closed。默认仍只在进程内保存最多 16 个隔离 Session；显式传入 `--session-store <local.jsonl>` 后，服务才启用本机追加式 JSONL cold resume。每条事件具有连续序号、前一事件哈希和自身 SHA-256；学生 step 先写 `turn_started`，完成后写 `turn_committed`，异常写 `turn_aborted`，崩溃遗留的 started turn 在重启时被记为 aborted，旧幂等键不能伪装成已提交。恢复还必须精确匹配无密钥 `runtime_policy_contract`（provider、model、endpoint、prompt、上下文预算、fallback 与 action executor），并验证持久化 Skill 是当前 Library 的内容等价、有序主 Skill 子集且保留全部 support；漂移或篡改均 fail-closed。候选画像和对话不会自动合并到另一个 session。
+题目二网页采用原创的 Codex-inspired 学习工作台：左侧是任务与三种合成学生画像，中间只保留实时学习对话和固定输入框，右侧用“学情 / 方法 / 证据”三页检查器解释状态、Skill 与上下文；内部 Skill/工具/usage 生命周期不会渲染成中间对话卡。冻结 benchmark、基线和学习结果接口移入独立的“实验 / 评估”视图。新版交互增加内存内最近会话导航、`⌘K` 命令面板、`⌘N` 新会话入口，以及右侧检查器中的 Skill “WHY” 与逐轮学生状态时间线；这些目录项不把学生回答或模型 payload 写入浏览器存储。三张 AI 合成头像不对应真实学生，也不参与能力判断；环形图只表示四项掌握估计的等权平均。参考官方开源 Codex 固定版本 `15ea598c6e7e0914a7ae8c881ac05dacea2f7902` 的仅是 thread/turn identity、预期轮次核验、陈旧异步结果隔离、追加式事件和 cold-resume 可靠性模式，不是品牌、UI、Shell、Git、沙箱或多 Agent 能力；当前网页和教学状态机仍是本项目原创实现。画像切换采用 prepare-then-commit：先完整生成并校验新 Session，再原子提交并退休旧 Session；替换请求还必须匹配旧会话的 `round + question_id + context_version + profile_revision`。前端应用异步响应前也核对请求 epoch、`session_id`、`profile_revision` 和不倒退的 `context_version`，防止慢响应把新画像或新回合覆盖成旧快照。start、step 和 command 都使用独立幂等键；step/command 同时绑定 `session_id + expected_round + expected_question_id + expected_context_version + profile_revision`，过期、跨画像或冲突重放均 fail-closed。默认仍只在进程内保存最多 16 个隔离 Session；显式传入 `--session-store <local.jsonl>` 后，服务才启用本机追加式 JSONL cold resume。每条事件具有连续序号、前一事件哈希和自身 SHA-256；学生 step 先写 `turn_started`，完成后写 `turn_committed`，异常写 `turn_aborted`，崩溃遗留的 started turn 在重启时被记为 aborted，旧幂等键不能伪装成已提交。恢复还必须精确匹配无密钥 `runtime_policy_contract`（provider、model、endpoint、prompt、上下文预算、fallback 与 action executor），并验证持久化 Skill 是当前 Library 的内容等价、有序主 Skill 子集且保留全部 support；漂移或篡改均 fail-closed。候选画像和对话不会自动合并到另一个 session。
 
 误解生命周期还支持教师提供的 canonical taxonomy：在 `goal.knowledge_spec.misconception_catalog` 中给出 `tag` 和少量 `aliases`，模型生成的同义标签会在本地归一化为 canonical tag，并留下审计原因；这只解决标签一致性，不降低“本轮原话证据 + 当前纠错目标 + 高置信对齐”的解除门槛。若存在唯一 active correction target，state-first 路由会优先安排验证 Skill，并在该链上使用确定性动作物化，避免直接泄露规范答案。
 
 网页中间的 command bar 以 `GOAL / PLAN / PROGRESS / CONTROL` 四格显示当前目标、当前计划/Skill、目标步骤进度和会话控制状态；“教学控制”菜单提供 `/auto`、`/+skill` 和 `/stop`，输入框旁的“停止生成”只取消当前忙碌回合，恢复面板则提供保留草稿的“重新发送本轮”和“结束并转人工”。这些按钮都经过 session/round/question/context/profile 版本门禁和幂等键校验；重试不是新教学内容，迟到响应由 commit fence 丢弃。command bar 和 recovery console 是 UI 可观测性与恢复能力，不是 Codex/Claude Code 的等价实现。
 
-先把外置盘密钥链接到本机私有目录；`.private/` 已被 Git 忽略：
+macOS 优先从 Keychain 的 `TeachLab DeepSeek API Key`（account 为当前用户名）读取密钥。
+若使用文件 fallback，DeepSeek API key 可以是 `.private/deepseek_api.txt` 指向外置私有文件的单层符号链接；
+启动器会校验链接目录和目标父目录均为 mode-0700 私有目录、目标为 owner-only 普通文件（1–4096 字节），
+并在本次 launch 的 `.private/runtime-secrets/` 中物化为 mode-0600 临时文件，退出时删除。学习记录密钥和同意签名密钥仍只接受
+非符号链接的 owner-only 普通文件（或 Keychain）。`.private/` 已被 Git 忽略：
 
 ```bash
 mkdir -p .private
 ln -s "/path/to/deepseek_api.txt" .private/deepseek_api.txt
+# 如果不使用外置文件，也可以直接创建普通私有文件：
+# install -m 600 "/path/to/deepseek_api.txt" .private/deepseek_api.txt
 ```
 
-macOS 可双击根目录的 **`打开题目二教学Agent.command`**，也可运行：
+macOS 可双击根目录的 **`打开题目二教学Agent.command`**，也可运行。这个 macOS 入口默认在服务 ready 后自动打开 Console 页面；关闭 Terminal 窗口不停止服务。
+无头或只想打印 URL 时设置 `TEACHLAB_OPEN_BROWSER=0`。入口使用经过哈希校验的 Next production runtime 并在后台驻留，重复启动会在创建后端、Next 或浏览器 effect 前被单实例锁拒绝。
+停止服务使用 `./打开题目二教学Agent.command --stop`；空闲自动停止默认关闭，只能用 `TEACHLAB_IDLE_SHUTDOWN_MINUTES=<正数>` 显式开启。完整交付与 Keychain 合同见 `docs/teacher_agent_console_production_runtime.md`：
+
+```bash
+TEACHLAB_OPEN_BROWSER=0 ./打开题目二教学Agent.command
+```
+
+后端 CLI 也可单独运行：
 
 ```bash
 tsm teacher-agent-dashboard \
@@ -270,6 +327,8 @@ CI 的 Python 3.10–3.13 矩阵用于检验声明版本范围的前向兼容性
 
 正式发布时使用干净、可复现构建，并直接验收将要分发的同一个 wheel：
 
+> `artifacts/release_acceptance_1.2.0.json` 是绑定一次性源码/证据快照、verification scope 与候选 wheel 的机器收据，不在文档中复制容易漂移的测试数字。只有 `build_release_acceptance.sh` 完整成功，它才证明该次捕获的快照；若要把收据描述为当前工作树，当前受管源码还必须与收据内 scope 一致。任一受管源码、锁文件或治理文档变化都会令“当前树已验收”的说法失效，但不会改变已经验证并发布的快照与 wheel。
+
 ```bash
 sh scripts/build_release_acceptance.sh
 ```
@@ -285,7 +344,9 @@ sh scripts/build_release_acceptance.sh
 
 不设这三个变量时，验收会在 TeachObs 阶段以"human-review evidence is partial"失败关闭——这是刻意的：`human_annotation/` 下还留着 5,158 行的完整 profile 旧骨架，与 4,945 行论文 profile 的公开 receipt 并不配对，宁可失败也不允许用不匹配的骨架通过。没有 TeachObs 私有证据的环境（例如公开 CI）会跳过整段检查，直接裸跑即可。
 
-这个入口启动时先把旧 acceptance 降级为 `stale_not_accepted`，随后依次执行全量项目验收、两个独立临时源码副本的字节级一致构建、最终候选 wheel 的隔离安装和视频闭环、wheel/公开目录发布审计；候选通过后才原子替换 `dist/` 中的同名 wheel，再对新 acceptance 本身做发布审计并原子替换 `artifacts/release_acceptance_1.2.0.json`。因此中途失败不会遗留看似仍有效的旧验收。acceptance 的测试数、wheel 哈希/大小/成员、公开目录摘要都由绑定同一 wheel SHA-256 的新鲜 receipt 重算；完整包源码、看板、验证工具、README/治理与研究文档，以及显式纳入验收的公开/私有证据只要在验收后变化，当前 receipt 就会失效。未纳入发布范围的任意本地研究产物不在此概括内。为保证相同证据生成相同字节，acceptance 有意不写墙钟时间。
+这个入口先取得仓库级独占锁并把旧 acceptance 原子降级为 `stale_not_accepted`，随后只捕获一次最小源码/证据快照。全量测试、npm 锁定安装与构建、verification scope、两个独立临时源码副本的字节级一致构建、最终候选 wheel 的隔离安装和视频闭环均从该快照运行；捕获完成后的工作树 A→B→A 编辑不会混入同一次发布。最终 verifier 会在发布前逐行回读 manifest 对应的 snapshot 文件，重算固定 Task2、TeachObs 条件证据、wheel/公开目录隐私审计和 exact wheel allowlist，并核验原始 project/exact proof 的 schema、状态、wheel、scope、checks 与收据哈希；缺少任一 manifest 或原始 proof 都失败关闭。全部通过后才先原子替换 `dist/` 中的同名 wheel，最后原子替换正向 acceptance；positive rename 后不再运行可能失败的语义检查。因此中途失败不会遗留看似仍有效的旧验收；`--output` 也只接受仓库内 canonical acceptance 路径。私有 conditional evidence 以不公开路径的聚合哈希绑定，每个被检查文件都参与摘要；4GB 原始媒体不会被复制。逐文件 snapshot manifest 和原始 proof 仅存在于受锁的临时目录并在发布后删除，公开 acceptance 只保留文件数、总字节数和聚合 SHA-256；脱离该次构建临时 proof 的独立 verifier 会按设计失败关闭，需重新运行发布验证。为保证相同证据生成相同字节，acceptance 有意不写墙钟时间。
+
+锁的 owner 文件记录 PID、开始时间和快照摘要。若进程遭 `SIGKILL`，锁目录可能残留；必须先确认 owner 中的 PID 已不存在，再仅手工删除 `artifacts/.release-acceptance.lock`，脚本不会自动猜测并删除可能仍然存活的锁。
 
 如需逐步排障，底层入口仍可单独运行：
 
@@ -957,7 +1018,7 @@ artifacts/            演示生成物；真实课堂逐样本产物保持私有
 
 1. 当前已覆盖完整视频停顿等待、场景变化、OCR 文字演进、CLIP 封闭 ontology 视觉语义和匿名课堂观察；手势指向、复杂图表关系推理仍需专用检测器或经标注验证的视觉语言方法。CLIP 相对 prompt 分数本身不是分类准确率。
 2. 自动评估主要检查过程质量，不能替代真实学生的前后测。
-3. 完整长视频已经分块并融合为事件时间轴，但一个视频当前仍输出一个主 Skill；抽取器已区分观察证据和推荐脚手架，尚未完成 episode 级多 Skill 聚类和独立专家 gold-set 评测。
+3. 完整长视频已经分块并融合为事件时间轴；`tsm mine-episode-skills` / `scripts/run_episode_skill_mining.py` 现在可按确定性 lexical/event boundary 候选切分，每个 episode 输出一个保留父级 evidence-id 的私有 Skill artifact、manifest 与 receipt。该切分仍是启发式候选，不等于 semantic clustering，也没有独立专家 episode gold、Skill 质量或教学效果验证。
 4. 下一步应在冻结当前检测/抽取 pipeline 后，由独立复核者标注事件和 Skill 质量，并在新数据上做配对四臂确认性消融；正式字幕、OCR/CLIP 输出和内部量表完成都不自动构成方法 gold label 或多模态增益。
 5. 真实课堂公开 sample pilot 已运行 Visual、Audio、Fusion 消融，但音频覆盖与标签完全相关，Audio/Fusion 结果已判无效；本地链路只选择 visual checkpoint 调试，且不公开发布。要声称可泛化准确率，仍需完整数据、按 session/参与者隔离的测试集和跨学校外部验证。事件级问题检测、困惑识别等任务还需要各自的人工时间段真值，不能沿用投入度分类分数。
 6. DIPSER 的严格因果开发期 Accuracy 为 0.8176；使用完整 held-out session 的离线 transductive 层级候选在一个固定 SGKF5 划分触及 0.9020，但 LOSO 为 0.8986、50-seed 均值为 0.8883，LOCO/双重阻断仅 0.6554/0.6351。冻结全部模型、gate 和特征后，还需要未参与开发的新 cohort/session 或外部学校锁箱数据，才能建立确认性 0.9 与多模态增益。

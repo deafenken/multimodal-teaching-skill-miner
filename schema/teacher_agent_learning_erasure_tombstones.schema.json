@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_learning_erasure_tombstones.schema.json",
+  "title": "Content-free permanent learning-record erasure fences",
+  "type": "object",
+  "required": ["schema", "version", "tombstones"],
+  "properties": {
+    "schema": {
+      "const": "teaching_skill_miner.teacher_agent_learning_erasure_tombstones.v1"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tombstones": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^learner_[0-9a-f]{64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "required": ["purged_at_utc", "generation"],
+        "properties": {
+          "purged_at_utc": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

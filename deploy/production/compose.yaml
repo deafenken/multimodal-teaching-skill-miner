@@ -1,0 +1,203 @@
+name: teachlab-production
+
+services:
+  edge:
+    image: ${TEACHLAB_CADDY_IMAGE:?set a digest-pinned Caddy image}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    user: "1000:1000"
+    init: true
+    ports:
+      - "${TEACHLAB_HTTP_PORT:-80}:80"
+      - "${TEACHLAB_HTTPS_PORT:-443}:443"
+    environment:
+      ACME_EMAIL: ${TEACHLAB_ACME_EMAIL:?set ACME account email}
+      TEACHLAB_PUBLIC_HOST: ${TEACHLAB_PUBLIC_HOST:?set exact public host}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - edge_data:/data
+      - edge_config:/config
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=1000,gid=1000,mode=0700
+    depends_on:
+      api: {condition: service_healthy}
+      console: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, caddy, version]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      replicas: 1
+      resources:
+        limits: {cpus: "1.00", memory: 256M}
+        reservations: {cpus: "0.10", memory: 64M}
+    networks: [frontend]
+
+  console:
+    image: ${TEACHLAB_CONSOLE_IMAGE:?set a digest-pinned Console image}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: "10001:10001"
+    init: true
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_TEACHLAB_AUTH_MODE: oidc
+      TEACHLAB_HARNESS_MODE: authenticated_apps_api
+      TEACHLAB_APPS_API_URL: https://${TEACHLAB_PUBLIC_HOST:?set exact public host}
+      TEACHLAB_APPS_API_INTERNAL_URL: http://api:4000
+      TEACHLAB_CONSOLE_ORIGIN: https://${TEACHLAB_PUBLIC_HOST:?set exact public host}
+      TEACHLAB_APPS_API_COOKIE_MODE: secure
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      replicas: 1
+      resources:
+        limits: {cpus: "2.00", memory: 768M}
+        reservations: {cpus: "0.25", memory: 256M}
+    networks: [frontend]
+
+  api:
+    image: ${TEACHLAB_API_IMAGE:?set a digest-pinned API image}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: "10001:10001"
+    init: true
+    # Container-wide process budget. Per-worker RLIMIT_NPROC is deliberately
+    # not used because all workers share uid 10001.
+    pids_limit: 256
+    stop_grace_period: 45s
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+      AUTH_MODE: oidc
+      DATA_BACKEND: postgres
+      DATABASE_URL_FILE: /run/teachlab/database-url
+      PG_SSL_MODE: verify-full
+      SESSION_COOKIE_SECURE: "true"
+      SESSION_SECRET_FILE: /run/teachlab/session-secret
+      OIDC_ISSUER: ${TEACHLAB_OIDC_ISSUER:?set exact HTTPS issuer}
+      OIDC_AUDIENCE: ${TEACHLAB_OIDC_AUDIENCE:?set audience}
+      OIDC_CLIENT_ID: ${TEACHLAB_OIDC_CLIENT_ID:?set client id}
+      OIDC_CLIENT_SECRET_FILE: /run/teachlab/oidc-client-secret
+      OIDC_TRANSACTION_SECRET_FILE: /run/teachlab/oidc-transaction-secret
+      OIDC_REDIRECT_URI: https://${TEACHLAB_PUBLIC_HOST:?set exact public host}/api/teacher-agent/security/login/callback
+      OIDC_EXPECTED_HOST: ${TEACHLAB_PUBLIC_HOST:?set exact public host}
+      OIDC_ACCOUNT_STEP_UP_MAX_AGE_SECONDS: ${TEACHLAB_ACCOUNT_STEP_UP_MAX_AGE_SECONDS:-300}
+      OIDC_ACCOUNT_AAL2_ACR_VALUES: ${TEACHLAB_ACCOUNT_AAL2_ACR_VALUES:?set exact IdP AAL2 acr allowlist}
+      TEACHER_ENTITLEMENT_DIRECTORY_URL: ${TEACHLAB_TEACHER_ENTITLEMENT_DIRECTORY_URL:?set exact HTTPS teacher entitlement endpoint}
+      TEACHER_ENTITLEMENT_DIRECTORY_BEARER_SECRET_FILE: /run/teachlab/teacher-entitlement-directory-bearer
+      TEACHER_ENTITLEMENT_BINDING_KEY_FILE: /run/teachlab/teacher-entitlement-binding-key
+      TEACHER_ENTITLEMENT_RECEIPT_KEY_FILE: /run/teachlab/teacher-entitlement-receipt-key
+      TEACHER_ENTITLEMENT_POLICY_ID: ${TEACHLAB_TEACHER_ENTITLEMENT_POLICY_ID:?set approved teacher entitlement policy id}
+      TEACHER_ENTITLEMENT_POLICY_VERSION: ${TEACHLAB_TEACHER_ENTITLEMENT_POLICY_VERSION:?set current teacher entitlement policy version}
+      TEACHER_ENTITLEMENT_FRESHNESS_TTL_MS: ${TEACHLAB_TEACHER_ENTITLEMENT_FRESHNESS_TTL_MS:-30000}
+      # No revocation-event consumer exists in this topology. Keep the settled
+      # cache at or below five seconds; the API enforces that production cap.
+      TEACHER_ENTITLEMENT_CACHE_TTL_MS: ${TEACHLAB_TEACHER_ENTITLEMENT_CACHE_TTL_MS:-5000}
+      TEACHER_ENTITLEMENT_PROVIDER_TIMEOUT_MS: ${TEACHLAB_TEACHER_ENTITLEMENT_PROVIDER_TIMEOUT_MS:-2000}
+      TEACHER_ENTITLEMENT_MAX_RESPONSE_BYTES: ${TEACHLAB_TEACHER_ENTITLEMENT_MAX_RESPONSE_BYTES:-65536}
+      TEACHER_ENTITLEMENT_MAX_CLOCK_SKEW_MS: ${TEACHLAB_TEACHER_ENTITLEMENT_MAX_CLOCK_SKEW_MS:-5000}
+      TEACHER_ENTITLEMENT_MAX_CACHE_ENTRIES: ${TEACHLAB_TEACHER_ENTITLEMENT_MAX_CACHE_ENTRIES:-10000}
+      TEACHER_ENTITLEMENT_MIN_ASSURANCE_LEVEL: ${TEACHLAB_TEACHER_ENTITLEMENT_MIN_ASSURANCE_LEVEL:-2}
+      TEACHER_AUTHORITY_ROLES: ${TEACHLAB_TEACHER_AUTHORITY_ROLES:-teacher}
+      # Safeguarding is intentionally an exact singleton role; AppConfig
+      # rejects aliases or teacher-role reuse.
+      SAFEGUARDING_AUTHORITY_ROLES: safeguarding
+      TEACHER_AUTHORITY_TTL_SECONDS: ${TEACHLAB_TEACHER_AUTHORITY_TTL_SECONDS:-120}
+      OIDC_REMOTE_PROCESSING_POLICY_CLAIM: ${TEACHLAB_REMOTE_PROCESSING_POLICY_CLAIM:-teachlab_remote_processing_policy}
+      OIDC_REMOTE_PROCESSING_POLICY_VERSION_CLAIM: ${TEACHLAB_REMOTE_PROCESSING_POLICY_VERSION_CLAIM:-teachlab_remote_processing_policy_version}
+      REMOTE_SUBJECT_POLICY_ID: ${TEACHLAB_REMOTE_SUBJECT_POLICY_ID:?set approved organization policy id}
+      REMOTE_SUBJECT_POLICY_VERSION: ${TEACHLAB_REMOTE_SUBJECT_POLICY_VERSION:?set approved organization policy version}
+      CORS_ORIGINS: https://${TEACHLAB_PUBLIC_HOST:?set exact public host}
+      ACCOUNT_SCOPE_KEY_VERSION: ${TEACHLAB_ACCOUNT_SCOPE_KEY_VERSION:-k1}
+      ACCOUNT_SCOPE_SECRET_FILE: /run/teachlab/account-scope-secret
+      ACCOUNT_IDENTITY_NAMESPACE_VERSION: ${TEACHLAB_ACCOUNT_IDENTITY_NAMESPACE_VERSION:-ns1}
+      ACCOUNT_IDENTITY_NAMESPACE_SECRET_FILE: /run/teachlab/account-identity-namespace-secret
+      ACCOUNT_DELETION_STATUS_SECRET_FILE: /run/teachlab/account-deletion-status-secret
+      ACCOUNT_CACHE_SCOPE_SECRET_FILE: /run/teachlab/account-cache-scope-secret
+      ACCOUNT_CACHE_SCOPE_EPOCH: ${TEACHLAB_ACCOUNT_CACHE_SCOPE_EPOCH:-epoch1}
+      HARNESS_GATEWAY_ENABLED: "true"
+      HARNESS_WORKER_ROOT: /var/lib/teachlab/scopes
+      HARNESS_WORKER_CWD: /opt/teachlab/api
+      HARNESS_WORKER_PYTHON: /usr/local/bin/python
+      # This production topology is intentionally one exact remote backend.
+      # Deterministic/local deployments use a separate non-production config
+      # and must not inherit the provider key or policy mounted below.
+      HARNESS_WORKER_BACKEND: deepseek
+      HARNESS_WORKER_FILESYSTEM_ISOLATION_REQUIRED: "true"
+      # Exact per-worker Linux limits. Python lowers both soft and hard limits
+      # before serving or probing; parser children inherit the same boundary.
+      HARNESS_WORKER_RLIMIT_CORE_BYTES: "0"
+      HARNESS_WORKER_RLIMIT_NOFILE: "256"
+      HARNESS_WORKER_RLIMIT_FSIZE_BYTES: "536870912"
+      HARNESS_WORKER_RLIMIT_AS_BYTES: "1610612736"
+      HARNESS_SAFEGUARDING_LOCALE: ${TEACHLAB_SAFEGUARDING_LOCALE:?set trusted safeguarding locale}
+      HARNESS_SAFEGUARDING_DISPATCH_URL: ${TEACHLAB_SAFEGUARDING_DISPATCH_URL:?set exact HTTPS institutional safeguarding receiver}
+      HARNESS_SAFEGUARDING_DISPATCH_BEARER_SECRET_FILE: /run/teachlab/safeguarding-dispatch-bearer
+      HARNESS_SAFEGUARDING_DISPATCH_POLICY_VERSION: ${TEACHLAB_SAFEGUARDING_DISPATCH_POLICY_VERSION:?set approved safeguarding routing policy version}
+      HARNESS_SAFEGUARDING_DISPATCH_TIMEOUT_MS: ${TEACHLAB_SAFEGUARDING_DISPATCH_TIMEOUT_MS:-5000}
+      HARNESS_SAFEGUARDING_DISPATCH_MAX_RESPONSE_BYTES: ${TEACHLAB_SAFEGUARDING_DISPATCH_MAX_RESPONSE_BYTES:-32768}
+      # Production retention is explicit, bounded and signed by a deployment-
+      # dedicated authority. None of these values comes from a browser.
+      HARNESS_SAFEGUARDING_RETENTION_POLICY_VERSION: ${TEACHLAB_SAFEGUARDING_RETENTION_POLICY_VERSION:?set approved closed-case retention policy version}
+      HARNESS_SAFEGUARDING_RETENTION_MINIMUM_CLOSED_AGE_SECONDS: ${TEACHLAB_SAFEGUARDING_RETENTION_MINIMUM_CLOSED_AGE_SECONDS:?set minimum closed-case age in seconds}
+      HARNESS_SAFEGUARDING_RETENTION_MAXIMUM_CASES_PER_RUN: ${TEACHLAB_SAFEGUARDING_RETENTION_MAXIMUM_CASES_PER_RUN:?set bounded cases per supervisor run}
+      HARNESS_SAFEGUARDING_RETENTION_AUTHORITY_SECRET_FILE: /run/teachlab/safeguarding-retention-authority
+      HARNESS_SAFEGUARDING_RETENTION_DEPLOYMENT_CONTEXT_SHA256: ${TEACHLAB_SAFEGUARDING_RETENTION_DEPLOYMENT_CONTEXT_SHA256:?set stable deployment-context SHA-256}
+      HARNESS_SCOPE_KEY_VERSION: ${TEACHLAB_SCOPE_KEY_VERSION:-k1}
+      HARNESS_SCOPE_SECRET_FILE: /run/teachlab/harness-scope-secret
+      HARNESS_PROVIDER_API_KEY_FILE: /run/teachlab/provider-api-key
+      HARNESS_PROVIDER_POLICY_ID: ${TEACHLAB_PROVIDER_POLICY_ID:?set approved provider policy id}
+      HARNESS_PROVIDER_POLICY_VERSION: ${TEACHLAB_PROVIDER_POLICY_VERSION:?set approved provider policy version}
+      HARNESS_PROVIDER_PROCESSING_REGION: ${TEACHLAB_PROVIDER_PROCESSING_REGION:?set approved processing region}
+      HARNESS_PROVIDER_RETENTION_DAYS: ${TEACHLAB_PROVIDER_RETENTION_DAYS:?set approved retention days}
+      HARNESS_PROVIDER_DELETION_STATUS: ${TEACHLAB_PROVIDER_DELETION_STATUS:?set exact deletion status}
+      HARNESS_PROVIDER_DOCUMENTATION_URL: ${TEACHLAB_PROVIDER_DOCUMENTATION_URL:?set exact HTTPS provider policy URL}
+      METRICS_TOKEN_FILE: /run/teachlab/metrics-token
+    volumes:
+      - scope_data:/var/lib/teachlab
+      # The directory and every file are validated by the API. Mounting the
+      # directory as one unit preserves its uid-10001/mode-0700 boundary;
+      # individual file bind mounts would leave /run/teachlab root-owned and
+      # make the production private-file contract impossible to satisfy.
+      - ${TEACHLAB_SECRETS_DIR:?uid-10001 mode-0700 private directory required}:/run/teachlab:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4000/ready').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      # The Python scope worker pool is process-local. Multiple API replicas
+      # may never share this volume until a distributed lease scheduler exists.
+      replicas: 1
+      resources:
+        limits: {cpus: "4.00", memory: 4G}
+        reservations: {cpus: "0.50", memory: 1G}
+    networks: [frontend, data]
+
+volumes:
+  edge_data: {}
+  edge_config: {}
+  scope_data: {}
+
+networks:
+  frontend: {}
+  data: {}

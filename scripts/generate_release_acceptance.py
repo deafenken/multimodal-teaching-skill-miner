@@ -962,13 +962,14 @@ def _validate_allowlist(
 
 def _verification_scope(root: Path) -> dict[str, Any]:
     roots = (
+        root / "apps",
+        root / "deploy",
         root / "teaching_skill_miner",
         root / "scripts",
         root / "tests",
         root / "release",
         root / ".github" / "workflows",
-        root / "data" / "demo",
-        root / "data" / "transcripts",
+        root / "data",
         root / "configs",
         root / "constraints",
         root / "docker",
@@ -977,15 +978,23 @@ def _verification_scope(root: Path) -> dict[str, Any]:
     )
     suffixes = {
         ".Dockerfile",
+        ".cjs",
+        ".css",
         ".html",
+        ".js",
         ".json",
+        ".lock",
+        ".mjs",
         ".md",
         ".mp4",
         ".png",
         ".py",
         ".sh",
         ".svg",
+        ".sql",
         ".toml",
+        ".ts",
+        ".tsx",
         ".txt",
         ".yaml",
         ".yml",
@@ -1000,6 +1009,9 @@ def _verification_scope(root: Path) -> dict[str, Any]:
         root / "LICENSE",
         root / "PRIVACY.md",
         root / "SECURITY.md",
+        root / ".env.example",
+        root / ".gitignore",
+        root / ".dockerignore",
         root / "THIRD_PARTY_DATA.md",
         root / "data" / "dataset_manifest.json",
         root / "data" / "evaluation_cases.json",
@@ -1013,6 +1025,7 @@ def _verification_scope(root: Path) -> dict[str, Any]:
         root / "data" / "teacher_agent_learning_outcome_demo.json",
         root / "data" / "teacher_agent_multiturn_benchmark_v1.json",
         root / "data" / "teacher_agent_skill_library_v2.json",
+        root / "deploy" / "production" / "Caddyfile",
     )
     for fixed in fixed_paths:
         if fixed.is_file() and not fixed.is_symlink():
@@ -1023,7 +1036,33 @@ def _verification_scope(root: Path) -> dict[str, Any]:
         if tree.is_symlink() or not tree.is_dir():
             raise AcceptanceError(f"verification scope is not a real directory: {tree}")
         for path in tree.rglob("*"):
-            if "__pycache__" in path.parts or path.suffix not in suffixes:
+            relative_parts = path.relative_to(root).parts
+            if (
+                (
+                    len(relative_parts) >= 2
+                    and relative_parts[0] == "data"
+                    and relative_parts[1] in {"generated", "private", "real"}
+                )
+                or
+                any(
+                    part
+                    in {
+                        "__pycache__",
+                        ".next",
+                        ".test-dist",
+                        ".turbo",
+                        "coverage",
+                        "dist",
+                        "node_modules",
+                    }
+                    for part in relative_parts
+                )
+                or (
+                    path.suffix not in suffixes
+                    and path.name
+                    not in {".env.example", ".gitignore", "Caddyfile", "Dockerfile"}
+                )
+            ):
                 continue
             if path.is_symlink():
                 raise AcceptanceError(f"verification scope contains a symlink: {path}")
@@ -1045,6 +1084,105 @@ def _verification_scope(root: Path) -> dict[str, Any]:
         json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
     return {"file_count": len(rows), "sha256": digest}
+
+
+def _release_source_snapshot_binding(
+    root: Path, manifest_path: Path | None
+) -> dict[str, Any] | None:
+    """Revalidate every file sealed by the one-time release snapshot.
+
+    The returned aggregate intentionally contains no paths.  Its digest is over
+    path/size/hash rows, so every conditional private file is bound without
+    publishing private directory names in the acceptance receipt.
+    """
+
+    if manifest_path is None:
+        return None
+    manifest = _load_json(manifest_path)
+    if manifest.get("schema_version") != (
+        "teaching_skill_miner.release_source_snapshot.v1"
+    ):
+        raise AcceptanceError("unexpected release source-snapshot schema")
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        raise AcceptanceError("release source snapshot has no files")
+    binding_rows: list[dict[str, Any]] = []
+    private_rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in files:
+        if not isinstance(row, dict):
+            raise AcceptanceError("release source snapshot has a malformed file row")
+        relative = row.get("path")
+        size = row.get("size_bytes")
+        digest = row.get("sha256")
+        kind = row.get("source_kind")
+        if (
+            not isinstance(relative, str)
+            or relative in seen
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+            or not isinstance(digest, str)
+            or SHA256_RE.fullmatch(digest) is None
+            or kind
+            not in {
+                "conditional_private_evidence",
+                "release_source_or_public_evidence",
+            }
+        ):
+            raise AcceptanceError("release source snapshot has an invalid file row")
+        _safe_member_name(relative)
+        seen.add(relative)
+        payload = _require_regular_file(root / relative)
+        if len(payload) != size or _sha256_bytes(payload) != digest:
+            raise AcceptanceError(
+                "release source/evidence changed inside the sealed snapshot"
+            )
+        compact = {"path": relative, "size_bytes": size, "sha256": digest}
+        binding_rows.append(compact)
+        if kind == "conditional_private_evidence":
+            if not PurePosixPath(relative).parts[:2] == (
+                "artifacts",
+                "private",
+            ):
+                raise AcceptanceError("private snapshot evidence has an unsafe path")
+            private_rows.append(compact)
+
+    def binding(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        return {
+            "file_count": len(rows),
+            "total_size_bytes": sum(int(row["size_bytes"]) for row in rows),
+            "sha256": _sha256_bytes(
+                json.dumps(
+                    rows,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ),
+        }
+
+    source_binding = binding(binding_rows)
+    private_binding = binding(private_rows)
+    if (
+        manifest.get("snapshot_sha256") != source_binding["sha256"]
+        or manifest.get("source_snapshot_binding") != source_binding
+        or manifest.get("conditional_private_evidence_binding") != private_binding
+    ):
+        raise AcceptanceError("release source snapshot aggregate binding is stale")
+    return {
+        "source_snapshot": source_binding,
+        "conditional_private_evidence": private_binding,
+    }
+
+
+def write_verification_scope(args: argparse.Namespace) -> dict[str, Any]:
+    result = {
+        "schema_version": "teaching_skill_miner.verification_scope.v1",
+        "verification_scope": _verification_scope(args.repository_root.resolve()),
+    }
+    _write_json_atomic(args.output, result)
+    return result
 
 
 def _pytest_summary(path: Path) -> dict[str, Any]:
@@ -1208,6 +1346,15 @@ def record_project(args: argparse.Namespace) -> dict[str, Any]:
     if first_summary != second_summary:
         raise AcceptanceError("the two clean release build summaries do not match")
     scope = _verification_scope(root)
+    initial_scope_receipt = _load_json(args.expected_verification_scope)
+    if initial_scope_receipt.get("schema_version") != (
+        "teaching_skill_miner.verification_scope.v1"
+    ):
+        raise AcceptanceError("unexpected initial verification-scope receipt schema")
+    if initial_scope_receipt.get("verification_scope") != scope:
+        raise AcceptanceError(
+            "verification source scope changed while project checks were running"
+        )
     exact_receipt = _load_json(args.exact_wheel_receipt)
     _validate_exact_receipt(exact_receipt, first_summary, scope)
     public_members = _directory_members(args.public_directory.resolve())
@@ -1245,6 +1392,9 @@ def record_project(args: argparse.Namespace) -> dict[str, Any]:
         lockbox_draft=getattr(args, "teachobs_lockbox_draft", None),
     )
     task_two_evidence_binding = _task_two_release_binding(root)
+    source_snapshot_binding = _release_source_snapshot_binding(
+        root, getattr(args, "source_snapshot_manifest", None)
+    )
     if (
         teachobs_private_inputs_exist
         and teachobs_governance_binding is None
@@ -1263,6 +1413,7 @@ def record_project(args: argparse.Namespace) -> dict[str, Any]:
         "runner": "scripts/verify_project.sh",
         "wheel": first_summary,
         "verification_scope": scope,
+        "release_source_snapshot": source_snapshot_binding,
         "pytest": _pytest_summary(args.junit_xml),
         "checks": {
             "ruff_passed": True,
@@ -1278,6 +1429,9 @@ def record_project(args: argparse.Namespace) -> dict[str, Any]:
             "exact_release_wheel_verification_passed": True,
             "generated_skill_schema_validation_passed": True,
             "task_two_entrypoints_and_claim_boundaries_passed": True,
+            "api_locked_install_audit_tests_typecheck_build_passed": True,
+            "console_locked_install_audit_tests_typecheck_sealed_build_passed": True,
+            "deployment_sources_bound_to_receipt": True,
         },
         "conditional_checks": {
             "formal_caption_private_audit_run": args.formal_caption_audit_run,
@@ -1378,6 +1532,55 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         raise AcceptanceError(
             "project-verification receipt is stale for current verification code"
         )
+    release_source_snapshot = project_receipt.get("release_source_snapshot")
+    if release_source_snapshot is not None:
+        if (
+            not isinstance(release_source_snapshot, dict)
+            or not isinstance(
+                release_source_snapshot.get("source_snapshot"), dict
+            )
+            or not isinstance(
+                release_source_snapshot.get("conditional_private_evidence"), dict
+            )
+        ):
+            raise AcceptanceError("project receipt has an invalid source snapshot")
+    snapshot_manifest = root / ".release-source-snapshot.json"
+    requested_snapshot_manifest = getattr(args, "source_snapshot_manifest", None)
+    if requested_snapshot_manifest is None:
+        raise AcceptanceError(
+            "positive release acceptance requires the source snapshot manifest"
+        )
+    if requested_snapshot_manifest.is_symlink():
+        raise AcceptanceError("release source snapshot manifest must not be a symlink")
+    try:
+        requested_manifest_resolved = requested_snapshot_manifest.resolve(strict=True)
+        canonical_manifest_resolved = snapshot_manifest.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise AcceptanceError(
+            "positive release acceptance requires the source snapshot manifest"
+        ) from exc
+    if requested_manifest_resolved != canonical_manifest_resolved:
+        raise AcceptanceError(
+            "release source snapshot manifest must use the canonical snapshot path"
+        )
+    current_source_snapshot = _release_source_snapshot_binding(
+        root,
+        requested_snapshot_manifest,
+    )
+    if current_source_snapshot is None:
+        raise AcceptanceError(
+            "positive release acceptance requires a nonempty immutable source snapshot"
+        )
+    source_aggregate = current_source_snapshot.get("source_snapshot")
+    if (
+        not isinstance(source_aggregate, dict)
+        or source_aggregate.get("file_count", 0) < 1
+    ):
+        raise AcceptanceError("release source snapshot binding is empty")
+    if current_source_snapshot != release_source_snapshot:
+        raise AcceptanceError(
+            "release source/evidence snapshot changed after project verification"
+        )
     pytest_receipt = project_receipt.get("pytest")
     if not isinstance(pytest_receipt, dict) or pytest_receipt.get("passed") is not True:
         raise AcceptanceError(
@@ -1419,6 +1622,9 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         "exact_release_wheel_verification_passed",
         "generated_skill_schema_validation_passed",
         "task_two_entrypoints_and_claim_boundaries_passed",
+        "api_locked_install_audit_tests_typecheck_build_passed",
+        "console_locked_install_audit_tests_typecheck_sealed_build_passed",
+        "deployment_sources_bound_to_receipt",
     }
     if (
         not isinstance(checks, dict)
@@ -1572,6 +1778,7 @@ def build_acceptance(args: argparse.Namespace) -> dict[str, Any]:
         "environment": environment,
         "verification_binding": {
             "verification_scope": scope,
+            "release_source_snapshot": release_source_snapshot,
             "project_verification_receipt_sha256": _sha256_bytes(
                 _require_regular_file(args.project_verification_receipt)
             ),
@@ -1611,6 +1818,16 @@ def _parser() -> argparse.ArgumentParser:
     pending.add_argument("--output", type=Path, required=True)
     pending.set_defaults(handler=write_pending)
 
+    verification_scope = subparsers.add_parser(
+        "verification-scope",
+        help="seal the source scope before project verification starts",
+    )
+    verification_scope.add_argument(
+        "--repository-root", type=Path, default=Path.cwd()
+    )
+    verification_scope.add_argument("--output", type=Path, required=True)
+    verification_scope.set_defaults(handler=write_verification_scope)
+
     wheel = subparsers.add_parser(
         "record-wheel", help="record a successfully completed exact-wheel verification"
     )
@@ -1631,6 +1848,10 @@ def _parser() -> argparse.ArgumentParser:
     project.add_argument("--public-directory", type=Path, required=True)
     project.add_argument("--public-release-audit", type=Path, required=True)
     project.add_argument("--repository-root", type=Path, default=Path.cwd())
+    project.add_argument(
+        "--expected-verification-scope", type=Path, required=True
+    )
+    project.add_argument("--source-snapshot-manifest", type=Path)
     project.add_argument("--formal-caption-audit-run", action="store_true")
     project.add_argument("--teachobs-private-receipt-audit-run", action="store_true")
     project.add_argument("--teachobs-human-manifest", type=Path)
@@ -1650,6 +1871,9 @@ def _parser() -> argparse.ArgumentParser:
     acceptance.add_argument("--public-directory", type=Path, required=True)
     acceptance.add_argument("--public-release-audit", type=Path, required=True)
     acceptance.add_argument("--repository-root", type=Path, default=Path.cwd())
+    acceptance.add_argument(
+        "--source-snapshot-manifest", type=Path, required=True
+    )
     acceptance.add_argument("--output", type=Path, required=True)
     acceptance.set_defaults(handler=build_acceptance)
     return parser

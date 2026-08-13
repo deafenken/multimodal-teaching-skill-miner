@@ -202,72 +202,48 @@
           <div class="session-state"><i></i><span id="sessionStatus">等待开始</span></div>
         </header>
 
-        <section id="learningCommandBar" class="learning-command-bar" aria-label="本轮教学控制台" aria-live="polite">
-          <div class="command-cell goal-cell">
-            <span class="command-label">GOAL</span>
-            <strong id="commandGoal">尚未开始学习</strong>
-            <small id="commandGoalDetail">先设置一个可验证的学习目标。</small>
-          </div>
-          <div class="command-cell plan-cell">
-            <span class="command-label">PLAN</span>
-            <strong id="commandPlan">等待计划</strong>
-            <small id="commandPlanDetail">系统会先诊断，再选择下一步 Skill。</small>
-          </div>
-          <div class="command-cell progress-cell">
-            <div class="command-cell-heading"><span class="command-label">PROGRESS</span><strong id="commandProgressText">0%</strong></div>
-            <progress id="commandProgressBar" max="1" value="0" aria-label="教学目标进度 0%"></progress>
-            <small id="commandProgressDetail">0 / 0 个目标步骤</small>
-          </div>
-          <div class="command-cell control-cell">
-            <span class="command-label">CONTROL</span>
-            <strong id="commandControlState">READY</strong>
-            <small id="commandControlDetail">等待开始</small>
-          </div>
-        </section>
+        <details id="runContextMenu" class="run-context-menu">
+          <summary aria-label="展开当前目标、计划与教学控制状态">
+            <span class="run-context-pulse" aria-hidden="true"></span>
+            <strong id="contextSummaryGoal">尚未开始学习</strong>
+            <span id="contextSummaryPlan">等待计划</span>
+            <span class="run-context-progress"><i id="contextSummaryProgressBar"></i><b id="contextSummaryProgress">0%</b></span>
+            <span id="contextSummaryControl" class="run-context-control">READY</span>
+            <span class="run-context-chevron" aria-hidden="true">⌄</span>
+          </summary>
+          <div class="run-context-popover">
+            <section id="learningCommandBar" class="learning-command-bar" aria-label="本轮教学控制台" aria-live="polite">
+              <div class="command-cell goal-cell">
+                <span class="command-label">GOAL</span>
+                <strong id="commandGoal">尚未开始学习</strong>
+                <small id="commandGoalDetail">先设置一个可验证的学习目标。</small>
+              </div>
+              <div class="command-cell plan-cell">
+                <span class="command-label">PLAN</span>
+                <strong id="commandPlan">等待计划</strong>
+                <small id="commandPlanDetail">系统会先诊断，再选择下一步 Skill。</small>
+              </div>
+              <div class="command-cell progress-cell">
+                <div class="command-cell-heading"><span class="command-label">PROGRESS</span><strong id="commandProgressText">0%</strong></div>
+                <progress id="commandProgressBar" max="1" value="0" aria-label="教学目标进度 0%"></progress>
+                <small id="commandProgressDetail">0 / 0 个目标步骤</small>
+              </div>
+              <div class="command-cell control-cell">
+                <span class="command-label">CONTROL</span>
+                <strong id="commandControlState">READY</strong>
+                <small id="commandControlDetail">等待开始</small>
+              </div>
+            </section>
 
-        <section id="liveDecisionStrip" class="live-decision-strip" aria-label="当前教学决策" aria-live="polite" hidden>
-          <div><span>本轮方法</span><strong id="liveSkillName">等待开始</strong></div>
-          <div><span>策略变化</span><strong id="liveSwitchLabel">—</strong></div>
-          <div><span>下一关注</span><strong id="liveNextFocus">—</strong></div>
-          <button id="openMethodInspectorButton" type="button"><span>查看选择依据</span><b aria-hidden="true">→</b></button>
-        </section>
-        <p id="liveSelectionReason" class="live-selection-reason" aria-live="polite" hidden>开始会话后，这里会用一句话说明为什么选择当前 Skill。</p>
-
-        <section id="agentTracePanel" class="agent-trace-panel" aria-labelledby="agentTraceTitle" hidden>
-          <details class="agent-trace-shell" open>
-            <summary>
-              <span class="trace-kicker">STRUCTURED RUN TRACE</span>
-              <strong id="agentTraceTitle">Agent 执行轨迹</strong>
-              <span id="agentTraceStatus" class="trace-status">等待开始</span>
-              <small id="agentTraceSummary">开始后展示计划、调用结果和最终教学动作</small>
-            </summary>
-            <div class="agent-trace-body">
-              <div class="trace-metrics" aria-label="本轮公开运行统计">
-                <span><small>STEPS</small><strong id="agentTraceStepCount">0</strong></span>
-                <span><small>MODEL CALLS</small><strong id="agentTraceModelCalls">0</strong></span>
-                <span><small>TOOL CALLS</small><strong id="agentTraceToolCalls">0</strong></span>
-                <span><small>FALLBACK / TURN</small><strong id="agentTraceFallbackCount">0</strong></span>
-                <span><small>PUBLIC EVENTS</small><strong id="agentTraceEventCount">0</strong></span>
-              </div>
-              <div class="agent-trace-grid">
-                <section class="agent-trace-card" aria-labelledby="agentTracePlanTitle">
-                  <header><span>PLAN</span><h3 id="agentTracePlanTitle">本轮计划与进度</h3></header>
-                  <ol id="agentTracePlan" class="agent-trace-plan"><li>尚未生成计划。</li></ol>
-                  <div class="trace-current-step"><span>当前步骤</span><strong id="agentTraceCurrentStep">—</strong><p id="agentTraceCurrentDetail">—</p></div>
-                </section>
-                <section class="agent-trace-card" aria-labelledby="agentTraceEventsTitle">
-                  <header><span>EVENTS</span><h3 id="agentTraceEventsTitle">调用与结果</h3></header>
-                  <ol id="agentTraceEvents" class="agent-trace-events"><li>尚无结构化事件。</li></ol>
-                </section>
-              </div>
-              <div class="agent-trace-outcome-grid">
-                <section class="trace-outcome-card"><span>STOP / ROUTE</span><strong id="agentTraceStop">继续等待学生</strong><p id="agentTraceStopDetail">模型停止建议只有在满足安全门槛后才会执行。</p></section>
-                <section class="trace-outcome-card final"><span>FINAL TEACHING ACTION</span><strong id="agentTraceActionType">—</strong><p id="agentTraceAction">—</p></section>
-              </div>
-              <p id="agentTraceBoundary" class="agent-trace-boundary">这里只展示可核验的结构化事件，不展示内部思考链、原始提示词或模型隐藏推理。</p>
-            </div>
-          </details>
-        </section>
+            <section id="liveDecisionStrip" class="live-decision-strip" aria-label="当前教学决策" aria-live="polite" hidden>
+              <div><span>本轮方法</span><strong id="liveSkillName">等待开始</strong></div>
+              <div><span>策略变化</span><strong id="liveSwitchLabel">—</strong></div>
+              <div><span>下一关注</span><strong id="liveNextFocus">—</strong></div>
+              <button id="openMethodInspectorButton" type="button"><span>查看选择依据</span><b aria-hidden="true">→</b></button>
+            </section>
+            <p id="liveSelectionReason" class="live-selection-reason" aria-live="polite" hidden>开始会话后，这里会用一句话说明为什么选择当前 Skill。</p>
+          </div>
+        </details>
 
         <div id="emptySession" class="empty-session">
           <div class="empty-mark" aria-hidden="true">T</div>
@@ -288,11 +264,54 @@
               <div id="historyList" class="history-list"></div>
             </section>
 
+            <section id="agentTracePanel" class="agent-trace-panel" aria-labelledby="agentTraceTitle" hidden>
+              <details class="agent-trace-shell">
+                <summary>
+                  <span class="trace-kicker" aria-hidden="true">●</span>
+                  <strong id="agentTraceTitle">TeachLab 正在执行</strong>
+                  <span id="agentTraceStatus" class="trace-status">等待开始</span>
+                  <small id="agentTraceSummary">开始后展示计划、调用结果和最终教学动作</small>
+                </summary>
+                <div class="agent-trace-body">
+                  <div class="trace-metrics" aria-label="本轮公开运行统计">
+                    <span><small>STEPS</small><strong id="agentTraceStepCount">0</strong></span>
+                    <span><small>MODEL CALLS</small><strong id="agentTraceModelCalls">0</strong></span>
+                    <span><small>TOOL CALLS</small><strong id="agentTraceToolCalls">0</strong></span>
+                    <span><small>FALLBACK / TURN</small><strong id="agentTraceFallbackCount">0</strong></span>
+                    <span><small>PUBLIC EVENTS</small><strong id="agentTraceEventCount">0</strong></span>
+                  </div>
+                  <div class="agent-trace-grid">
+                    <section class="agent-trace-card" aria-labelledby="agentTracePlanTitle">
+                      <header><span>PLAN</span><h3 id="agentTracePlanTitle">本轮计划与进度</h3></header>
+                      <ol id="agentTracePlan" class="agent-trace-plan"><li>尚未生成计划。</li></ol>
+                      <div class="trace-current-step"><span>当前步骤</span><strong id="agentTraceCurrentStep">—</strong><p id="agentTraceCurrentDetail">—</p></div>
+                    </section>
+                    <section class="agent-trace-card" aria-labelledby="agentTraceEventsTitle">
+                      <header><span>EVENTS</span><h3 id="agentTraceEventsTitle">调用与结果</h3></header>
+                      <ol id="agentTraceEvents" class="agent-trace-events"><li>尚无结构化事件。</li></ol>
+                    </section>
+                  </div>
+                  <div class="agent-trace-outcome-grid">
+                    <section class="trace-outcome-card"><span>STOP / ROUTE</span><strong id="agentTraceStop">继续等待学生</strong><p id="agentTraceStopDetail">模型停止建议只有在满足安全门槛后才会执行。</p></section>
+                    <section class="trace-outcome-card final"><span>FINAL TEACHING ACTION</span><strong id="agentTraceActionType">—</strong><p id="agentTraceAction">—</p></section>
+                  </div>
+                  <p id="agentTraceBoundary" class="agent-trace-boundary">这里只展示可核验的结构化事件，不展示内部思考链、原始提示词或模型隐藏推理。</p>
+                </div>
+              </details>
+            </section>
+
             <article class="teacher-card current-message">
               <div class="message-avatar" aria-hidden="true">T</div>
               <div class="message-content">
                 <header><span>老师 · 当前步骤</span><b id="actionType">—</b><strong id="currentActionOrigin" class="action-origin-chip" data-origin="unknown">来源待确认</strong></header>
                 <blockquote id="teacherMessage">—</blockquote>
+                <div class="message-actions" aria-label="当前教学消息操作">
+                  <button type="button" data-copy-target="teacherMessage"><span aria-hidden="true">⧉</span><span>复制</span></button>
+                  <button type="button" data-quick-response="请换一个更直观的例子。"><kbd>1</kbd><span>换个例子</span></button>
+                  <button type="button" data-quick-response="先只提示我下一小步，不要直接给答案。"><kbd>2</kbd><span>只提示一步</span></button>
+                  <button type="button" data-quick-response="我还没有听懂，请换一种方式解释。"><kbd>3</kbd><span>我没听懂</span></button>
+                  <button type="button" data-quick-response="系统可能误解了我的意思："><kbd>4</kbd><span>纠正系统理解</span></button>
+                </div>
                 <details class="teacher-audit-hint"><summary>查看本轮判断标准（教师 / 答辩）</summary>
                   <div class="teacher-audit-grid">
                     <section><span>学生刚才表现</span><p id="teacherAuditObservation">等待学生回答。</p></section>
@@ -306,18 +325,6 @@
           </div>
 
           <form id="turnForm" class="response-card">
-            <div class="quick-prompts" aria-label="快捷学习反馈">
-              <button type="button" data-quick-response="请换一个更直观的例子。">换个例子</button>
-              <button type="button" data-quick-response="先只提示我下一小步，不要直接给答案。">只提示一步</button>
-              <button type="button" data-quick-response="我还没有听懂，请换一种方式解释。">我没听懂</button>
-              <button type="button" data-quick-response="系统可能误解了我的意思：">系统误解了我的意思</button>
-            </div>
-            <div class="attachment-toolbar">
-              <button id="attachImageButton" class="attachment-button" type="button" aria-controls="answerImageInput attachmentPreview"><span aria-hidden="true">＋</span>添加答案图片</button>
-              <span>PNG / JPEG / WebP · 原图仅本机短暂处理</span>
-              <label class="visually-hidden" for="answerImageInput">选择答案图片</label>
-              <input id="answerImageInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-            </div>
             <figure id="attachmentPreview" class="attachment-preview" hidden>
               <img id="attachmentThumbnail" alt="待提交答案图片预览">
               <figcaption><strong id="attachmentName">答案图片</strong><span id="attachmentStatus">等待本机识别</span><small id="attachmentEvidencePreview">发送时提取 OCR，原图不会交给 DeepSeek。</small></figcaption>
@@ -330,7 +337,10 @@
               <button id="confirmAttachmentTextButton" type="button">确认识别文字</button>
             </section>
             <label class="visually-hidden" for="learnerResponse">输入你的回答</label>
-            <textarea id="learnerResponse" rows="3" maxlength="2000" placeholder="用自己的话回答老师，或直接添加答案照片……"></textarea>
+            <div class="composer-input-shell">
+              <span class="composer-prompt" aria-hidden="true">›</span>
+              <textarea id="learnerResponse" rows="1" maxlength="2000" placeholder="回复老师，输入 / 查看教学命令……"></textarea>
+            </div>
             <label id="fallbackSignalField" class="fallback-signal" hidden>
               <span>降级演示信号</span>
               <select id="fallbackSignalInput"><option value="partial">部分理解</option><option value="correct">理解正确</option><option value="misconception">存在误解</option><option value="confused">仍然困惑</option><option value="no_response">没有回应</option></select>
@@ -341,14 +351,36 @@
               <div class="recovery-actions"><button id="retryTurnButton" class="secondary-button" type="button" hidden>重新发送本轮</button><button id="handoffButton" class="text-button" type="button" hidden>结束并转人工</button></div>
             </section>
             <div class="composer-footer">
-              <div><span>Enter 换行 · ⌘/Ctrl + Enter 发送</span><button id="commandHintButton" class="text-button" type="button" aria-expanded="false" aria-controls="commandHints">教学控制</button></div>
-              <div class="composer-actions"><button id="cancelTurnButton" class="cancel-turn-button" type="button" hidden>停止生成</button><button id="stepButton" class="send-button" type="submit"><span>发送</span><span aria-hidden="true">↑</span></button></div>
+              <div class="composer-tools">
+                <button id="attachImageButton" class="attachment-button" type="button" aria-controls="answerImageInput attachmentPreview"><span aria-hidden="true">＋</span><span>附件</span></button>
+                <details id="composerModeMenu" class="composer-mode-menu">
+                  <summary aria-label="选择教学 Skill 控制模式">
+                    <span class="composer-mode-dot" aria-hidden="true"></span>
+                    <strong id="composerModeLabel">Auto</strong>
+                    <small aria-hidden="true">⌄</small>
+                  </summary>
+                  <div class="composer-mode-popover" role="group" aria-label="教学 Skill 控制模式">
+                    <button id="composerAutoModeButton" class="active" type="button" aria-pressed="true">
+                      <span aria-hidden="true">✦</span><span><strong>Auto</strong><small>根据学生反馈自动选择与切换 Skill</small></span>
+                    </button>
+                    <button id="composerManualModeButton" type="button" aria-pressed="false">
+                      <span aria-hidden="true">⌘</span><span><strong>选择 Skill</strong><small>打开方法检查器并手动锁定</small></span>
+                    </button>
+                  </div>
+                </details>
+                <button id="commandHintButton" class="composer-command-button" type="button" aria-expanded="false" aria-controls="commandHints"><span aria-hidden="true">/</span><span>命令</span></button>
+                <span id="composerStatusText" class="composer-status-text">Auto · 等待输入</span>
+                <span class="attachment-privacy-note">原图仅本机短暂处理 · 只提取文字证据</span>
+                <label class="visually-hidden" for="answerImageInput">选择答案图片</label>
+                <input id="answerImageInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+              </div>
+              <div class="composer-actions"><span class="composer-shortcut">Enter 发送 · Shift + Enter 换行</span><button id="cancelTurnButton" class="cancel-turn-button" type="button" hidden>停止生成</button><button id="stepButton" class="send-button" type="submit"><span>发送</span><span aria-hidden="true">↑</span></button></div>
             </div>
             <div id="commandHints" class="command-hints" hidden>
-              <button type="button" data-command="/auto">恢复自动</button>
-              <button type="button" data-command="/+skill ">指定 Skill</button>
-              <button type="button" data-command="/stop">结束并转人工</button>
-              <span>命令不会消耗教学轮次。</span>
+              <button type="button" data-command="/auto"><code>/auto</code><span><strong>恢复自动路由</strong><small>让 Agent 重新选择下一步 Skill</small></span><kbd>↵</kbd></button>
+              <button type="button" data-command="/+skill "><code>/+skill</code><span><strong>指定 Skill</strong><small>在方法检查器中锁定教学方法</small></span><kbd>↵</kbd></button>
+              <button type="button" data-command="/stop"><code>/stop</code><span><strong>结束并转人工</strong><small>保留当前学情并停止自动推进</small></span><kbd>↵</kbd></button>
+              <span>↑↓ 选择 · Enter 应用 · Esc 关闭；命令不消耗教学轮次。</span>
             </div>
             <p id="turnError" class="inline-error" role="alert" hidden></p>
           </form>

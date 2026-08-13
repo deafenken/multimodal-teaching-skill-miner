@@ -66,6 +66,56 @@ class TeacherAgentVisionTests(unittest.TestCase):
         self.assertIn("confidence=0.91", composed)
         self.assertIn("f[i] = min(f[j] + 1)", composed)
 
+    def test_abstained_visual_semantics_are_audited_but_not_copied_into_prompt(
+        self,
+    ) -> None:
+        composed = compose_visual_evidence_text(
+            "请看图片",
+            [
+                {
+                    "recognized_text": "",
+                    "status": "no_text_recognized",
+                    "needs_student_confirmation": True,
+                    "visual_semantics": {
+                        "description": "可能显示秘密答案 42",
+                        "claims": [{"statement": "秘密答案 42"}],
+                        "uncertainties": ["轴标签不可见"],
+                        "conflicts": [],
+                        "decision": "abstain",
+                    },
+                }
+            ],
+        )
+
+        self.assertIn("decision=abstain", composed)
+        self.assertIn("当前必须弃权", composed)
+        self.assertNotIn("秘密答案 42", composed)
+
+    def test_confirmation_candidates_remain_explicitly_unresolved_and_ungraded(
+        self,
+    ) -> None:
+        composed = compose_visual_evidence_text(
+            "图里是哪个符号",
+            [
+                {
+                    "recognized_text": "1 或 l",
+                    "status": "conflicting_recognition",
+                    "needs_student_confirmation": True,
+                    "visual_semantics": {
+                        "description": "手写字符可能是 1 或 l",
+                        "claims": [{"statement": "候选 1"}],
+                        "uncertainties": ["字形重叠"],
+                        "conflicts": [{"kind": "transcription_disagreement"}],
+                        "decision": "requires_confirmation",
+                    },
+                }
+            ],
+        )
+
+        self.assertIn("[UNRESOLVED_VISUAL_CANDIDATES; NOT_A_GRADING_KEY]", composed)
+        self.assertIn("decision=requires_confirmation", composed)
+        self.assertIn("grading_allowed=false; mastery_allowed=false", composed)
+
     def test_typed_and_visual_conflict_is_explicit_and_never_silently_merged(
         self,
     ) -> None:
@@ -181,6 +231,11 @@ class TeacherAgentVisionTests(unittest.TestCase):
         self.assertEqual(result["display_name"], "student-answer.png")
         self.assertFalse(result["raw_media_retained"])
         self.assertFalse(result["remote_media_sent"])
+        self.assertFalse(result["transcription_is_semantic_understanding"])
+        self.assertFalse(result["semantic_analysis_is_answer_correctness"])
+        self.assertFalse(result["grading_evidence_allowed"])
+        self.assertFalse(result["mastery_evidence_allowed"])
+        self.assertEqual(result["visual_verification_status"], "not_verified")
         self.assertNotIn(str(observed["image_path"]), json.dumps(result))
 
     def test_apple_failure_falls_back_to_tesseract(self) -> None:

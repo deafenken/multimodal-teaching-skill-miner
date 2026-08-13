@@ -52,8 +52,27 @@ PROFILE = {
 }
 
 
-def _teacher(message: str) -> dict:
-    return {"action_id": "turn", "message": message}
+def _teacher(message: str, *, answered_question: str | None = None) -> dict:
+    action = {"action_id": "turn", "message": message}
+    if answered_question is not None:
+        action["learner_question_answer"] = {
+            "schema": "teaching_skill_miner.learner_question_answer_receipt.v2",
+            "status": "answered_before_low_load_check",
+            "question_sha256": canonical_sha256(answered_question),
+            "clarification_contract_sha256": "a" * 64,
+            "clarification_kind": "composition",
+            "grounding_mode": "teacher_authoritative_context",
+            "grounding_refs": [
+                "goal.knowledge_spec.canonical_claims:claim_recurrence_parts"
+            ],
+            "answer_surface_contract_validated": True,
+            "server_verified_semantic_truth": False,
+            "general_knowledge_is_grading_authority": False,
+            "conceptual_clarification_answered": True,
+            "practice_final_solution_provided": False,
+            "mastery_evidence": False,
+        }
+    return action
 
 
 def test_profile_and_explicit_preferences_survive_compaction_projection() -> None:
@@ -96,12 +115,16 @@ def test_procedural_sequence_is_not_misclassified_as_a_teaching_preference() -> 
 
 
 def test_open_question_requires_learner_confirmation_before_resolution() -> None:
+    learner_question = "递归为什么必须有终止条件？"
     memory = initialize_teaching_memory(GOAL, PROFILE)
     memory = commit_teaching_memory_turn(
         memory,
         round_number=1,
-        learner_text="递归为什么必须有终止条件？",
-        teacher_action=_teacher("因为调用链必须在某个状态停止。你能用最小例子说明吗？"),
+        learner_text=learner_question,
+        teacher_action=_teacher(
+            "因为调用链必须在某个状态停止。你能用最小例子说明吗？",
+            answered_question=learner_question,
+        ),
     )
     question = memory["open_questions"][-1]
     assert question["status"] == "addressed_pending_confirmation"
@@ -116,12 +139,16 @@ def test_open_question_requires_learner_confirmation_before_resolution() -> None
 
 
 def test_reopen_signal_prevents_false_resolution() -> None:
+    learner_question = "第二种方法为什么更省空间？"
     memory = initialize_teaching_memory(GOAL, PROFILE)
     memory = commit_teaching_memory_turn(
         memory,
         round_number=1,
-        learner_text="第二种方法为什么更省空间？",
-        teacher_action=_teacher("先比较两种方法保存的状态数量。"),
+        learner_text=learner_question,
+        teacher_action=_teacher(
+            "第二种只保存后续计算仍会用到的相邻状态。",
+            answered_question=learner_question,
+        ),
     )
     memory = commit_teaching_memory_turn(
         memory,
@@ -129,7 +156,110 @@ def test_reopen_signal_prevents_false_resolution() -> None:
         learner_text="我还是不明白，刚才的问题还没解决。",
         teacher_action=_teacher("我们换成两个数组格子的具体例子。"),
     )
-    assert memory["open_questions"][-1]["status"] == "addressed_pending_confirmation"
+    assert memory["open_questions"][-1]["status"] == "open"
+
+
+@pytest.mark.parametrize(
+    "learner_question",
+    [
+        "递推关系分哪几部分",
+        "递推关系分为几部分",
+        "递推关系由什么组成",
+        "递推关系包括哪些部分",
+    ],
+)
+def test_unpunctuated_composition_question_remains_open_without_receipt(
+    learner_question: str,
+) -> None:
+    memory = commit_teaching_memory_turn(
+        initialize_teaching_memory(GOAL, PROFILE),
+        round_number=1,
+        learner_text=learner_question,
+        teacher_action=_teacher("我们先看斐波那契数列。你能找出已知量吗？"),
+    )
+
+    assert memory["open_questions"][-1]["question"] == learner_question
+    assert memory["open_questions"][-1]["status"] == "open"
+    assert (
+        project_teaching_memory(memory)["unresolved_questions"][-1]["question"]
+        == learner_question
+    )
+
+
+@pytest.mark.parametrize(
+    "learner_statement",
+    [
+        "递推关系分为三个部分",
+        "递推关系由初始条件、递推规则和适用范围组成",
+        "递推关系包括初始条件和递推规则",
+    ],
+)
+def test_composition_declaration_is_not_recorded_as_question(
+    learner_statement: str,
+) -> None:
+    memory = commit_teaching_memory_turn(
+        initialize_teaching_memory(GOAL, PROFILE),
+        round_number=1,
+        learner_text=learner_statement,
+        teacher_action=_teacher("很好，我们继续。"),
+    )
+
+    assert memory["open_questions"] == []
+
+
+def test_teacher_follow_up_does_not_claim_an_open_question_was_answered() -> None:
+    learner_question = "递推关系分哪几部分"
+    memory = commit_teaching_memory_turn(
+        initialize_teaching_memory(GOAL, PROFILE),
+        round_number=1,
+        learner_text=learner_question,
+        teacher_action=_teacher(
+            "先看斐波那契数列。你能指出已知量和重复结构吗？"
+        ),
+    )
+
+    question = memory["open_questions"][-1]
+    assert question["status"] == "open"
+    assert question["addressed_round"] is None
+    assert question["answer_evidence_refs"] == []
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("schema", "teaching_skill_miner.learner_question_answer_receipt.v1"),
+        ("status", "answered"),
+        ("question_sha256", "0" * 64),
+        ("clarification_contract_sha256", "not-a-sha"),
+        ("clarification_kind", "other"),
+        ("grounding_mode", "model_general_knowledge_unverified"),
+        ("grounding_refs", []),
+        ("answer_surface_contract_validated", False),
+        ("server_verified_semantic_truth", True),
+        ("general_knowledge_is_grading_authority", True),
+        ("conceptual_clarification_answered", False),
+        ("practice_final_solution_provided", True),
+        ("mastery_evidence", True),
+    ],
+)
+def test_question_closure_rejects_invalid_answer_receipt(
+    field: str, invalid_value: object
+) -> None:
+    learner_question = "递推关系由什么组成"
+    teacher_action = _teacher(
+        "递推关系包括初始条件、递推规则和适用范围。",
+        answered_question=learner_question,
+    )
+    teacher_action["learner_question_answer"][field] = invalid_value
+
+    memory = commit_teaching_memory_turn(
+        initialize_teaching_memory(GOAL, PROFILE),
+        round_number=1,
+        learner_text=learner_question,
+        teacher_action=teacher_action,
+    )
+
+    assert memory["open_questions"][-1]["status"] == "open"
 
 
 def test_referent_options_and_teacher_commitments_are_retained() -> None:
@@ -145,6 +275,199 @@ def test_referent_options_and_teacher_commitments_are_retained() -> None:
     projection = project_teaching_memory(memory)
     assert projection["active_referents"]
     assert projection["pending_teacher_commitments"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "请先只回答这一问，我会等你回答后再继续。",
+        (
+            "你能指出这个例子中的已知量、目标和重复结构吗？"
+            "请先只回答这一问，我会等你回答后再继续。"
+        ),
+        "请先只回答当前一问，我会等待你作答后再继续。",
+    ],
+)
+def test_wait_for_response_control_is_not_a_teacher_commitment(message: str) -> None:
+    memory = initialize_teaching_memory(GOAL, PROFILE)
+    memory = commit_teaching_memory_turn(
+        memory,
+        round_number=1,
+        learner_text="继续",
+        teacher_action=_teacher(message),
+    )
+
+    assert memory["commitments"] == []
+    assert project_teaching_memory(memory)["pending_teacher_commitments"] == []
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        (
+            "接下来我会用两个数组格子比较。"
+            "请先只回答这一问，我会等你回答后再继续。"
+        ),
+        "等你回答之后，我会用图示讲清状态转移。",
+    ],
+)
+def test_real_teacher_commitment_survives_wait_control_filter(message: str) -> None:
+    memory = initialize_teaching_memory(GOAL, PROFILE)
+    memory = commit_teaching_memory_turn(
+        memory,
+        round_number=1,
+        learner_text="继续",
+        teacher_action=_teacher(message),
+    )
+
+    assert len(memory["commitments"]) == 1
+    assert memory["commitments"][0]["statement"] == message
+    assert (
+        project_teaching_memory(memory)["pending_teacher_commitments"][0][
+            "statement"
+        ]
+        == message
+    )
+
+
+def test_legacy_wait_commitment_checkpoint_replays_and_migrates_safely() -> None:
+    message = "请先只回答这一问，我会等你回答后再继续。"
+    legacy = initialize_teaching_memory(GOAL, PROFILE)
+    legacy["commitments"].append(
+        {
+            "memory_id": f"commitment_r001_{canonical_sha256(message)[:12]}",
+            "statement": message,
+            "status": "pending",
+            "created_round": 1,
+            "action_id": "turn",
+            "evidence_refs": ["session_history:r1:teacher_action"],
+        }
+    )
+    legacy["history_version"] = 1
+    legacy["last_observed_round"] = 1
+    validate_teaching_memory(legacy)
+    event = {
+        "round": 1,
+        "learner_text": "继续",
+        "learner_response": "继续",
+        "action": {
+            "action_id": "turn",
+            "teacher_action": {"message": message},
+        },
+        "teaching_memory_trace": {
+            "history_version": 1,
+            "compaction_generation": 0,
+            "fixed_context_fingerprint": legacy["fixed_context_fingerprint"],
+            "content_sha256": canonical_sha256(legacy),
+            "source": "deterministic_evidence_linked_rollout_projection",
+            "model_generated_summary": False,
+        },
+    }
+
+    rebuilt = rebuild_teaching_memory_from_rollout(
+        GOAL,
+        PROFILE,
+        [event],
+        validate_checkpoint_traces=True,
+    )
+
+    assert rebuilt == legacy
+    assert project_teaching_memory(rebuilt)["pending_teacher_commitments"] == []
+    migrated = commit_teaching_memory_turn(
+        rebuilt,
+        round_number=2,
+        learner_text="继续",
+        teacher_action=_teacher("我们继续检查当前步骤。"),
+    )
+    assert migrated["commitments"] == []
+
+
+def test_legacy_auto_addressed_question_checkpoint_still_replays() -> None:
+    learner_question = "递推关系分哪几部分"
+    teacher_message = (
+        "先看斐波那契数列。你能指出已知量吗？"
+        "请先只回答这一问，我会等你回答后再继续。"
+    )
+    legacy = initialize_teaching_memory(GOAL, PROFILE)
+    legacy["open_questions"].append(
+        {
+            "memory_id": (
+                f"question_r001_{canonical_sha256(learner_question)[:12]}"
+            ),
+            "question": learner_question,
+            "status": "addressed_pending_confirmation",
+            "first_raised_round": 1,
+            "last_raised_round": 1,
+            "addressed_round": 1,
+            "resolved_round": None,
+            "evidence_refs": ["session_history:r1:learner_response"],
+            "answer_evidence_refs": ["session_history:r1:teacher_action"],
+        }
+    )
+    legacy["history_version"] = 1
+    legacy["last_observed_round"] = 1
+    validate_teaching_memory(legacy)
+    event = {
+        "round": 1,
+        "learner_text": learner_question,
+        "learner_response": learner_question,
+        "action": {
+            "action_id": "turn",
+            "teacher_action": {"message": teacher_message},
+        },
+        "teaching_memory_trace": {
+            "history_version": 1,
+            "compaction_generation": 0,
+            "fixed_context_fingerprint": legacy["fixed_context_fingerprint"],
+            "content_sha256": canonical_sha256(legacy),
+            "source": "deterministic_evidence_linked_rollout_projection",
+            "model_generated_summary": False,
+        },
+    }
+
+    rebuilt = rebuild_teaching_memory_from_rollout(
+        GOAL,
+        PROFILE,
+        [event],
+        validate_checkpoint_traces=True,
+    )
+
+    assert rebuilt == legacy
+
+
+def test_legacy_unpunctuated_question_checkpoint_without_open_item_replays() -> None:
+    learner_question = "递推关系分哪几部分"
+    teacher_message = "我们先看一个最小例子。"
+    legacy = initialize_teaching_memory(GOAL, PROFILE)
+    legacy["history_version"] = 1
+    legacy["last_observed_round"] = 1
+    validate_teaching_memory(legacy)
+    event = {
+        "round": 1,
+        "learner_text": learner_question,
+        "learner_response": learner_question,
+        "action": {
+            "action_id": "turn",
+            "teacher_action": {"message": teacher_message},
+        },
+        "teaching_memory_trace": {
+            "history_version": 1,
+            "compaction_generation": 0,
+            "fixed_context_fingerprint": legacy["fixed_context_fingerprint"],
+            "content_sha256": canonical_sha256(legacy),
+            "source": "deterministic_evidence_linked_rollout_projection",
+            "model_generated_summary": False,
+        },
+    }
+
+    rebuilt = rebuild_teaching_memory_from_rollout(
+        GOAL,
+        PROFILE,
+        [event],
+        validate_checkpoint_traces=True,
+    )
+
+    assert rebuilt == legacy
 
 
 def test_memory_rejects_non_monotonic_commit_and_provenance_tampering() -> None:

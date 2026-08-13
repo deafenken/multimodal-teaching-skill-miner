@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_safeguarding_authorization_receipt.schema.json",
+  "title": "Externally verified safeguarding authorization receipt",
+  "description": "A short-lived, hash-only receipt issued and verified by the server identity layer. This core schema does not mint or self-sign identity.",
+  "type": "object",
+  "required": [
+    "schema",
+    "actor_kind",
+    "server_authenticated",
+    "principal_sha256",
+    "role_sha256",
+    "authorization_context_sha256",
+    "operation",
+    "body_sha256",
+    "issued_at_utc",
+    "expires_at_utc",
+    "receipt_sha256"
+  ],
+  "properties": {
+    "schema": {
+      "const": "teaching_skill_miner.safeguarding_authorization_receipt.v1"
+    },
+    "actor_kind": {
+      "enum": [
+        "system_safety_classifier",
+        "server_authenticated_safeguarding"
+      ]
+    },
+    "server_authenticated": {"const": true},
+    "principal_sha256": {"$ref": "#/$defs/digest"},
+    "role_sha256": {"$ref": "#/$defs/digest"},
+    "authorization_context_sha256": {"$ref": "#/$defs/digest"},
+    "operation": {
+      "enum": [
+        "case.opened",
+        "case.acknowledged",
+        "case.closed",
+        "escalation.overdue",
+        "escalation.acknowledged",
+        "case.purged"
+      ]
+    },
+    "body_sha256": {"$ref": "#/$defs/digest"},
+    "issued_at_utc": {"$ref": "#/$defs/utc"},
+    "expires_at_utc": {"$ref": "#/$defs/utc"},
+    "receipt_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"actor_kind": {"const": "system_safety_classifier"}},
+        "required": ["actor_kind"]
+      },
+      "then": {
+        "properties": {
+          "role_sha256": {
+            "const": "272590d3f3d84caa9b63e9d5318419bad534244ec7c29bf2b932d82c732f90fa"
+          },
+          "operation": {"const": "case.opened"}
+        }
+      },
+      "else": {
+        "properties": {
+          "role_sha256": {
+            "const": "ff0a6cdd9508192f8c2203172c5dfa6056406d95dbe007dff47f0fe5122fcd3c"
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "utc": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    }
+  }
+}

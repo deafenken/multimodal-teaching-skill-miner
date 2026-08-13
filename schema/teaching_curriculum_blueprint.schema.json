@@ -1,0 +1,518 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teaching_curriculum_blueprint.schema.json",
+  "title": "Auditable curriculum dependency graph and measurement blueprint",
+  "type": "object",
+  "required": [
+    "schema",
+    "curriculum_id",
+    "title",
+    "origin",
+    "lessons",
+    "objectives",
+    "knowledge_components",
+    "prerequisite_edges",
+    "topological_order",
+    "source_spans",
+    "factual_claims",
+    "rubrics",
+    "item_blueprints",
+    "remediation_branches",
+    "delayed_reviews",
+    "authority",
+    "integrity"
+  ],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.curriculum_blueprint.v1"},
+    "curriculum_id": {"type": "string", "pattern": "^cur_[0-9a-f]{24}$"},
+    "title": {"type": "string", "minLength": 1, "maxLength": 240},
+    "origin": {"$ref": "#/$defs/origin"},
+    "lessons": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "items": {"$ref": "#/$defs/lesson"}
+    },
+    "objectives": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "items": {"$ref": "#/$defs/objective"}
+    },
+    "knowledge_components": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 720,
+      "items": {"$ref": "#/$defs/knowledgeComponent"}
+    },
+    "prerequisite_edges": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {"$ref": "#/$defs/prerequisiteEdge"}
+    },
+    "topological_order": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 720,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/kcId"}
+    },
+    "source_spans": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {"$ref": "#/$defs/sourceSpan"}
+    },
+    "factual_claims": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {"$ref": "#/$defs/factualClaim"}
+    },
+    "rubrics": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4000,
+      "items": {"$ref": "#/$defs/rubric"}
+    },
+    "item_blueprints": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8000,
+      "items": {"$ref": "#/$defs/itemBlueprint"}
+    },
+    "remediation_branches": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4000,
+      "items": {"$ref": "#/$defs/remediationBranch"}
+    },
+    "delayed_reviews": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4000,
+      "items": {"$ref": "#/$defs/delayedReview"}
+    },
+    "authority": {"$ref": "#/$defs/authority"},
+    "integrity": {"$ref": "#/$defs/integrity"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "origin": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "generated_unvalidated",
+                  "legacy_generated_unvalidated"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "authority": {
+            "properties": {
+              "status": {"const": "generated_unvalidated"},
+              "authority": {"const": false},
+              "authoritative_for_runtime_grading": {"const": false},
+              "receipt": {"type": "null"}
+            }
+          },
+          "source_spans": {"maxItems": 0},
+          "factual_claims": {"maxItems": 0},
+          "prerequisite_edges": {
+            "items": {
+              "properties": {
+                "origin": {"const": "outline_order_inferred_unvalidated"}
+              }
+            }
+          },
+          "rubrics": {
+            "items": {
+              "properties": {
+                "source_span_ids": {"maxItems": 0},
+                "authority": {"const": false},
+                "assessment_eligible": {"const": false}
+              }
+            }
+          },
+          "item_blueprints": {
+            "items": {
+              "properties": {
+                "source_span_ids": {"maxItems": 0},
+                "authority": {"const": false},
+                "assessment_eligible": {"const": false}
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "origin": {
+            "properties": {"kind": {"const": "teacher_owned_spec"}}
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "authority": {
+            "properties": {
+              "status": {"const": "teacher_owned_authoritative"},
+              "authority": {"const": true},
+              "authoritative_for_runtime_grading": {"const": true},
+              "receipt": {"$ref": "#/$defs/authorityReceipt"}
+            }
+          },
+          "source_spans": {
+            "minItems": 1,
+            "items": {"properties": {"authority": {"const": true}}}
+          },
+          "knowledge_components": {
+            "items": {
+              "properties": {"source_span_ids": {"minItems": 1}}
+            }
+          },
+          "prerequisite_edges": {
+            "items": {
+              "properties": {"origin": {"const": "teacher_owned_spec"}}
+            }
+          },
+          "rubrics": {
+            "items": {
+              "properties": {
+                "source_span_ids": {"minItems": 1},
+                "authority": {"const": true},
+                "assessment_eligible": {"const": true}
+              }
+            }
+          },
+          "item_blueprints": {
+            "items": {
+              "properties": {
+                "source_span_ids": {"minItems": 1},
+                "authority": {"const": true},
+                "assessment_eligible": {"const": true}
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "objectiveId": {"type": "string", "pattern": "^obj_[0-9a-f]{20}$"},
+    "lessonId": {"type": "string", "pattern": "^lsn_[0-9a-f]{20}$"},
+    "kcId": {"type": "string", "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"},
+    "spanId": {"type": "string", "pattern": "^span_[0-9a-f]{20}$"},
+    "rubricId": {"type": "string", "pattern": "^rubric_[0-9a-f]{20}$"},
+    "itemId": {"type": "string", "pattern": "^item_[0-9a-f]{20}$"},
+    "remedyId": {"type": "string", "pattern": "^remedy_[0-9a-f]{20}$"},
+    "reviewId": {"type": "string", "pattern": "^review_[0-9a-f]{20}$"},
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "objectiveIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/objectiveId"}
+    },
+    "lessonIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/lessonId"}
+    },
+    "kcIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/kcId"}
+    },
+    "origin": {
+      "type": "object",
+      "required": ["kind", "source_schema", "source_id", "source_sha256"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "generated_unvalidated",
+            "legacy_generated_unvalidated",
+            "teacher_owned_spec"
+          ]
+        },
+        "source_schema": {"type": "string", "minLength": 1, "maxLength": 120},
+        "source_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "source_sha256": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "lesson": {
+      "type": "object",
+      "required": ["lesson_id", "legacy_lesson_id", "title", "order", "objective_ids", "kc_ids"],
+      "properties": {
+        "lesson_id": {"$ref": "#/$defs/lessonId"},
+        "legacy_lesson_id": {"type": "string", "maxLength": 120},
+        "title": {"type": "string", "minLength": 1, "maxLength": 160},
+        "order": {"type": "integer", "minimum": 1, "maximum": 100},
+        "objective_ids": {"$ref": "#/$defs/objectiveIds"},
+        "kc_ids": {"$ref": "#/$defs/kcIds"}
+      },
+      "additionalProperties": false
+    },
+    "objective": {
+      "type": "object",
+      "required": [
+        "objective_id",
+        "statement",
+        "lesson_ids",
+        "kc_ids",
+        "rubric_ids",
+        "item_blueprint_ids",
+        "remediation_branch_ids",
+        "delayed_review_ids"
+      ],
+      "properties": {
+        "objective_id": {"$ref": "#/$defs/objectiveId"},
+        "statement": {"type": "string", "minLength": 1, "maxLength": 600},
+        "lesson_ids": {"$ref": "#/$defs/lessonIds"},
+        "kc_ids": {"$ref": "#/$defs/kcIds"},
+        "rubric_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/rubricId"}
+        },
+        "item_blueprint_ids": {
+          "type": "array", "minItems": 2, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/itemId"}
+        },
+        "remediation_branch_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/remedyId"}
+        },
+        "delayed_review_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/reviewId"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "knowledgeComponent": {
+      "type": "object",
+      "required": [
+        "kc_id",
+        "label",
+        "introduced_lesson_id",
+        "objective_ids",
+        "prerequisite_kc_ids",
+        "source_span_ids",
+        "rubric_ids",
+        "item_blueprint_ids",
+        "remediation_branch_ids",
+        "delayed_review_ids"
+      ],
+      "properties": {
+        "kc_id": {"$ref": "#/$defs/kcId"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 160},
+        "introduced_lesson_id": {"$ref": "#/$defs/lessonId"},
+        "objective_ids": {"$ref": "#/$defs/objectiveIds"},
+        "prerequisite_kc_ids": {
+          "type": "array", "maxItems": 64, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/kcId"}
+        },
+        "source_span_ids": {
+          "type": "array", "maxItems": 128, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/spanId"}
+        },
+        "rubric_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/rubricId"}
+        },
+        "item_blueprint_ids": {
+          "type": "array", "minItems": 2, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/itemId"}
+        },
+        "remediation_branch_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/remedyId"}
+        },
+        "delayed_review_ids": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/reviewId"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "prerequisiteEdge": {
+      "type": "object",
+      "required": ["edge_id", "prerequisite_kc_id", "dependent_kc_id", "origin"],
+      "properties": {
+        "edge_id": {"type": "string", "pattern": "^edge_[0-9a-f]{20}$"},
+        "prerequisite_kc_id": {"$ref": "#/$defs/kcId"},
+        "dependent_kc_id": {"$ref": "#/$defs/kcId"},
+        "origin": {"enum": ["outline_order_inferred_unvalidated", "teacher_owned_spec"]}
+      },
+      "additionalProperties": false
+    },
+    "locator": {
+      "type": "object",
+      "required": ["kind", "start", "end"],
+      "properties": {
+        "kind": {"enum": ["page", "slide", "line", "section"]},
+        "start": {"type": "integer", "minimum": 1, "maximum": 10000000},
+        "end": {"type": "integer", "minimum": 1, "maximum": 10000000}
+      },
+      "additionalProperties": false
+    },
+    "sourceSpan": {
+      "type": "object",
+      "required": ["source_span_id", "resource_id", "content_sha256", "excerpt_sha256", "locator", "authority"],
+      "properties": {
+        "source_span_id": {"$ref": "#/$defs/spanId"},
+        "resource_id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,159}$"},
+        "content_sha256": {"$ref": "#/$defs/hash"},
+        "excerpt_sha256": {"$ref": "#/$defs/hash"},
+        "locator": {"$ref": "#/$defs/locator"},
+        "authority": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "factualClaim": {
+      "type": "object",
+      "required": ["claim_id", "statement", "kc_ids", "source_span_ids"],
+      "properties": {
+        "claim_id": {"type": "string", "pattern": "^claim_[0-9a-f]{20}$"},
+        "statement": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "kc_ids": {"$ref": "#/$defs/kcIds"},
+        "source_span_ids": {
+          "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/spanId"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "rubric": {
+      "type": "object",
+      "required": ["rubric_id", "objective_id", "kc_id", "description", "source_span_ids", "authority", "assessment_eligible"],
+      "properties": {
+        "rubric_id": {"$ref": "#/$defs/rubricId"},
+        "objective_id": {"$ref": "#/$defs/objectiveId"},
+        "kc_id": {"$ref": "#/$defs/kcId"},
+        "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "source_span_ids": {
+          "type": "array", "maxItems": 32, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/spanId"}
+        },
+        "authority": {"type": "boolean"},
+        "assessment_eligible": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "itemBlueprint": {
+      "type": "object",
+      "required": ["item_blueprint_id", "objective_id", "kc_id", "rubric_id", "kind", "prompt_intent", "source_span_ids", "authority", "assessment_eligible"],
+      "properties": {
+        "item_blueprint_id": {"$ref": "#/$defs/itemId"},
+        "objective_id": {"$ref": "#/$defs/objectiveId"},
+        "kc_id": {"$ref": "#/$defs/kcId"},
+        "rubric_id": {"$ref": "#/$defs/rubricId"},
+        "kind": {"enum": ["worked_application", "near_transfer", "far_transfer", "delayed_retrieval", "language_production"]},
+        "prompt_intent": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "source_span_ids": {
+          "type": "array", "maxItems": 32, "uniqueItems": true,
+          "items": {"$ref": "#/$defs/spanId"}
+        },
+        "authority": {"type": "boolean"},
+        "assessment_eligible": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "remediationBranch": {
+      "type": "object",
+      "required": ["remediation_branch_id", "objective_id", "kc_id", "trigger", "lesson_id", "action"],
+      "properties": {
+        "remediation_branch_id": {"$ref": "#/$defs/remedyId"},
+        "objective_id": {"$ref": "#/$defs/objectiveId"},
+        "kc_id": {"$ref": "#/$defs/kcId"},
+        "trigger": {"enum": ["incorrect", "partial", "misconception", "uncertain"]},
+        "lesson_id": {"$ref": "#/$defs/lessonId"},
+        "action": {"type": "string", "minLength": 1, "maxLength": 1000}
+      },
+      "additionalProperties": false
+    },
+    "delayedReview": {
+      "type": "object",
+      "required": ["delayed_review_id", "objective_id", "kc_id", "after_days", "item_blueprint_id"],
+      "properties": {
+        "delayed_review_id": {"$ref": "#/$defs/reviewId"},
+        "objective_id": {"$ref": "#/$defs/objectiveId"},
+        "kc_id": {"$ref": "#/$defs/kcId"},
+        "after_days": {"type": "integer", "minimum": 1, "maximum": 365},
+        "item_blueprint_id": {"$ref": "#/$defs/itemId"}
+      },
+      "additionalProperties": false
+    },
+    "authorityReceipt": {
+      "type": "object",
+      "required": ["schema", "receipt_id", "teacher_id_hash", "reviewed_at", "spec_sha256", "scope", "authority_assertion", "identity_assurance", "authoritative_for_runtime_grading", "signature_algorithm", "signing_key_id", "public_key_base64", "public_key_sha256", "signature_base64", "receipt_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_curriculum_authority_receipt.v2"},
+        "receipt_id": {"type": "string", "pattern": "^receipt_[0-9a-f]{20}$"},
+        "teacher_id_hash": {"$ref": "#/$defs/hash"},
+        "reviewed_at": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"},
+        "spec_sha256": {"$ref": "#/$defs/hash"},
+        "scope": {"const": "curriculum_graph_measurement_and_sources"},
+        "authority_assertion": {"const": "teacher_owned_spec_explicit_review"},
+        "identity_assurance": {"const": "authenticated_teacher"},
+        "authoritative_for_runtime_grading": {"const": true},
+        "signature_algorithm": {"const": "ed25519"},
+        "signing_key_id": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,119}$"},
+        "public_key_base64": {"type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$"},
+        "public_key_sha256": {"$ref": "#/$defs/hash"},
+        "signature_base64": {"type": "string", "pattern": "^[A-Za-z0-9+/]{86}==$"},
+        "receipt_sha256": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    },
+    "authority": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "authority", "authoritative_for_runtime_grading", "receipt"],
+          "properties": {
+            "status": {"const": "generated_unvalidated"},
+            "authority": {"const": false},
+            "authoritative_for_runtime_grading": {"const": false},
+            "receipt": {"type": "null"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "authority", "authoritative_for_runtime_grading", "receipt"],
+          "properties": {
+            "status": {"const": "teacher_owned_authoritative"},
+            "authority": {"const": true},
+            "authoritative_for_runtime_grading": {"const": true},
+            "receipt": {"$ref": "#/$defs/authorityReceipt"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["algorithm", "content_sha256"],
+      "properties": {
+        "algorithm": {"const": "sha256_canonical_json_without_integrity"},
+        "content_sha256": {"$ref": "#/$defs/hash"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -329,6 +329,8 @@ def _model_messages(
     library: Mapping[str, Any],
     previous_results: Sequence[Mapping[str, Any]],
     runtime_state: Mapping[str, Any],
+    *,
+    tool_definitions: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
     skill_view = [
         {
@@ -344,25 +346,75 @@ def _model_messages(
         if isinstance(s, Mapping)
     ]
     tool_results = [deepcopy(dict(item)) for item in previous_results[-8:]]
-    system = (
-        "你是一个实时 Teaching Agent 的规划器。每次只返回一个 JSON 对象，"
-        "必须先调用 allowlisted 工具读取状态/查找并选择 Skill，再返回教学动作。"
-        "不要输出思维链，不得调用未列出的工具，不得直接泄露完整答案。"
-        f"可用工具={sorted(_ALLOWED_TOOLS)}。输出 schema={PLAN_SCHEMA}。"
-        "kind 只能是 tool_calls、route_ready、teaching_action、terminate。"
-        "tool_calls 的每项为 {call_id,name,arguments}；teaching_action 必须包含 "
-        "selected_skill_id,supporting_skill_ids,next_focus,action_type,message,expected_signal,reason；"
-        "完成 select_skills 与 set_next_focus 后，优先返回 {kind:route_ready,reason}，"
-        "由受约束的最终动作规划器生成教师话语；terminate 必须包含 "
-        "outcome(success|handoff),reason；若选择 success，先调用 evaluate_termination。"
-        "teaching_context.student.understanding_signal 在 post-assessment 模式下是本轮已校验状态；"
-        "必须优先使用它而不是上一轮 history signal。select_skills 必须逐字复制 skill_library 中的 "
-        "skill_id；若工具返回 accepted=false，按 allowed_primary_skill_ids 修正一次，不要重复读取同一状态。"
-    )
+    if tool_definitions is None:
+        # Preserve the standalone legacy loop prompt. Harness callers pass
+        # registry-derived definitions so planner discovery has one authority.
+        system = (
+            "你是一个实时 Teaching Agent 的规划器。每次只返回一个 JSON 对象，"
+            "必须先调用 allowlisted 工具读取状态/查找并选择 Skill，再返回教学动作。"
+            "不要输出思维链，不得调用未列出的工具，不得直接泄露完整答案。"
+            f"可用工具={sorted(_ALLOWED_TOOLS)}。输出 schema={PLAN_SCHEMA}。"
+            "kind 只能是 tool_calls、route_ready、teaching_action、terminate。"
+            "tool_calls 的每项为 {call_id,name,arguments}；teaching_action 必须包含 "
+            "selected_skill_id,supporting_skill_ids,next_focus,action_type,message,expected_signal,reason；"
+            "完成 select_skills 与 set_next_focus 后，优先返回 {kind:route_ready,reason}，"
+            "由受约束的最终动作规划器生成教师话语；terminate 必须包含 "
+            "outcome(success|handoff),reason；若选择 success，先调用 evaluate_termination。"
+            "teaching_context.student.understanding_signal 在 post-assessment 模式下是本轮已校验状态；"
+            "必须优先使用它而不是上一轮 history signal。select_skills 必须逐字复制 skill_library 中的 "
+            "skill_id；若工具返回 accepted=false，按 allowed_primary_skill_ids 修正一次，不要重复读取同一状态。"
+        )
+        planner_tools: list[dict[str, Any]] = []
+    else:
+        planner_tools = [
+            {
+                "name": _short(item.get("name"), 128),
+                "version": _short(item.get("version"), 64),
+                "description": _short(item.get("description"), 1_000),
+                "input_schema": deepcopy(dict(item.get("input_schema", {})))
+                if isinstance(item.get("input_schema"), Mapping)
+                else {},
+                "permission": _short(item.get("permission"), 128),
+                "risk": _short(item.get("risk"), 32),
+                "execution_mode": _short(item.get("execution_mode"), 32),
+                "data_scope": _short(item.get("data_scope"), 64),
+                "requires_user_consent": item.get("requires_user_consent") is True,
+            }
+            for item in tool_definitions
+            if isinstance(item, Mapping) and _short(item.get("name"), 128)
+        ]
+        tool_names = [item["name"] for item in planner_tools]
+        route_hint = ""
+        if {"select_skills", "set_next_focus"}.issubset(tool_names):
+            route_hint = (
+                "完成 select_skills 与 set_next_focus 后，优先返回 "
+                "{kind:route_ready,reason}，由受约束的最终动作规划器生成教师话语。"
+                "select_skills 必须逐字复制 skill_library 中的 skill_id；"
+                "若工具返回 accepted=false，按 allowed_primary_skill_ids 修正一次。"
+            )
+        success_hint = (
+            "若选择 success，必须先调用 evaluate_termination。"
+            if "evaluate_termination" in tool_names
+            else "当前未提供终止核验工具时，不得选择 success。"
+        )
+        system = (
+            "你是一个实时 Teaching Agent 的规划器。每次只返回一个 JSON 对象。"
+            "只能调用 available_tools 中明确列出的工具；工具名称、参数 schema 与权限摘要"
+            "均以 available_tools 为准。不得猜测、调用或提及未列出的工具。"
+            "不要输出思维链，不得直接泄露完整答案。"
+            f"可用工具名称={tool_names}。输出 schema={PLAN_SCHEMA}。"
+            "kind 只能是 tool_calls、route_ready、teaching_action、terminate。"
+            "tool_calls 的每项为 {call_id,name,arguments}；teaching_action 必须包含 "
+            "selected_skill_id,supporting_skill_ids,next_focus,action_type,message,expected_signal,reason；"
+            f"{route_hint}terminate 必须包含 outcome(success|handoff),reason；{success_hint}"
+            "teaching_context.student.understanding_signal 在 post-assessment 模式下是本轮已校验状态；"
+            "必须优先使用它而不是上一轮 history signal。不要重复读取同一状态。"
+        )
     user = json.dumps(
         {
             "teaching_context": context,
             "skill_library": skill_view,
+            **({"available_tools": planner_tools} if tool_definitions is not None else {}),
             "previous_tool_results": tool_results,
             "runtime_state": {
                 "selected_skill_id": _short(
@@ -403,7 +455,9 @@ def _invoke_model(client: Any, messages: Sequence[Mapping[str, str]]) -> tuple[d
     return dict(plan), deepcopy(dict(trace)) if isinstance(trace, Mapping) else {}
 
 
-def _validate_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
+def _validate_plan(
+    plan: Mapping[str, Any], *, allowed_tools: frozenset[str] = _ALLOWED_TOOLS
+) -> dict[str, Any]:
     if plan.get("schema") not in {None, PLAN_SCHEMA}:
         raise TeachingAgentLoopError("model plan schema is invalid")
     kind = plan.get("kind")
@@ -420,7 +474,7 @@ def _validate_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
             if not isinstance(call, Mapping):
                 raise TeachingAgentLoopError(f"tool_calls[{index}] is not an object")
             name = str(call.get("name", "")).strip()
-            if name not in _ALLOWED_TOOLS:
+            if name not in allowed_tools:
                 raise TeachingAgentLoopError(f"tool is not allowlisted: {name}")
             arguments = call.get("arguments", {})
             if not isinstance(arguments, Mapping):
@@ -1134,7 +1188,13 @@ def _public_model_trace(value: Any) -> dict[str, Any]:
     else:
         result["usage"] = {
             key: usage[key]
-            for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+            for key in (
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "prompt_cache_hit_tokens",
+                "prompt_cache_miss_tokens",
+            )
             if key in usage and isinstance(usage[key], (int, float))
         }
     return result

@@ -1,0 +1,48 @@
+<svg width="240" height="240" viewBox="0 0 240 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="body" x1="74" y1="52" x2="167" y2="190" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#E08A68"/>
+      <stop offset="1" stop-color="#B95E43"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="78" y1="78" x2="157" y2="158" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F4EBDD"/>
+      <stop offset="1" stop-color="#D9C8B3"/>
+    </linearGradient>
+    <linearGradient id="book" x1="76" y1="158" x2="164" y2="188" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#30312D"/>
+      <stop offset="1" stop-color="#1E1F1C"/>
+    </linearGradient>
+    <filter id="shadow" x="37" y="31" width="166" height="187" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="9" stdDeviation="8" flood-color="#000000" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#shadow)">
+    <path d="M72 84L52 61C50 59 51 55 54 54L86 47L94 82L72 84Z" fill="url(#paper)" stroke="#2C2D29" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M168 84L188 61C190 59 189 55 186 54L154 47L146 82L168 84Z" fill="url(#paper)" stroke="#2C2D29" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M160 56L177 58L164 72L160 56Z" fill="#67A18F"/>
+
+    <path d="M120 51C82 51 62 75 62 118V145C62 180 84 199 120 199C156 199 178 180 178 145V118C178 75 158 51 120 51Z" fill="url(#body)" stroke="#2C2D29" stroke-width="6"/>
+    <path d="M120 72C91 72 77 87 77 118C77 148 91 163 120 163C149 163 163 148 163 118C163 87 149 72 120 72Z" fill="url(#paper)" stroke="#2C2D29" stroke-width="5"/>
+
+    <path d="M88 104C92 98 101 98 105 104" stroke="#2C2D29" stroke-width="5" stroke-linecap="round"/>
+    <path d="M135 104C139 98 148 98 152 104" stroke="#2C2D29" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="98" cy="112" r="7" fill="#252622"/>
+    <circle cx="142" cy="112" r="7" fill="#252622"/>
+    <circle cx="100" cy="109" r="2" fill="#F8F0E4"/>
+    <circle cx="144" cy="109" r="2" fill="#F8F0E4"/>
+    <path d="M111 132C116 137 124 137 129 132" stroke="#7D4D3C" stroke-width="4" stroke-linecap="round"/>
+
+    <path d="M82 157C94 154 107 157 120 165V190C107 182 94 179 82 182V157Z" fill="url(#book)" stroke="#2C2D29" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M158 157C146 154 133 157 120 165V190C133 182 146 179 158 182V157Z" fill="url(#book)" stroke="#2C2D29" stroke-width="4" stroke-linejoin="round"/>
+    <path d="M120 165V190" stroke="#D97857" stroke-width="3"/>
+    <path d="M91 165C99 164 106 166 112 170" stroke="#8F8B83" stroke-width="2" stroke-linecap="round"/>
+    <path d="M149 165C141 164 134 166 128 170" stroke="#8F8B83" stroke-width="2" stroke-linecap="round"/>
+
+    <path d="M70 137C56 140 50 149 52 161C54 172 63 176 75 172" stroke="#B95E43" stroke-width="12" stroke-linecap="round"/>
+    <path d="M170 137C184 140 190 149 188 161C186 172 177 176 165 172" stroke="#B95E43" stroke-width="12" stroke-linecap="round"/>
+
+    <path d="M120 60V70" stroke="#67A18F" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="120" cy="56" r="5" fill="#67A18F" stroke="#2C2D29" stroke-width="3"/>
+  </g>
+</svg>

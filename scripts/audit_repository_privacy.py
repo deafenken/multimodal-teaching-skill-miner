@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -19,7 +20,6 @@ from teaching_skill_miner.release_audit import (  # noqa: E402
     absolute_local_path_value,
     decode_text_payload,
     forbidden_binary_payload_kind,
-    secret_pattern_details,
     sensitive_identity_fields,
 )
 from scripts.verify_wheel_allowlist import (  # noqa: E402
@@ -105,7 +105,18 @@ FORBIDDEN_SUFFIXES = {
 }
 SECRET_PATTERNS = (
     re.compile(rb"sk-[A-Za-z0-9_-]{20,}"),
+    re.compile(rb"gh[pousr]_[A-Za-z0-9]{30,}"),
+    re.compile(rb"xox[baprs]-[A-Za-z0-9-]{20,}"),
+    re.compile(rb"AKIA[0-9A-Z]{16}"),
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+)
+OBVIOUS_SECRET_FIXTURE_MARKERS = (
+    b"dummy",
+    b"example",
+    b"fake",
+    b"fixture",
+    b"placeholder",
+    b"test",
 )
 LOCAL_PATH = re.compile(rb"/(?:Users|Volumes|home)/[^\s\"']+")
 FORBIDDEN_PUBLIC_REPORT_PREFIXES = (
@@ -113,8 +124,12 @@ FORBIDDEN_PUBLIC_REPORT_PREFIXES = (
 )
 RELEASE_SOURCE_TREES = (
     ".github/workflows",
+    "apps",
     "configs",
+    "data",
+    "deploy",
     "docs",
+    "docker",
     "release",
     "schema",
     "scripts",
@@ -122,17 +137,32 @@ RELEASE_SOURCE_TREES = (
     "tests",
 )
 RELEASE_TEXT_SUFFIXES = {
+    ".cjs",
     ".css",
     ".html",
     ".js",
     ".json",
+    ".lock",
     ".md",
+    ".mjs",
     ".py",
     ".sh",
+    ".sql",
     ".toml",
+    ".ts",
+    ".tsx",
     ".txt",
     ".yaml",
     ".yml",
+}
+GENERATED_SOURCE_PARTS = {
+    ".next",
+    ".test-dist",
+    ".turbo",
+    "__pycache__",
+    "coverage",
+    "dist",
+    "node_modules",
 }
 TOP_LEVEL_RELEASE_FILES = (
     ".env.example",
@@ -202,12 +232,57 @@ def release_candidate_files() -> list[str]:
             include(tree)
             continue
         for path in tree.rglob("*"):
-            if "__pycache__" in path.parts:
+            relative_parts = path.relative_to(ROOT).parts
+            if (
+                any(part in GENERATED_SOURCE_PARTS for part in relative_parts)
+                or (
+                    len(relative_parts) >= 2
+                    and relative_parts[0] == "data"
+                    and relative_parts[1] in {"generated", "private", "real"}
+                )
+            ):
                 continue
             if path.is_symlink() or (
-                path.is_file() and path.suffix.lower() in RELEASE_TEXT_SUFFIXES
+                path.is_file()
+                and (
+                    path.suffix.lower() in RELEASE_TEXT_SUFFIXES
+                    or path.name
+                    in {
+                        ".dockerignore",
+                        ".env.example",
+                        ".gitignore",
+                        "Caddyfile",
+                        "Dockerfile",
+                    }
+                )
             ):
                 include(path)
+
+    # A release snapshot can contain dirty/untracked API, Console, deployment,
+    # or other source files that its minimal historical Git index does not
+    # name.  The snapshot manifest is the authoritative captured surface.
+    snapshot_manifest = ROOT / ".release-source-snapshot.json"
+    if snapshot_manifest.is_file() and not snapshot_manifest.is_symlink():
+        try:
+            snapshot_value = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("release source snapshot manifest is invalid") from exc
+        rows = snapshot_value.get("files")
+        if (
+            snapshot_value.get("schema_version")
+            != "teaching_skill_miner.release_source_snapshot.v1"
+            or not isinstance(rows, list)
+        ):
+            raise RuntimeError("release source snapshot manifest is malformed")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError("release source snapshot file row is malformed")
+            relative = row.get("path")
+            if row.get("source_kind") != "release_source_or_public_evidence":
+                continue
+            if not isinstance(relative, str) or not relative:
+                raise RuntimeError("release source snapshot path is malformed")
+            include(ROOT / relative)
 
     public_artifacts = ROOT / "artifacts" / "public"
     if public_artifacts.is_dir() and not public_artifacts.is_symlink():
@@ -282,7 +357,19 @@ def main() -> int:
             findings.append(
                 f"row-level identity field is in {source_kind} {relative}: {field}"
             )
-        if secret_pattern_details(payload):
+        # Source code legitimately contains configuration identifiers and
+        # explicit dummy test values.  Scan it for provider/key formats with a
+        # high-confidence signature; the broader release-audit heuristic still
+        # applies to distributable/public artifacts.
+        secret_matches = [
+            match.group(0)
+            for pattern in SECRET_PATTERNS
+            for match in pattern.finditer(payload)
+        ]
+        if any(
+            not any(marker in match.lower() for marker in OBVIOUS_SECRET_FIXTURE_MARKERS)
+            for match in secret_matches
+        ):
             findings.append(f"possible secret in {source_kind}: {relative}")
         if absolute_local_path_value(payload):
             findings.append(f"absolute local path in {source_kind}: {relative}")

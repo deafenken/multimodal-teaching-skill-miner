@@ -1,0 +1,199 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_adjudication_store.schema.json",
+  "title": "One durable Teaching Agent adjudication transaction",
+  "type": "object",
+  "required": [
+    "schema",
+    "seq",
+    "recorded_at_utc",
+    "operation",
+    "previous_hash",
+    "item_versions",
+    "audit_receipts",
+    "idempotency_bindings",
+    "evidence_index_updates",
+    "erasure_tombstones",
+    "hash"
+  ],
+  "properties": {
+    "schema": {
+      "const": "teaching_skill_miner.teacher_agent_adjudication_store_event.v1"
+    },
+    "seq": {"type": "integer", "minimum": 1},
+    "recorded_at_utc": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "operation": {
+      "enum": ["enqueue", "claim", "decide", "cancel_deleted_evidence"]
+    },
+    "previous_hash": {
+      "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+    },
+    "item_versions": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "$ref": "https://example.invalid/teaching-skill-miner/teacher_agent_adjudication.schema.json#/$defs/review_item"
+      }
+    },
+    "audit_receipts": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "$ref": "https://example.invalid/teaching-skill-miner/teacher_agent_adjudication.schema.json#/$defs/audit_receipt"
+      }
+    },
+    "idempotency_bindings": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/idempotency_binding"}
+    },
+    "evidence_index_updates": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/evidence_index_update"}
+    },
+    "erasure_tombstones": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {"$ref": "#/$defs/erasure_tombstone"}
+    },
+    "hash": {"$ref": "#/$defs/digest"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"operation": {"const": "enqueue"}}},
+      "then": {
+        "oneOf": [
+          {
+            "properties": {
+              "item_versions": {"minItems": 1, "maxItems": 1},
+              "audit_receipts": {"minItems": 1, "maxItems": 1},
+              "idempotency_bindings": {"minItems": 1, "maxItems": 1},
+              "evidence_index_updates": {"minItems": 1, "maxItems": 1},
+              "erasure_tombstones": {"maxItems": 0}
+            }
+          },
+          {
+            "properties": {
+              "idempotency_bindings": {"maxItems": 0},
+              "evidence_index_updates": {"maxItems": 0},
+              "erasure_tombstones": {"minItems": 1, "maxItems": 1}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {"properties": {"operation": {"const": "claim"}}},
+      "then": {
+        "properties": {
+          "item_versions": {"minItems": 1, "maxItems": 1},
+          "audit_receipts": {"minItems": 1, "maxItems": 1},
+          "idempotency_bindings": {"minItems": 1, "maxItems": 1},
+          "evidence_index_updates": {"maxItems": 0},
+          "erasure_tombstones": {"maxItems": 0}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"operation": {"const": "cancel_deleted_evidence"}}
+      },
+      "then": {
+        "properties": {
+          "idempotency_bindings": {"maxItems": 0},
+          "evidence_index_updates": {"maxItems": 0},
+          "erasure_tombstones": {"minItems": 1, "maxItems": 1}
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "safe_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "idempotency_binding": {
+      "type": "object",
+      "required": [
+        "operation",
+        "idempotency_key",
+        "idempotency_key_sha256",
+        "request_sha256",
+        "response",
+        "response_sha256"
+      ],
+      "properties": {
+        "operation": {"enum": ["enqueue", "claim", "decide"]},
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "idempotency_key_sha256": {"$ref": "#/$defs/digest"},
+        "request_sha256": {"$ref": "#/$defs/digest"},
+        "response": {"type": "object"},
+        "response_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "evidence_index_update": {
+      "type": "object",
+      "required": [
+        "evidence_id",
+        "evidence_id_sha256",
+        "evidence_sha256",
+        "item_id"
+      ],
+      "properties": {
+        "evidence_id": {"$ref": "#/$defs/safe_id"},
+        "evidence_id_sha256": {"$ref": "#/$defs/digest"},
+        "evidence_sha256": {"$ref": "#/$defs/digest"},
+        "item_id": {"type": "string", "pattern": "^adj_[0-9a-f]{24}$"}
+      },
+      "additionalProperties": false
+    },
+    "erasure_tombstone": {
+      "type": "object",
+      "required": [
+        "schema",
+        "evidence_id_sha256",
+        "erased_at_utc",
+        "reason",
+        "actor"
+      ],
+      "properties": {
+        "schema": {
+          "const": "teaching_skill_miner.teacher_agent_adjudication_erasure_tombstone.v1"
+        },
+        "evidence_id_sha256": {"$ref": "#/$defs/digest"},
+        "erased_at_utc": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "reason": {"const": "evidence_deleted"},
+        "actor": {
+          "type": "object",
+          "required": ["identity", "authenticated", "teacher_identity_claimed"],
+          "properties": {
+            "identity": {"const": "system_evidence_purge"},
+            "authenticated": {"const": false},
+            "teacher_identity_claimed": {"const": false}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

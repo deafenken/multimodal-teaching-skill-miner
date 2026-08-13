@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_curriculum_authority_store.schema.json",
+  "title": "Authenticated teacher curriculum authority append-only ledger",
+  "type": "object",
+  "required": ["schema", "version", "scope_id", "event_sequence", "events", "erasure_tombstones"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.curriculum_authority_store.v1"},
+    "version": {"const": 1},
+    "scope_id": {"type": "string", "pattern": "^scope_[0-9a-f]{48}$"},
+    "event_sequence": {"type": "integer", "minimum": 0, "maximum": 8192},
+    "events": {"type": "array", "maxItems": 8192, "items": {"$ref": "#/$defs/event"}},
+    "erasure_tombstones": {
+      "type": "object",
+      "maxProperties": 8192,
+      "propertyNames": {"pattern": "^[0-9a-f]{64}$"},
+      "additionalProperties": {"$ref": "#/$defs/tombstone"}
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+    "binding": {
+      "type": "object",
+      "required": ["family_id", "published_revision_id", "published_syllabus_id", "published_syllabus_sha256", "authority_version"],
+      "properties": {
+        "family_id": {"type": "string", "pattern": "^syf_[0-9a-f]{24}$"},
+        "published_revision_id": {"type": "string", "pattern": "^syr_[0-9a-f]{24}$"},
+        "published_syllabus_id": {"type": "string", "pattern": "^syl_[0-9a-f]{24}$"},
+        "published_syllabus_sha256": {"$ref": "#/$defs/digest"},
+        "authority_version": {"type": "integer", "minimum": 1}
+      }
+    },
+    "gateway_receipt": {
+      "type": "object",
+      "required": ["schema", "authority_id", "scope_id", "method", "path", "body_sha256", "actor_principal_sha256", "issued_at", "expires_at", "service_authorization_signature_verified", "personal_non_repudiation", "receipt_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_authority_verification_receipt.v1"},
+        "authority_id": {"type": "string", "pattern": "^tauth_[0-9a-f]{24}$"},
+        "scope_id": {"type": "string", "pattern": "^scope_[0-9a-f]{48}$"},
+        "method": {"const": "POST"},
+        "path": {"enum": ["api/curriculum/review", "api/curriculum/seal", "api/curriculum/revoke"]},
+        "body_sha256": {"$ref": "#/$defs/digest"},
+        "actor_principal_sha256": {"$ref": "#/$defs/digest"},
+        "issued_at": {"$ref": "#/$defs/timestamp"},
+        "expires_at": {"$ref": "#/$defs/timestamp"},
+        "service_authorization_signature_verified": {"const": true},
+        "personal_non_repudiation": {"const": false},
+        "receipt_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": true
+    },
+    "review_payload": {
+      "allOf": [
+        {"$ref": "#/$defs/binding"},
+        {
+          "type": "object",
+          "required": ["review_id", "teacher_spec", "teacher_spec_sha256", "gateway_authority_receipt", "gateway_authority_receipt_sha256"],
+          "properties": {
+            "review_id": {"type": "string", "pattern": "^currev_[0-9a-f]{24}$"},
+            "teacher_spec": {"type": "object"},
+            "teacher_spec_sha256": {"$ref": "#/$defs/digest"},
+            "gateway_authority_receipt": {"$ref": "#/$defs/gateway_receipt"},
+            "gateway_authority_receipt_sha256": {"$ref": "#/$defs/digest"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "seal_payload": {
+      "allOf": [
+        {"$ref": "#/$defs/binding"},
+        {
+          "type": "object",
+          "required": ["review_id", "teacher_spec_sha256", "curriculum_id", "curriculum_blueprint", "gateway_authority_receipt", "gateway_authority_receipt_sha256"],
+          "properties": {
+            "review_id": {"type": "string", "pattern": "^currev_[0-9a-f]{24}$"},
+            "teacher_spec_sha256": {"$ref": "#/$defs/digest"},
+            "curriculum_id": {"type": "string", "pattern": "^cur_[0-9a-f]{24}$"},
+            "curriculum_blueprint": {"type": "object", "required": ["schema", "curriculum_id", "authority", "integrity"]},
+            "gateway_authority_receipt": {"$ref": "#/$defs/gateway_receipt"},
+            "gateway_authority_receipt_sha256": {"$ref": "#/$defs/digest"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "revoke_payload": {
+      "allOf": [
+        {"$ref": "#/$defs/binding"},
+        {
+          "type": "object",
+          "required": ["curriculum_id", "reason_code", "gateway_authority_receipt", "gateway_authority_receipt_sha256"],
+          "properties": {
+            "curriculum_id": {"type": "string", "pattern": "^cur_[0-9a-f]{24}$"},
+            "reason_code": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{1,79}$"},
+            "gateway_authority_receipt": {"$ref": "#/$defs/gateway_receipt"},
+            "gateway_authority_receipt_sha256": {"$ref": "#/$defs/digest"}
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["schema", "sequence", "event_id", "event_type", "occurred_at_utc", "idempotency_key", "request_sha256", "payload", "previous_event_sha256", "event_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.curriculum_authority_event.v1"},
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "event_id": {"type": "string", "pattern": "^curae_[0-9a-f]{24}$"},
+        "event_type": {"enum": ["review.recorded", "authority.sealed", "authority.revoked"]},
+        "occurred_at_utc": {"$ref": "#/$defs/timestamp"},
+        "idempotency_key": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{7,159}$"},
+        "request_sha256": {"$ref": "#/$defs/digest"},
+        "payload": {"oneOf": [{"$ref": "#/$defs/review_payload"}, {"$ref": "#/$defs/seal_payload"}, {"$ref": "#/$defs/revoke_payload"}]},
+        "previous_event_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "event_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "projection": {
+      "type": "object",
+      "required": ["schema", "family_id", "version", "status", "published_revision_id", "published_syllabus_id", "published_syllabus_sha256", "review", "seal", "revocation", "event_ids"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.curriculum_authority_projection.v1"},
+        "family_id": {"type": "string", "pattern": "^syf_[0-9a-f]{24}$"},
+        "version": {"type": "integer", "minimum": 1},
+        "status": {"enum": ["reviewed", "sealed", "revoked"]},
+        "published_revision_id": {"type": "string", "pattern": "^syr_[0-9a-f]{24}$"},
+        "published_syllabus_id": {"type": "string", "pattern": "^syl_[0-9a-f]{24}$"},
+        "published_syllabus_sha256": {"$ref": "#/$defs/digest"},
+        "review": {"type": "object"},
+        "seal": {"type": ["object", "null"]},
+        "revocation": {"type": ["object", "null"]},
+        "event_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^curae_[0-9a-f]{24}$"}}
+      },
+      "additionalProperties": false
+    },
+    "tombstone": {
+      "type": "object",
+      "required": ["purged_at_utc", "generation"],
+      "properties": {
+        "purged_at_utc": {"$ref": "#/$defs/timestamp"},
+        "generation": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:teaching-episode-manifest:1",
+  "title": "Deterministic per-video Teaching Skill episode library",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "artifact_kind", "status", "claim_boundary"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.teaching_episode_manifest.v1"},
+    "artifact_kind": {
+      "enum": [
+        "per_video_episode_skill_library",
+        "per_video_episode_skill_library_index"
+      ]
+    },
+    "status": {"enum": ["heuristic_boundary_slices", "index"]},
+    "video_id": {"type": "string", "minLength": 1},
+    "course_id": {"type": "string", "minLength": 1},
+    "media_sha256": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_manifest_sha256": {"$ref": "#/$defs/sha256"},
+    "parent_transcript_sha256": {"$ref": "#/$defs/sha256"},
+    "segmentation": {"$ref": "#/$defs/segmentation"},
+    "episodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/episode"}
+    },
+    "skills": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "libraries": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "video_count": {"type": "integer", "minimum": 1},
+    "claim_boundary": {"$ref": "#/$defs/claimBoundary"}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "artifact_kind": {"const": "per_video_episode_skill_library"},
+        "status": {"const": "heuristic_boundary_slices"}
+      },
+      "required": [
+        "video_id",
+        "course_id",
+        "parent_transcript_sha256",
+        "segmentation",
+        "episodes"
+      ]
+    },
+    {
+      "properties": {
+        "artifact_kind": {"const": "per_video_episode_skill_library_index"},
+        "status": {"const": "index"}
+      },
+      "required": ["source_manifest_sha256", "video_count", "libraries"]
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "segmentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "min_seconds",
+        "target_seconds",
+        "max_seconds",
+        "config_sha256"
+      ],
+      "properties": {
+        "algorithm": {"const": "deterministic_boundary_segmentation_v1"},
+        "min_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "target_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "max_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "config_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "episode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_id",
+        "episode_index",
+        "start",
+        "end",
+        "duration_seconds",
+        "segment_start_index",
+        "segment_end_index",
+        "segment_count",
+        "skill_id",
+        "skill_sha256",
+        "episode_input_sha256"
+      ],
+      "properties": {
+        "episode_id": {"type": "string", "pattern": "^ep_[0-9a-f]{16}$"},
+        "episode_index": {"type": "integer", "minimum": 0},
+        "start": {"type": "number", "minimum": 0},
+        "end": {"type": "number", "exclusiveMinimum": 0},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "segment_start_index": {"type": "integer", "minimum": 0},
+        "segment_end_index": {"type": "integer", "minimum": 1},
+        "segment_count": {"type": "integer", "minimum": 1},
+        "skill_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+        "skill_path": {"type": "string", "minLength": 1},
+        "skill_sha256": {"$ref": "#/$defs/sha256"},
+        "episode_input_sha256": {"$ref": "#/$defs/sha256"},
+        "observed_phase_count": {"type": "integer", "minimum": 0},
+        "event_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "claimBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "episode_boundaries_heuristic",
+        "semantic_clustering_established",
+        "episode_gold_established",
+        "expert_skill_gold_established",
+        "recognition_accuracy_established",
+        "teaching_effectiveness_established"
+      ],
+      "properties": {
+        "episode_boundaries_heuristic": {"const": true},
+        "semantic_clustering_established": {"const": false},
+        "episode_gold_established": {"const": false},
+        "expert_skill_gold_established": {"const": false},
+        "recognition_accuracy_established": {"const": false},
+        "teaching_effectiveness_established": {"const": false}
+      }
+    }
+  }
+}

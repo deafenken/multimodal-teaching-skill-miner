@@ -1,0 +1,54 @@
+{
+	admin off
+	email {$ACME_EMAIL}
+}
+
+{$TEACHLAB_PUBLIC_HOST} {
+	encode zstd gzip
+
+	# Metrics remain bearer-protected by the API and are exposed only on this
+	# exact operational route. The path is not treated as a secret; the bearer
+	# check is the authority. No other API-internal path is rewritten.
+	handle /internal/metrics {
+		rewrite * /metrics
+		reverse_proxy api:4000 {
+			health_uri /ready
+			health_interval 10s
+			health_timeout 2s
+			health_fails 2
+			health_passes 2
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+		}
+	}
+
+	@api path /api/v1/*
+	reverse_proxy @api api:4000 {
+		health_uri /ready
+		health_interval 10s
+		health_timeout 2s
+		health_fails 2
+		health_passes 2
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host {host}
+	}
+
+	reverse_proxy console:3000 {
+		health_uri /ready
+		health_interval 10s
+		health_timeout 2s
+		health_fails 2
+		health_passes 2
+		header_up X-Forwarded-Proto https
+		header_up X-Forwarded-Host {host}
+	}
+
+	header {
+		-Server
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+	}
+}

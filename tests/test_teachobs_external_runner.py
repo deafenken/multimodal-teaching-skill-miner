@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -837,6 +838,19 @@ class TeachObsExternalRunnerTests(unittest.TestCase):
                         == benchmark_input_fingerprint
                         for call in load_arm.call_args_list
                     )
+                )
+                relocated_frozen = root / "relocated-frozen-models"
+                shutil.copytree(frozen, relocated_frozen)
+                relocated_report = check_benchmark(
+                    os.fspath(result_path),
+                    os.fspath(receipt_path),
+                    os.fspath(relocated_frozen),
+                    os.fspath(feature_manifest),
+                    os.fspath(transcript_manifest_path),
+                    evaluation_profile=PAPER_TRACK1_23_TRAIN_6_TEST_PROFILE,
+                )
+                self.assertTrue(
+                    relocated_report["frozen_bundle_integrity_verified"]
                 )
                 result["private_transcript_audit"] = {
                     **transcript_audit,

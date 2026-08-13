@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_learning_store_event.schema.json",
+  "title": "Teaching Agent learning-record hash-chain envelope",
+  "type": "object",
+  "required": [
+    "schema",
+    "seq",
+    "recorded_at_utc",
+    "previous_hash",
+    "outbox_event",
+    "outbox_fingerprint",
+    "target_version_after",
+    "learner_version_after",
+    "hash"
+  ],
+  "properties": {
+    "schema": {
+      "const": "teaching_skill_miner.teacher_agent_learning_store_event.v1"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "recorded_at_utc": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+    },
+    "previous_hash": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outbox_event": {
+      "$ref": "teacher_agent_learning_outbox_event.schema.json"
+    },
+    "outbox_fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "target_version_after": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "learner_version_after": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "additionalProperties": false
+}

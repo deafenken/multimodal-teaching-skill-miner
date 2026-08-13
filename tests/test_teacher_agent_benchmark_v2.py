@@ -276,6 +276,21 @@ def _sealed_lifecycle_receipt(turn: dict, loop_summary: dict) -> dict:
     return result
 
 
+def test_model_trace_accepts_bounded_deepseek_prompt_cache_usage() -> None:
+    benchmark_v2._validate_model_trace(
+        {
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "usage": {
+                "prompt_tokens": 300,
+                "prompt_cache_hit_tokens": 256,
+                "prompt_cache_miss_tokens": 44,
+            },
+        },
+        field="model_trace",
+    )
+
+
 def test_development_fixture_is_input_gold_separated_and_valid(artifacts) -> None:
     inputs, gold, library = artifacts
 

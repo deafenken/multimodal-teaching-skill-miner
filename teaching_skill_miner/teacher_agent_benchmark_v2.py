@@ -225,7 +225,15 @@ _LOOP_EVENT_KEYS = frozenset(
 _MODEL_TRACE_KEYS = frozenset(
     {"provider", "model", "request_kind", "latency_ms", "attempt_count", "http_status", "response_id", "usage"}
 )
-_USAGE_KEYS = frozenset({"prompt_tokens", "completion_tokens", "total_tokens"})
+_USAGE_KEYS = frozenset(
+    {
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "prompt_cache_hit_tokens",
+        "prompt_cache_miss_tokens",
+    }
+)
 
 
 class TeachingAgentBenchmarkV2Error(ValueError):

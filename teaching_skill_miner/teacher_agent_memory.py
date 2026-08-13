@@ -14,6 +14,7 @@ from copy import deepcopy
 import re
 from typing import Any, Mapping, Sequence
 
+from .teacher_agent_discourse import classify_learner_discourse_text
 from .teacher_agent import canonical_sha256
 
 
@@ -32,9 +33,23 @@ _DYNAMIC_PROFILE_FIELDS = frozenset(
     }
 )
 
-_QUESTION_RE = re.compile(
+_LEGACY_QUESTION_RE = re.compile(
     r"(?:[?？]\s*$|^(?:为什么|为何|怎么|怎样|如何|什么|哪(?:个|种)|能不能|可不可以|"
     r"是不是|是否|请问)|(?:吗|呢|么)[?？。！!\s]*$)",
+    re.IGNORECASE,
+)
+_QUESTION_RE = re.compile(
+    r"(?:[?？]\s*$|^(?:为什么|为何|怎么|怎样|如何|什么|哪(?:个|种)|能不能|可不可以|"
+    r"是不是|是否|请问)|(?:吗|呢|么)[?？。！!\s]*$|"
+    r"分(?:成|为)?(?:哪几|哪些|几)(?:个)?部分|"
+    r"由(?:什么|哪些|哪几(?:个)?).{0,12}(?:组成|构成)|"
+    r"(?:包括|包含)(?:什么|哪些|哪几(?:个)?)(?:部分|要素|成分|内容)?|"
+    r"(?:有|涉及)(?:哪几|几)(?:个)?(?:部分|要素|成分|内容))",
+    re.IGNORECASE,
+)
+_QUESTION_DECLARATION_RE = re.compile(
+    r"^(?:我|我们).{0,40}(?:把|将).{0,40}(?:分成|分为).{0,20}"
+    r"(?:个|部分)(?:了)?[！!。.]*$",
     re.IGNORECASE,
 )
 _POSITIVE_ACK_RE = re.compile(
@@ -48,6 +63,11 @@ _REOPEN_RE = re.compile(
 _COMMITMENT_RE = re.compile(
     r"(?:接下来(?:我)?会|下一步(?:我)?会|稍后(?:我)?会|等你.+(?:后|之后).*(?:再|会)|"
     r"之后(?:我)?会)",
+    re.IGNORECASE,
+)
+_WAIT_FOR_RESPONSE_CONTROL_RE = re.compile(
+    r"(?:请先)?只回答(?:这|当前|本)一问.{0,32}"
+    r"(?:等你|等待你).{0,16}(?:回答后|作答后)?再继续",
     re.IGNORECASE,
 )
 _REFERENT_MARKER_RE = re.compile(
@@ -74,6 +94,68 @@ def _text(value: Any, maximum: int = 400) -> str:
 
 def _memory_id(kind: str, round_number: int, text: str) -> str:
     return f"{kind}_r{round_number:03d}_{canonical_sha256(text)[:12]}"
+
+
+def _contains_durable_teacher_commitment(message: str) -> bool:
+    without_wait_control = _WAIT_FOR_RESPONSE_CONTROL_RE.sub("", str(message))
+    return bool(_COMMITMENT_RE.search(without_wait_control))
+
+
+def _is_question_text(text: str, *, legacy_detection: bool) -> bool:
+    if legacy_detection:
+        return bool(_LEGACY_QUESTION_RE.search(text))
+    if classify_learner_discourse_text(text).is_question:
+        return True
+    return bool(_QUESTION_RE.search(text)) and not bool(
+        _QUESTION_DECLARATION_RE.search(text)
+    )
+
+
+def _has_matching_question_answer_receipt(
+    teacher_action: Mapping[str, Any], question: str
+) -> bool:
+    """Accept only an auditable answer-first receipt for the exact question."""
+
+    receipt = teacher_action.get("learner_question_answer")
+    if not isinstance(receipt, Mapping):
+        return False
+    grounding_refs = receipt.get("grounding_refs")
+    valid_grounding_refs = (
+        isinstance(grounding_refs, list)
+        and bool(grounding_refs)
+        and all(isinstance(item, str) and item.strip() for item in grounding_refs)
+        and len(grounding_refs) == len(set(grounding_refs))
+    )
+    return (
+        receipt.get("schema")
+        == "teaching_skill_miner.learner_question_answer_receipt.v2"
+        and receipt.get("status") == "answered_before_low_load_check"
+        and receipt.get("question_sha256") == canonical_sha256(question)
+        and bool(
+            re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(receipt.get("clarification_contract_sha256", "")),
+            )
+        )
+        and receipt.get("clarification_kind")
+        in {
+            "definition",
+            "symbol_meaning",
+            "rationale",
+            "procedure",
+            "composition",
+            "comparison",
+            "example_request",
+        }
+        and receipt.get("grounding_mode") == "teacher_authoritative_context"
+        and valid_grounding_refs
+        and receipt.get("answer_surface_contract_validated") is True
+        and receipt.get("server_verified_semantic_truth") is False
+        and receipt.get("general_knowledge_is_grading_authority") is False
+        and receipt.get("conceptual_clarification_answered") is True
+        and receipt.get("practice_final_solution_provided") is False
+        and receipt.get("mastery_evidence") is False
+    )
 
 
 def _preference_kind(text: str) -> str:
@@ -296,7 +378,12 @@ def _resolve_or_reopen_questions(
 
 
 def _record_teacher_action(
-    memory: dict[str, Any], *, round_number: int, teacher_action: Mapping[str, Any]
+    memory: dict[str, Any],
+    *,
+    round_number: int,
+    teacher_action: Mapping[str, Any],
+    legacy_wait_controls_as_commitments: bool = False,
+    legacy_auto_address_questions: bool = False,
 ) -> None:
     message = _text(teacher_action.get("message", ""), 700)
     if not message:
@@ -311,7 +398,13 @@ def _record_teacher_action(
         ),
         None,
     )
-    if open_question is not None:
+    question_was_answered = open_question is not None and (
+        legacy_auto_address_questions
+        or _has_matching_question_answer_receipt(
+            teacher_action, str(open_question.get("question", ""))
+        )
+    )
+    if open_question is not None and question_was_answered:
         open_question["status"] = "addressed_pending_confirmation"
         open_question["addressed_round"] = round_number
         open_question["answer_evidence_refs"] = list(
@@ -320,7 +413,12 @@ def _record_teacher_action(
             )
         )[-4:]
 
-    if _COMMITMENT_RE.search(message):
+    has_commitment = (
+        bool(_COMMITMENT_RE.search(message))
+        if legacy_wait_controls_as_commitments
+        else _contains_durable_teacher_commitment(message)
+    )
+    if has_commitment:
         memory["commitments"].append(
             {
                 "memory_id": _memory_id("commitment", round_number, message),
@@ -346,15 +444,16 @@ def _record_teacher_action(
         del memory["referents"][:-MAX_REFERENTS]
 
 
-def commit_teaching_memory_turn(
+def _commit_teaching_memory_turn(
     memory: Mapping[str, Any],
     *,
     round_number: int,
     learner_text: str,
     teacher_action: Mapping[str, Any],
+    legacy_wait_controls_as_commitments: bool,
+    legacy_auto_address_questions: bool,
+    legacy_question_detection: bool,
 ) -> dict[str, Any]:
-    """Commit one completed learner→teacher turn to evidence-linked memory."""
-
     validate_teaching_memory(memory)
     if isinstance(round_number, bool) or not isinstance(round_number, int) or round_number < 1:
         raise TeachingMemoryError("round_number must be a positive integer")
@@ -362,6 +461,14 @@ def commit_teaching_memory_turn(
         raise TeachingMemoryError("teaching memory turns must commit monotonically")
 
     updated = deepcopy(dict(memory))
+    if not legacy_wait_controls_as_commitments:
+        updated["commitments"] = [
+            item
+            for item in updated["commitments"]
+            if _contains_durable_teacher_commitment(
+                str(item.get("statement", ""))
+            )
+        ]
     response = _text(learner_text, 700)
     _resolve_or_reopen_questions(
         updated["open_questions"],
@@ -372,7 +479,9 @@ def commit_teaching_memory_turn(
         _upsert_preference(
             updated["preferences"], statement=response, round_number=round_number
         )
-    if response and _QUESTION_RE.search(response):
+    if response and _is_question_text(
+        response, legacy_detection=legacy_question_detection
+    ):
         _append_question(
             updated["open_questions"],
             question=response,
@@ -382,6 +491,8 @@ def commit_teaching_memory_turn(
         updated,
         round_number=round_number,
         teacher_action=teacher_action,
+        legacy_wait_controls_as_commitments=legacy_wait_controls_as_commitments,
+        legacy_auto_address_questions=legacy_auto_address_questions,
     )
     updated["history_version"] = int(updated["history_version"]) + 1
     updated["compaction_generation"] = max(
@@ -390,6 +501,26 @@ def commit_teaching_memory_turn(
     updated["last_observed_round"] = round_number
     validate_teaching_memory(updated)
     return updated
+
+
+def commit_teaching_memory_turn(
+    memory: Mapping[str, Any],
+    *,
+    round_number: int,
+    learner_text: str,
+    teacher_action: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Commit one completed learner→teacher turn to evidence-linked memory."""
+
+    return _commit_teaching_memory_turn(
+        memory,
+        round_number=round_number,
+        learner_text=learner_text,
+        teacher_action=teacher_action,
+        legacy_wait_controls_as_commitments=False,
+        legacy_auto_address_questions=False,
+        legacy_question_detection=False,
+    )
 
 
 def _rollout_learner_text(event: Mapping[str, Any]) -> str:
@@ -415,11 +546,8 @@ def _rollout_teacher_action(event: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_rollout_checkpoint_trace(
-    event: Mapping[str, Any], memory: Mapping[str, Any]
-) -> None:
-    trace = event.get("teaching_memory_trace")
-    expected = {
+def _rollout_checkpoint_trace(memory: Mapping[str, Any]) -> dict[str, Any]:
+    return {
         "history_version": memory["history_version"],
         "compaction_generation": memory["compaction_generation"],
         "fixed_context_fingerprint": memory["fixed_context_fingerprint"],
@@ -427,7 +555,21 @@ def _validate_rollout_checkpoint_trace(
         "source": "deterministic_evidence_linked_rollout_projection",
         "model_generated_summary": False,
     }
-    if not isinstance(trace, Mapping) or dict(trace) != expected:
+
+
+def _rollout_checkpoint_trace_matches(
+    event: Mapping[str, Any], memory: Mapping[str, Any]
+) -> bool:
+    trace = event.get("teaching_memory_trace")
+    return isinstance(trace, Mapping) and dict(trace) == _rollout_checkpoint_trace(
+        memory
+    )
+
+
+def _validate_rollout_checkpoint_trace(
+    event: Mapping[str, Any], memory: Mapping[str, Any]
+) -> None:
+    if not _rollout_checkpoint_trace_matches(event, memory):
         raise TeachingMemoryError(
             "session history teaching_memory_trace does not match canonical replay"
         )
@@ -465,14 +607,64 @@ def rebuild_teaching_memory_from_rollout(
             raise TeachingMemoryError(
                 "session history rounds must be contiguous and one-based"
             )
-        memory = commit_teaching_memory_turn(
+        teacher_action = _rollout_teacher_action(event)
+        learner_text = _rollout_learner_text(event)
+        current_memory = _commit_teaching_memory_turn(
             memory,
             round_number=round_number,
-            learner_text=_rollout_learner_text(event),
-            teacher_action=_rollout_teacher_action(event),
+            learner_text=learner_text,
+            teacher_action=teacher_action,
+            legacy_wait_controls_as_commitments=False,
+            legacy_auto_address_questions=False,
+            legacy_question_detection=False,
         )
-        if validate_checkpoint_traces:
-            _validate_rollout_checkpoint_trace(event, memory)
+        if not validate_checkpoint_traces:
+            memory = current_memory
+            continue
+        if _rollout_checkpoint_trace_matches(event, current_memory):
+            memory = current_memory
+            continue
+        legacy_memories = (
+            _commit_teaching_memory_turn(
+                memory,
+                round_number=round_number,
+                learner_text=learner_text,
+                teacher_action=teacher_action,
+                legacy_wait_controls_as_commitments=False,
+                legacy_auto_address_questions=True,
+                legacy_question_detection=False,
+            ),
+            _commit_teaching_memory_turn(
+                memory,
+                round_number=round_number,
+                learner_text=learner_text,
+                teacher_action=teacher_action,
+                legacy_wait_controls_as_commitments=False,
+                legacy_auto_address_questions=True,
+                legacy_question_detection=True,
+            ),
+            _commit_teaching_memory_turn(
+                memory,
+                round_number=round_number,
+                learner_text=learner_text,
+                teacher_action=teacher_action,
+                legacy_wait_controls_as_commitments=True,
+                legacy_auto_address_questions=True,
+                legacy_question_detection=True,
+            ),
+        )
+        matching_legacy = next(
+            (
+                candidate
+                for candidate in legacy_memories
+                if _rollout_checkpoint_trace_matches(event, candidate)
+            ),
+            None,
+        )
+        if matching_legacy is not None:
+            memory = matching_legacy
+            continue
+        _validate_rollout_checkpoint_trace(event, current_memory)
     return memory
 
 
@@ -541,6 +733,7 @@ def project_teaching_memory(
         }
         for item in memory["commitments"]
         if item.get("status") == "pending"
+        and _contains_durable_teacher_commitment(str(item.get("statement", "")))
     ][-4:]
     referents = [
         {

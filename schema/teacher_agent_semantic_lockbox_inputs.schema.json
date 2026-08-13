@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:teacher-agent-semantic-lockbox-inputs:1",
+  "title": "Teaching Agent semantic lockbox public inputs",
+  "type": "object",
+  "required": ["schema", "benchmark_version", "benchmark_id", "split", "gold_available_to_executor", "cases", "claim_boundary"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.teacher_agent_semantic_lockbox_inputs.v1"},
+    "benchmark_version": {"const": "1.0"},
+    "benchmark_id": {"$ref": "#/$defs/id"},
+    "split": {"const": "external_held_out_lockbox"},
+    "gold_available_to_executor": {"const": false},
+    "cases": {
+      "type": "array",
+      "minItems": 30,
+      "items": {
+        "type": "object",
+        "required": ["case_id", "domain", "learner_text", "response_kind", "authority_condition", "event_round"],
+        "properties": {
+          "case_id": {"$ref": "#/$defs/id"},
+          "domain": {"$ref": "#/$defs/id"},
+          "learner_text": {"type": "string", "minLength": 1, "maxLength": 1000},
+          "response_kind": {"enum": ["correct_paraphrase", "incorrect_plausible", "irrelevant", "confusion"]},
+          "authority_condition": {"enum": ["teacher_rubric", "no_authority"]},
+          "event_round": {"type": "integer", "minimum": 1}
+        },
+        "additionalProperties": false
+      }
+    },
+    "claim_boundary": {
+      "const": {
+        "expert_labels_external": true,
+        "real_students_involved": false,
+        "deployment_accuracy_established": false,
+        "real_learning_effect_established": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$"}
+  }
+}

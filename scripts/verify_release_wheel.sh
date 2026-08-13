@@ -44,7 +44,10 @@ cd "$repo_root"
   --output "$verification_tmp/wheel-allowlist-audit.json" >/dev/null
 
 "$python_command" -m venv "$verification_tmp/core-venv"
-"$verification_tmp/core-venv/bin/python" -m pip install --quiet --no-deps "$wheel"
+# Exercise the wheel exactly as a clean user install would.  Core CLI imports now
+# include the curriculum-signing boundary, so declared runtime dependencies must
+# be resolved here rather than borrowed from the release runner environment.
+"$verification_tmp/core-venv/bin/python" -m pip install --quiet "$wheel"
 actual_version=$(
   cd "$verification_tmp"
   "$verification_tmp/core-venv/bin/python" -c 'import importlib.metadata; print(importlib.metadata.version("teaching-skill-miner"))'

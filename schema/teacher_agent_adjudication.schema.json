@@ -1,0 +1,546 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_adjudication.schema.json",
+  "title": "Teaching Agent adjudication contracts",
+  "oneOf": [
+    {"$ref": "#/$defs/review_item"},
+    {"$ref": "#/$defs/audit_receipt"},
+    {"$ref": "#/$defs/student_model_instruction"}
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "safe_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "kc_id": {
+      "type": "string",
+      "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"
+    },
+    "utc_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "actor": {
+      "type": "object",
+      "required": ["identity", "authenticated", "teacher_identity_claimed"],
+      "properties": {
+        "identity": {"type": "string", "minLength": 1, "maxLength": 80},
+        "authenticated": {"const": false},
+        "teacher_identity_claimed": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "local_operator_actor": {
+      "allOf": [
+        {"$ref": "#/$defs/actor"},
+        {
+          "type": "object",
+          "properties": {
+            "identity": {"const": "local_operator_not_authenticated"}
+          }
+        }
+      ]
+    },
+    "authenticated_teacher_actor": {
+      "type": "object",
+      "required": ["identity", "authenticated", "teacher_identity_claimed", "principal_sha256", "roles_sha256", "authority_id", "assurance"],
+      "properties": {
+        "identity": {"const": "authenticated_teacher_server_authorized"},
+        "authenticated": {"const": true},
+        "teacher_identity_claimed": {"const": true},
+        "principal_sha256": {"$ref": "#/$defs/digest"},
+        "roles_sha256": {"$ref": "#/$defs/digest"},
+        "authority_id": {"type": "string", "pattern": "^tauth_[0-9a-f]{24}$"},
+        "assurance": {"const": "deployment_service_role_authorization_not_personal_signature"}
+      },
+      "additionalProperties": false
+    },
+    "authorized_actor": {
+      "oneOf": [
+        {"$ref": "#/$defs/actor"},
+        {"$ref": "#/$defs/authenticated_teacher_actor"}
+      ]
+    },
+    "authority_verification_receipt": {
+      "type": "object",
+      "required": ["schema", "authority_id", "authority_kind", "assurance", "scope_id", "scope_key_version", "actor_principal_sha256", "roles_sha256", "role_policy_sha256", "method", "path", "body_sha256", "idempotency_key_sha256", "issued_at", "expires_at", "nonce_sha256", "gateway_envelope_sha256", "service_authorization_signature_verified", "personal_non_repudiation", "signature", "receipt_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_authority_verification_receipt.v1"},
+        "authority_id": {"type": "string", "pattern": "^tauth_[0-9a-f]{24}$"},
+        "authority_kind": {"const": "authenticated_teacher_server_authorized"},
+        "assurance": {"const": "deployment_service_role_authorization_not_personal_signature"},
+        "scope_id": {"type": "string", "pattern": "^scope_[0-9a-f]{48}$"},
+        "scope_key_version": {"type": "string", "pattern": "^k[1-9][0-9]{0,8}$"},
+        "actor_principal_sha256": {"$ref": "#/$defs/digest"},
+        "roles_sha256": {"$ref": "#/$defs/digest"},
+        "role_policy_sha256": {"$ref": "#/$defs/digest"},
+        "method": {"const": "POST"},
+        "path": {"enum": ["api/adjudication/claim", "api/adjudication/decide"]},
+        "body_sha256": {"$ref": "#/$defs/digest"},
+        "idempotency_key_sha256": {"$ref": "#/$defs/digest"},
+        "issued_at": {"$ref": "#/$defs/utc_timestamp"},
+        "expires_at": {"$ref": "#/$defs/utc_timestamp"},
+        "nonce_sha256": {"$ref": "#/$defs/digest"},
+        "gateway_envelope_sha256": {"$ref": "#/$defs/digest"},
+        "service_authorization_signature_verified": {"const": true},
+        "personal_non_repudiation": {"const": false},
+        "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+        "receipt_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "authority_revalidation_receipt": {
+      "type": "object",
+      "required": ["schema", "authority_kind", "assurance", "authority_id", "gateway_verification_receipt_sha256", "scope_id", "scope_key_version", "actor_principal_sha256", "roles_sha256", "method", "path", "request_body_sha256", "idempotency_key_sha256", "review_item_id", "review_item_version_sha256", "evidence_id", "evidence_sha256", "model_evidence_sha256", "instruction_authority_basis_sha256", "correction_sha256", "target_kc_ids", "rubric_id", "rubric_authority_sha256", "revalidated_at", "personal_non_repudiation", "signature", "receipt_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_authority_revalidation_receipt.v1"},
+        "authority_kind": {"const": "authenticated_teacher_server_authorized"},
+        "assurance": {"const": "deployment_service_role_authorization_not_personal_signature"},
+        "authority_id": {"type": "string", "pattern": "^tauth_[0-9a-f]{24}$"},
+        "gateway_verification_receipt_sha256": {"$ref": "#/$defs/digest"},
+        "scope_id": {"type": "string", "pattern": "^scope_[0-9a-f]{48}$"},
+        "scope_key_version": {"type": "string", "pattern": "^k[1-9][0-9]{0,8}$"},
+        "actor_principal_sha256": {"$ref": "#/$defs/digest"},
+        "roles_sha256": {"$ref": "#/$defs/digest"},
+        "method": {"const": "POST"},
+        "path": {"const": "api/adjudication/decide"},
+        "request_body_sha256": {"$ref": "#/$defs/digest"},
+        "idempotency_key_sha256": {"$ref": "#/$defs/digest"},
+        "review_item_id": {"type": "string", "pattern": "^adj_[0-9a-f]{24}$"},
+        "review_item_version_sha256": {"$ref": "#/$defs/digest"},
+        "evidence_id": {"$ref": "#/$defs/safe_id"},
+        "evidence_sha256": {"$ref": "#/$defs/digest"},
+        "model_evidence_sha256": {"$ref": "#/$defs/digest"},
+        "instruction_authority_basis_sha256": {"$ref": "#/$defs/digest"},
+        "correction_sha256": {"$ref": "#/$defs/digest"},
+        "target_kc_ids": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/kc_id"}},
+        "rubric_id": {"$ref": "#/$defs/safe_id"},
+        "rubric_authority_sha256": {"$ref": "#/$defs/digest"},
+        "revalidated_at": {"$ref": "#/$defs/utc_timestamp"},
+        "personal_non_repudiation": {"const": false},
+        "signature": {"type": "string", "pattern": "^[A-Za-z0-9_-]{43}$"},
+        "receipt_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "session_id",
+        "round_number",
+        "action_id",
+        "question_id",
+        "history_event_sha256"
+      ],
+      "properties": {
+        "session_id": {"$ref": "#/$defs/safe_id"},
+        "round_number": {"type": "integer", "minimum": 0},
+        "action_id": {"$ref": "#/$defs/safe_id"},
+        "question_id": {"$ref": "#/$defs/safe_id"},
+        "history_event_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "original": {
+      "type": "object",
+      "required": [
+        "assessment_id",
+        "assessment_sha256",
+        "evidence_id",
+        "evidence_sha256",
+        "rubric_id",
+        "rubric_authority_sha256"
+      ],
+      "properties": {
+        "assessment_id": {"$ref": "#/$defs/safe_id"},
+        "assessment_sha256": {"$ref": "#/$defs/digest"},
+        "evidence_id": {"$ref": "#/$defs/safe_id"},
+        "evidence_sha256": {"$ref": "#/$defs/digest"},
+        "rubric_id": {"$ref": "#/$defs/safe_id"},
+        "rubric_authority_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "snapshot_seal": {
+      "type": "object",
+      "required": ["content_sha256"],
+      "properties": {
+        "content_sha256": {"$ref": "#/$defs/digest"},
+        "schema": {"type": "string", "minLength": 1, "maxLength": 160},
+        "state_version": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "lease": {
+      "type": "object",
+      "required": ["actor", "claimed_at", "expires_at", "claim_token_sha256"],
+      "properties": {
+        "actor": {"$ref": "#/$defs/authorized_actor"},
+        "claimed_at": {"$ref": "#/$defs/utc_timestamp"},
+        "expires_at": {"$ref": "#/$defs/utc_timestamp"},
+        "claim_token_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "correction": {
+      "type": "object",
+      "minProperties": 1,
+      "properties": {
+        "signal": {"enum": ["correct", "partial", "misconception"]},
+        "answer_alignment": {
+          "enum": ["aligned", "partially_aligned", "contradicted", "ambiguous"]
+        },
+        "focus_dimension": {
+          "enum": ["prerequisite", "conceptual", "procedural", "transfer"]
+        },
+        "target_kc_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/kc_id"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "decision": {
+      "type": "object",
+      "required": [
+        "kind",
+        "reason_code",
+        "actor",
+        "evidence_id",
+        "evidence_sha256",
+        "correction",
+        "decided_at",
+        "idempotency_key_sha256"
+      ],
+      "properties": {
+        "kind": {"enum": ["approve", "correct", "abstain"]},
+        "reason_code": {
+          "enum": [
+            "assessment_confirmed",
+            "signal_misclassified",
+            "alignment_misclassified",
+            "knowledge_component_misaligned",
+            "focus_dimension_misaligned",
+            "insufficient_evidence",
+            "rubric_ambiguous",
+            "authority_unavailable",
+            "conflict_unresolved"
+          ]
+        },
+        "actor": {"$ref": "#/$defs/authorized_actor"},
+        "evidence_id": {"$ref": "#/$defs/safe_id"},
+        "evidence_sha256": {"$ref": "#/$defs/digest"},
+        "correction": {
+          "oneOf": [
+            {"$ref": "#/$defs/correction"},
+            {"type": "null"}
+          ]
+        },
+        "decided_at": {"$ref": "#/$defs/utc_timestamp"},
+        "idempotency_key_sha256": {"$ref": "#/$defs/digest"},
+        "authority_receipt": {"$ref": "#/$defs/authority_verification_receipt"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "correct"}}},
+          "then": {"properties": {"correction": {"$ref": "#/$defs/correction"}}}
+        },
+        {
+          "if": {
+            "properties": {"kind": {"enum": ["approve", "abstain"]}}
+          },
+          "then": {"properties": {"correction": {"type": "null"}}}
+        },
+        {
+          "if": {
+            "properties": {
+              "actor": {
+                "properties": {
+                  "identity": {"const": "authenticated_teacher_server_authorized"}
+                },
+                "required": ["identity"]
+              }
+            }
+          },
+          "then": {"required": ["authority_receipt"]},
+          "else": {"not": {"required": ["authority_receipt"]}}
+        }
+      ],
+      "additionalProperties": false
+    },
+    "cancellation": {
+      "type": "object",
+      "required": ["reason", "cancelled_at", "actor"],
+      "properties": {
+        "reason": {"const": "evidence_deleted"},
+        "cancelled_at": {"$ref": "#/$defs/utc_timestamp"},
+        "actor": {"$ref": "#/$defs/actor"}
+      },
+      "additionalProperties": false
+    },
+    "review_item": {
+      "type": "object",
+      "required": [
+        "schema",
+        "item_id",
+        "version",
+        "status",
+        "created_at",
+        "updated_at",
+        "source",
+        "target_kc_ids",
+        "target_scope",
+        "original",
+        "before_snapshot",
+        "after_snapshot",
+        "review_reason",
+        "lease",
+        "decision",
+        "cancellation",
+        "previous_version_sha256",
+        "version_sha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "teaching_skill_miner.teacher_agent_adjudication_item.v1"
+        },
+        "item_id": {
+          "type": "string",
+          "pattern": "^adj_[0-9a-f]{24}$"
+        },
+        "version": {"type": "integer", "minimum": 1},
+        "status": {"enum": ["pending", "claimed", "decided", "cancelled"]},
+        "created_at": {"$ref": "#/$defs/utc_timestamp"},
+        "updated_at": {"$ref": "#/$defs/utc_timestamp"},
+        "source": {"$ref": "#/$defs/source"},
+        "target_kc_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/kc_id"}
+        },
+        "target_scope": {"enum": ["exact_one", "bounded_set"]},
+        "original": {"$ref": "#/$defs/original"},
+        "before_snapshot": {"$ref": "#/$defs/snapshot_seal"},
+        "after_snapshot": {"$ref": "#/$defs/snapshot_seal"},
+        "review_reason": {
+          "enum": [
+            "automatic_low_confidence",
+            "authority_required",
+            "learner_dispute",
+            "rubric_conflict",
+            "manual_quality_review"
+          ]
+        },
+        "lease": {"oneOf": [{"$ref": "#/$defs/lease"}, {"type": "null"}]},
+        "decision": {
+          "oneOf": [{"$ref": "#/$defs/decision"}, {"type": "null"}]
+        },
+        "cancellation": {
+          "oneOf": [{"$ref": "#/$defs/cancellation"}, {"type": "null"}]
+        },
+        "previous_version_sha256": {
+          "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+        },
+        "version_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"status": {"const": "pending"}}},
+          "then": {
+            "properties": {
+              "lease": {"type": "null"},
+              "decision": {"type": "null"},
+              "cancellation": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "claimed"}}},
+          "then": {
+            "properties": {
+              "lease": {"$ref": "#/$defs/lease"},
+              "decision": {"type": "null"},
+              "cancellation": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "decided"}}},
+          "then": {
+            "properties": {
+              "lease": {"type": "null"},
+              "decision": {"$ref": "#/$defs/decision"},
+              "cancellation": {"type": "null"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"status": {"const": "cancelled"}}},
+          "then": {
+            "properties": {
+              "lease": {"type": "null"},
+              "cancellation": {"$ref": "#/$defs/cancellation"}
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "audit_receipt": {
+      "type": "object",
+      "required": [
+        "schema",
+        "seq",
+        "event_type",
+        "item_id",
+        "from_version",
+        "to_version",
+        "result_version_sha256",
+        "actor",
+        "occurred_at",
+        "request_sha256",
+        "prior_receipt_sha256",
+        "receipt_sha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "teaching_skill_miner.teacher_agent_adjudication_audit.v1"
+        },
+        "seq": {"type": "integer", "minimum": 1},
+        "event_type": {
+          "enum": [
+            "review.enqueued",
+            "review.claimed",
+            "review.approve",
+            "review.correct",
+            "review.abstain",
+            "review.cancelled_evidence_deleted"
+          ]
+        },
+        "item_id": {"type": "string", "pattern": "^adj_[0-9a-f]{24}$"},
+        "from_version": {
+          "oneOf": [{"type": "integer", "minimum": 1}, {"type": "null"}]
+        },
+        "to_version": {"type": "integer", "minimum": 1},
+        "result_version_sha256": {"$ref": "#/$defs/digest"},
+        "actor": {"$ref": "#/$defs/authorized_actor"},
+        "occurred_at": {"$ref": "#/$defs/utc_timestamp"},
+        "request_sha256": {"$ref": "#/$defs/digest"},
+        "prior_receipt_sha256": {
+          "oneOf": [{"$ref": "#/$defs/digest"}, {"type": "null"}]
+        },
+        "receipt_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "student_model_instruction": {
+      "type": "object",
+      "required": [
+        "schema",
+        "instruction_id",
+        "review_item_id",
+        "review_item_version",
+        "review_item_version_sha256",
+        "operation",
+        "supersedes_evidence_id",
+        "evidence_sha256",
+        "target_kc_ids",
+        "correction",
+        "authority",
+        "mutates_student_model",
+        "mastery_update_authorized",
+        "requires_explicit_apply",
+        "instruction_sha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "teaching_skill_miner.student_model_adjudication_instruction.v1"
+        },
+        "instruction_id": {
+          "type": "string",
+          "pattern": "^adjinst_[0-9a-f]{24}$"
+        },
+        "review_item_id": {"type": "string", "pattern": "^adj_[0-9a-f]{24}$"},
+        "review_item_version": {"type": "integer", "minimum": 1},
+        "review_item_version_sha256": {"$ref": "#/$defs/digest"},
+        "operation": {
+          "enum": [
+            "replay_original_assessment",
+            "supersede_and_replay",
+            "do_not_replay",
+            "cancel_adjudication"
+          ]
+        },
+        "supersedes_evidence_id": {"$ref": "#/$defs/safe_id"},
+        "evidence_sha256": {"$ref": "#/$defs/digest"},
+        "target_kc_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/kc_id"}
+        },
+        "correction": {
+          "oneOf": [{"$ref": "#/$defs/correction"}, {"type": "null"}]
+        },
+        "authority": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["identity", "authenticated", "teacher_identity_claimed", "authoritative_for_mastery_update", "requires_downstream_authority_revalidation"],
+              "properties": {
+                "identity": {"const": "local_operator_not_authenticated"},
+                "authenticated": {"const": false},
+                "teacher_identity_claimed": {"const": false},
+                "authoritative_for_mastery_update": {"const": false},
+                "requires_downstream_authority_revalidation": {"const": true}
+              },
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": ["identity", "authenticated", "teacher_identity_claimed", "principal_sha256", "roles_sha256", "authority_id", "assurance", "gateway_verification_receipt_sha256", "personal_non_repudiation", "authoritative_for_mastery_update", "requires_downstream_authority_revalidation", "server_revalidation_receipt"],
+              "properties": {
+                "identity": {"const": "authenticated_teacher_server_authorized"},
+                "authenticated": {"const": true},
+                "teacher_identity_claimed": {"const": true},
+                "principal_sha256": {"$ref": "#/$defs/digest"},
+                "roles_sha256": {"$ref": "#/$defs/digest"},
+                "authority_id": {"type": "string", "pattern": "^tauth_[0-9a-f]{24}$"},
+                "assurance": {"const": "deployment_service_role_authorization_not_personal_signature"},
+                "gateway_verification_receipt_sha256": {"$ref": "#/$defs/digest"},
+                "personal_non_repudiation": {"const": false},
+                "authoritative_for_mastery_update": {"type": "boolean"},
+                "requires_downstream_authority_revalidation": {"type": "boolean"},
+                "server_revalidation_receipt": {
+                  "oneOf": [
+                    {"$ref": "#/$defs/authority_revalidation_receipt"},
+                    {"type": "null"}
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "mutates_student_model": {"type": "boolean"},
+        "mastery_update_authorized": {"type": "boolean"},
+        "requires_explicit_apply": {"const": true},
+        "instruction_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

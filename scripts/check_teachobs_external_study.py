@@ -1319,10 +1319,17 @@ def check_benchmark(
         not frozen_root_value.is_symlink() and frozen_root.is_dir(),
         "private frozen-model output is unsafe",
     )
+    recorded_output_directory = export.get("output_directory")
     _expect(
-        Path(str(export.get("output_directory"))).resolve(strict=True) == frozen_root,
-        "frozen export receipt points to another directory",
+        isinstance(recorded_output_directory, str)
+        and bool(recorded_output_directory)
+        and "\x00" not in recorded_output_directory,
+        "frozen export receipt has no historical output directory",
     )
+    # output_directory records where the immutable bundle was originally
+    # produced.  It is provenance, not authority: release verification may run
+    # from a copied source snapshot.  The caller-selected directory below is
+    # authoritative and every manifest/array byte in it is hash-verified.
     _expect(export.get("arm_count") == 4, "frozen export arm count mismatch")
     _expect(
         export.get("benchmark_profile") == evaluation_profile,
@@ -1412,10 +1419,12 @@ def check_benchmark(
             _expect(isinstance(artifact, dict), f"frozen {arm} receipt is malformed")
             manifest_path = frozen_root / arm / "manifest.json"
             arrays_path = frozen_root / arm / "arrays.npz"
+            recorded_manifest_path = artifact.get("model_manifest_path")
             _expect(
-                Path(str(artifact.get("model_manifest_path"))).resolve(strict=True)
-                == manifest_path,
-                f"frozen {arm} manifest path mismatch",
+                isinstance(recorded_manifest_path, str)
+                and tuple(Path(recorded_manifest_path).parts[-2:])
+                == (arm, "manifest.json"),
+                f"frozen {arm} historical manifest path mismatch",
             )
             _expect(
                 _file_sha256(manifest_path)

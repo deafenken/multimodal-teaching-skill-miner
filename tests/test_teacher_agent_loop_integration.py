@@ -19,6 +19,7 @@ from teaching_skill_miner.teacher_agent_loop import (
     LOOP_SCHEMA,
     PLAN_SCHEMA,
     TeachingAgentLoopOptions,
+    public_agent_loop_trace,
     run_teaching_agent_loop,
 )
 from teaching_skill_miner.teacher_agent_context import build_layered_context
@@ -37,7 +38,12 @@ def _envelope(content: dict[str, object], *, response_id: str) -> bytes:
         {
             "id": response_id,
             "choices": [{"message": {"content": json.dumps(content)}}],
-            "usage": {"prompt_tokens": 12, "completion_tokens": 8},
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 8,
+                "prompt_cache_hit_tokens": 9,
+                "prompt_cache_miss_tokens": 3,
+            },
         }
     ).encode()
 
@@ -272,6 +278,31 @@ class TeacherAgentLoopIntegrationTests(unittest.TestCase):
             if event["type"] == "model_plan"
         ]
         self.assertEqual([trace["request_kind"] for trace in traces], ["teacher_agent_loop"] * 2)
+        public_traces = [
+            event["trace"]
+            for event in public_agent_loop_trace(result)["events"]
+            if event["type"] == "model_plan"
+        ]
+        self.assertEqual(
+            [
+                {
+                    "prompt_cache_hit_tokens": trace["usage"][
+                        "prompt_cache_hit_tokens"
+                    ],
+                    "prompt_cache_miss_tokens": trace["usage"][
+                        "prompt_cache_miss_tokens"
+                    ],
+                }
+                for trace in public_traces
+            ],
+            [
+                {
+                    "prompt_cache_hit_tokens": 9,
+                    "prompt_cache_miss_tokens": 3,
+                }
+            ]
+            * 2,
+        )
         self.assertNotIn("integration-secret", json.dumps(result, ensure_ascii=False))
 
     def test_initial_and_followup_sessions_expose_only_bounded_round_context(self) -> None:
@@ -421,6 +452,13 @@ class TeacherAgentLoopIntegrationTests(unittest.TestCase):
         self.assertEqual(receipt["selected_skill_id"], "skill_diagnostic_questioning")
         self.assertEqual(runtime["agent_loop_run_count"], 1)
         self.assertEqual(runtime["agent_loop_tool_call_count"], 3)
+        harness_trace = runtime["last_harness_trace"]
+        self.assertEqual(
+            harness_trace["schema"], "teaching_skill_miner.agent_harness.v1"
+        )
+        self.assertEqual(harness_trace["status"], "completed")
+        self.assertEqual(harness_trace["tool_call_count"], 3)
+        self.assertTrue(harness_trace["trace_sha256"])
         self.assertEqual(
             session["current_action"]["primary_skill"]["skill_id"],
             "skill_diagnostic_questioning",

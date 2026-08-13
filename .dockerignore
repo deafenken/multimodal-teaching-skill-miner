@@ -1,0 +1,16 @@
+.git
+.github
+.private
+.pytest_cache
+.ruff_cache
+.venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.next
+**/.next-*
+artifacts
+runs
+tests
+*.log
+.DS_Store

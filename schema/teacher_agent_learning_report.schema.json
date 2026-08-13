@@ -24,12 +24,15 @@
     },
     "claim_boundary": {
       "type": "object",
-      "required": ["scores_are_user_or_fixture_supplied", "grading_correctness_independently_validated", "single_record_establishes_causal_learning_effect", "real_learner_effectiveness_established", "record_declares_real_learner_data"],
+      "required": ["scores_are_user_or_fixture_supplied", "grading_correctness_independently_validated", "assessment_independent_from_agent_predictions_verified", "prediction_can_self_certify_learning", "single_record_establishes_causal_learning_effect", "real_learner_effectiveness_established", "external_validation_status", "record_declares_real_learner_data"],
       "properties": {
         "scores_are_user_or_fixture_supplied": {"const": true},
         "grading_correctness_independently_validated": {"const": false},
+        "assessment_independent_from_agent_predictions_verified": {"const": false},
+        "prediction_can_self_certify_learning": {"const": false},
         "single_record_establishes_causal_learning_effect": {"const": false},
         "real_learner_effectiveness_established": {"const": false},
+        "external_validation_status": {"const": "external_validation_pending"},
         "record_declares_real_learner_data": {"type": "boolean"}
       },
       "additionalProperties": false

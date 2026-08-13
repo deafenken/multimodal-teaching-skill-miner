@@ -34,7 +34,8 @@
     requestEpochs: {},
     sessionCatalog: [],
     commandPaletteOpen: false,
-    paletteSelection: 0
+    paletteSelection: 0,
+    composerCommandSelection: 0
   };
 
   const sessionHandleKey = "teachlab_opaque_session_handle_v2";
@@ -551,6 +552,85 @@
     }
   }
 
+  function resizeComposer() {
+    const textarea = select("#learnerResponse");
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(176, Math.max(28, textarea.scrollHeight))}px`;
+  }
+
+  function composerCommandButtons() {
+    return [...document.querySelectorAll("#commandHints [data-command]")];
+  }
+
+  function closeComposerCommands() {
+    const hints = select("#commandHints");
+    if (!hints) return;
+    hints.hidden = true;
+    select("#commandHintButton").setAttribute("aria-expanded", "false");
+    app.composerCommandSelection = 0;
+  }
+
+  function renderComposerCommands({forceOpen = false} = {}) {
+    const hints = select("#commandHints");
+    const textarea = select("#learnerResponse");
+    if (!hints || !textarea) return;
+    const raw = textarea.value.trimStart();
+    const slashQuery = raw.startsWith("/") && !raw.includes("\n")
+      ? raw.split(/\s+/, 1)[0].toLocaleLowerCase()
+      : "";
+    const shouldOpen = forceOpen || (slashQuery.startsWith("/") && !raw.includes(" "));
+    const buttons = composerCommandButtons();
+    let visibleIndex = 0;
+    for (const button of buttons) {
+      const command = String(button.dataset.command || "").trim().toLocaleLowerCase();
+      const visible = !slashQuery || command.startsWith(slashQuery);
+      button.hidden = !visible;
+      button.setAttribute(
+        "aria-selected",
+        String(shouldOpen && visible && visibleIndex++ === app.composerCommandSelection)
+      );
+    }
+    const visibleButtons = buttons.filter((button) => !button.hidden);
+    if (visibleButtons.length && app.composerCommandSelection >= visibleButtons.length) {
+      app.composerCommandSelection = visibleButtons.length - 1;
+      visibleButtons.forEach((button, index) => {
+        button.setAttribute("aria-selected", String(index === app.composerCommandSelection));
+      });
+    }
+    hints.hidden = !shouldOpen || !visibleButtons.length;
+    select("#commandHintButton").setAttribute("aria-expanded", String(!hints.hidden));
+  }
+
+  function applyComposerCommand(button) {
+    const textarea = select("#learnerResponse");
+    textarea.value = button?.dataset.command || "";
+    closeComposerCommands();
+    resizeComposer();
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
+
+  async function copyTextFromElement(targetId) {
+    const target = document.getElementById(targetId);
+    const value = String(target?.textContent || "").trim();
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast("已复制这条教学消息。 ");
+    } catch (_error) {
+      const fallback = document.createElement("textarea");
+      fallback.value = value;
+      fallback.setAttribute("readonly", "");
+      fallback.className = "visually-hidden";
+      document.body.append(fallback);
+      fallback.select();
+      const copied = document.execCommand("copy");
+      fallback.remove();
+      showToast(copied ? "已复制这条教学消息。 " : "浏览器未允许复制，请手动选择文字。 ");
+    }
+  }
+
   function showInlineError(target, message) {
     const error = select(target);
     error.textContent = message;
@@ -952,6 +1032,8 @@
   function responsiveDrawerState() {
     const shell = select("#appShell");
     const sidebarDrawer = window.matchMedia("(max-width: 860px)").matches;
+    // The reference workbench docks the inspector beside the conversation on
+    // wide screens, then turns it into an overlay drawer when space is tight.
     const inspectorDrawer = window.matchMedia("(max-width: 1260px)").matches;
     return {
       sidebarDrawer,
@@ -1050,22 +1132,22 @@
   }
 
   function syncDrawerBackdrop() {
-    const shell = select("#appShell");
-    const drawerOpen = (window.matchMedia("(max-width: 860px)").matches && shell.classList.contains("sidebar-open"))
-      || (window.matchMedia("(max-width: 1260px)").matches && shell.classList.contains("inspector-open"));
+    const state = responsiveDrawerState();
+    const drawerOpen = state.sidebarOpen || state.inspectorOpen;
     select("#drawerBackdrop").hidden = !drawerOpen;
   }
 
   function closeDrawers({restoreFocus = false} = {}) {
     const focusTarget = restoreFocus ? app.lastDrawerTrigger : null;
     setSidebar(false);
-    if (window.matchMedia("(max-width: 1260px)").matches) setInspector(false);
+    setInspector(false);
     if (focusTarget) window.requestAnimationFrame(() => focusTarget.focus());
     app.lastDrawerTrigger = null;
   }
 
   function showSetupForm(visible) {
     select("#setupForm").hidden = !visible;
+    select("#setupPanel").classList.toggle("setup-expanded", visible);
     const hasSession = Boolean(app.session);
     select("#presetButtonLabel").textContent = hasSession
       ? (visible ? "收起任务设置" : "新建 / 编辑任务")
@@ -1118,6 +1200,7 @@
   function handleSetupButton() {
     if (!app.session) {
       fillSetupForm();
+      showSetupForm(true);
       showToast("演示任务已填入，可以直接检查后开始学习。 ");
       return;
     }
@@ -1226,6 +1309,14 @@
           : app.controlMode === "manual" ? "已锁定 Skill，输入 /auto 释放" : "Agent 自动路由 Skill";
     select("#commandControlState").textContent = controlState;
     select("#commandControlDetail").textContent = controlDetail;
+    select("#contextSummaryGoal").textContent = compactText(concept, 54);
+    select("#contextSummaryGoal").title = concept;
+    select("#contextSummaryPlan").textContent = compactText(activeDescription, 62);
+    select("#contextSummaryPlan").title = activeDescription;
+    select("#contextSummaryProgress").textContent = `${Math.round(fraction * 100)}%`;
+    select("#contextSummaryProgressBar").style.setProperty("--run-progress", `${Math.round(fraction * 100)}%`);
+    select("#contextSummaryControl").textContent = controlState;
+    select("#runContextMenu").dataset.state = status;
   }
 
   function renderRecoveryConsole(session, action = {}) {
@@ -1403,6 +1494,8 @@
     select("#stepButton").disabled = app.busy || !active;
     select("#autoModeButton").disabled = app.busy;
     select("#manualModeButton").disabled = app.busy || !commandSupport;
+    select("#composerAutoModeButton").disabled = app.busy;
+    select("#composerManualModeButton").disabled = app.busy || !commandSupport;
     const manualEditorOpen = app.controlMode === "manual" || app.manualDraftOpen;
     select("#skillOverrideSelect").disabled = app.busy || !commandSupport || !manualEditorOpen;
     select("#applySkillButton").disabled = app.busy
@@ -1425,6 +1518,14 @@
     cancelButton.hidden = !cancellableTurn;
     cancelButton.disabled = !cancellableTurn || app.stopRequested;
     cancelButton.textContent = app.stopRequested ? "正在停止…" : "停止生成";
+    select("#stepButton").hidden = cancellableTurn;
+    select("#composerStatusText").textContent = app.stopRequested
+      ? "正在停止…"
+      : cancellableTurn
+        ? "TeachLab 正在工作…"
+        : app.controlMode === "manual"
+          ? `${compactText(skillName(app.manualSkillId) || "Manual Skill", 28)} · 手动`
+          : active ? "Auto · Enter 发送" : "等待活动会话";
     renderAttachmentConfirmation();
     for (const card of document.querySelectorAll("[data-profile-id]")) {
       card.disabled = app.busy;
@@ -1988,6 +2089,7 @@
       },
       allowed_skill_ids: array(app.bootstrap?.skills).map((skill) => skill.skill_id),
       remote_processing_acknowledged: select("#remoteConsent").checked,
+      remote_processing_consent_version: 1,
       profile_revision: app.profileRevision,
       profile_display_name: selectedProfile().name
     };
@@ -2017,6 +2119,20 @@
     select("#manualModeButton").classList.toggle("active", app.controlMode === "manual");
     select("#autoModeButton").setAttribute("aria-pressed", String(app.controlMode === "auto"));
     select("#manualModeButton").setAttribute("aria-pressed", String(app.controlMode === "manual"));
+    const composerAuto = select("#composerAutoModeButton");
+    const composerManual = select("#composerManualModeButton");
+    const composerLabel = select("#composerModeLabel");
+    composerAuto.classList.toggle("active", app.controlMode === "auto");
+    composerManual.classList.toggle("active", app.controlMode === "manual");
+    composerAuto.setAttribute("aria-pressed", String(app.controlMode === "auto"));
+    composerManual.setAttribute("aria-pressed", String(app.controlMode === "manual"));
+    composerLabel.textContent = app.controlMode === "auto"
+      ? "Auto"
+      : compactText(skillName(app.manualSkillId) || "Skill", 22);
+    select("#composerModeMenu").querySelector("summary").setAttribute(
+      "aria-label",
+      app.controlMode === "auto" ? "当前为 Auto Skill 路由" : `当前锁定 ${composerLabel.textContent}`
+    );
     select("#skillOverrideSelect").value = app.manualSkillId;
     select("#runtimeMode").textContent = app.controlMode === "auto" ? "AUTO" : "MANUAL";
     syncControls();
@@ -2850,10 +2966,15 @@
         ...(action.skill_switched || event.skill_switched ? [node("span", "", "已切换方法")] : []),
         provenanceChip
       );
-      teacherBubble.append(
-        teacherMeta,
-        node("p", "", object(action.teacher_action).message || event.teacher_message || "（该轮教师动作未公开）")
-      );
+      const teacherMessage = node("p", "", object(action.teacher_action).message || event.teacher_message || "（该轮教师动作未公开）");
+      teacherMessage.id = `historyTeacherMessage${index}`;
+      const teacherActions = node("div", "message-actions historical-actions");
+      const copyButton = node("button", "");
+      copyButton.type = "button";
+      copyButton.dataset.copyTarget = teacherMessage.id;
+      copyButton.append(node("span", "", "⧉"), node("span", "", "复制"));
+      teacherActions.append(copyButton);
+      teacherBubble.append(teacherMeta, teacherMessage, teacherActions);
       teacherRow.append(teacherAvatar, teacherBubble);
 
       const studentRow = node("article", "chat-message student");
@@ -3198,6 +3319,7 @@
     const terminalReason = textValue(action.termination_reason || session.termination_reason, "会话已进入停止状态。");
     select("#selectionReason").textContent = terminalReason;
     select("#liveSelectionReason").textContent = terminalReason;
+    select("#liveSelectionReason").title = terminalReason;
     select("#liveSelectionReason").hidden = false;
     renderSupportingSkills({});
     select("#actionType").textContent = textValue(object(action.teacher_action).type || action.type, "stop");
@@ -3237,6 +3359,7 @@
       ? `模型先提议“${skillName(modelProposedSkill)}”，服务端结合当前学情最终选择“${textValue(skill.name || skillName(skill.skill_id))}”：${finalReason}`
       : finalReason;
     select("#liveSelectionReason").textContent = liveReason;
+    select("#liveSelectionReason").title = liveReason;
     select("#liveSelectionReason").hidden = false;
     const teacher = object(action.teacher_action);
     select("#actionType").textContent = textValue(teacher.type, "one_action");
@@ -3628,6 +3751,7 @@
       app.recoveryRetryable = false;
       clearPendingAttachment();
       select("#learnerResponse").value = "";
+      resizeComposer();
       synchronizeControlModeFromSession();
       renderSession();
       syncNewMessageAnnouncer();
@@ -3780,6 +3904,7 @@
       try {
         await sendCommand("auto");
         select("#learnerResponse").value = "";
+        resizeComposer();
         showToast("已恢复自动 Skill 选择。 ");
       } finally {
         setBusy(false);
@@ -3792,6 +3917,7 @@
       try {
         await sendCommand("stop");
         select("#learnerResponse").value = "";
+        resizeComposer();
         showToast("会话已停止，并保留当前学生状态供人工接管。 ");
       } finally {
         setBusy(false);
@@ -3806,6 +3932,7 @@
       try {
         await sendCommand("select_skill", match.skill_id);
         select("#learnerResponse").value = "";
+        resizeComposer();
         showToast(`已锁定“${match.name}”；后续每轮持续使用，输入 /auto 才恢复自动。`);
       } finally {
         setBusy(false);
@@ -3915,6 +4042,7 @@
       app.pendingTurn = null;
       app.pendingCommand = null;
       select("#learnerResponse").value = "";
+      resizeComposer();
       clearPendingAttachment();
       synchronizeControlModeFromSession();
       renderSession();
@@ -4134,10 +4262,16 @@
         const textarea = select("#learnerResponse");
         textarea.value = button.dataset.quickResponse || "";
         clearInlineError("#turnError");
+        closeComposerCommands();
+        resizeComposer();
         textarea.focus();
         textarea.setSelectionRange(textarea.value.length, textarea.value.length);
       });
     }
+    document.addEventListener("click", (event) => {
+      const copyButton = event.target.closest?.("[data-copy-target]");
+      if (copyButton) copyTextFromElement(copyButton.dataset.copyTarget);
+    });
     const inspectorTabs = [...document.querySelectorAll("[data-inspector-tab]")];
     for (const button of inspectorTabs) {
       button.addEventListener("click", () => setInspectorTab(button.dataset.inspectorTab));
@@ -4200,6 +4334,16 @@
     });
     select("#handoffButton").addEventListener("click", handoffToTeacher);
     select("#presetButton").addEventListener("click", handleSetupButton);
+    select("#composerAutoModeButton").addEventListener("click", () => {
+      select("#composerModeMenu").open = false;
+      select("#autoModeButton").click();
+    });
+    select("#composerManualModeButton").addEventListener("click", () => {
+      select("#composerModeMenu").open = false;
+      select("#manualModeButton").click();
+      setInspectorTab("method");
+      setInspector(true);
+    });
     select("#conceptInput").addEventListener("input", () => updateWorkspaceIdentity());
     select("#objectiveInput").addEventListener("input", () => updateWorkspaceIdentity());
     select("#autoModeButton").addEventListener("click", chooseAutoMode);
@@ -4266,20 +4410,55 @@
     select("#drawerBackdrop").addEventListener("click", () => closeDrawers({restoreFocus: true}));
     select("#commandHintButton").addEventListener("click", () => {
       const hints = select("#commandHints");
-      hints.hidden = !hints.hidden;
-      select("#commandHintButton").setAttribute("aria-expanded", String(!hints.hidden));
+      if (hints.hidden) {
+        app.composerCommandSelection = 0;
+        renderComposerCommands({forceOpen: true});
+      } else {
+        closeComposerCommands();
+      }
     });
     for (const button of document.querySelectorAll("[data-command]")) {
-      button.addEventListener("click", () => {
-        select("#learnerResponse").value = button.dataset.command || "";
-        select("#commandHints").hidden = true;
-        select("#commandHintButton").setAttribute("aria-expanded", "false");
-        select("#learnerResponse").focus();
-      });
+      button.addEventListener("click", () => applyComposerCommand(button));
     }
+    select("#learnerResponse").addEventListener("input", () => {
+      clearPendingTurn();
+      resizeComposer();
+      renderComposerCommands();
+    });
     select("#learnerResponse").addEventListener("keydown", (event) => {
-      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+      if (event.isComposing || event.keyCode === 229) return;
+      const hints = select("#commandHints");
+      const visibleCommands = composerCommandButtons().filter((button) => !button.hidden);
+      if (!hints.hidden && ["ArrowDown", "ArrowUp"].includes(event.key)) {
         event.preventDefault();
+        if (visibleCommands.length) {
+          app.composerCommandSelection = (
+            app.composerCommandSelection
+            + (event.key === "ArrowDown" ? 1 : -1)
+            + visibleCommands.length
+          ) % visibleCommands.length;
+          renderComposerCommands({forceOpen: true});
+        }
+        return;
+      }
+      if (!hints.hidden && event.key === "Escape") {
+        event.preventDefault();
+        closeComposerCommands();
+        return;
+      }
+      if (!hints.hidden && event.key === "Enter" && !event.shiftKey) {
+        const selected = visibleCommands[app.composerCommandSelection];
+        const current = select("#learnerResponse").value.trim();
+        const exact = String(selected?.dataset.command || "").trim() === current;
+        if (selected && !exact) {
+          event.preventDefault();
+          applyComposerCommand(selected);
+          return;
+        }
+      }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        closeComposerCommands();
         select("#turnForm").requestSubmit();
       }
     });
@@ -4321,18 +4500,20 @@
       trapResponsiveDrawerFocus(event);
       if (event.key !== "Escape") return;
       closeDrawers({restoreFocus: true});
-      select("#commandHints").hidden = true;
-      select("#commandHintButton").setAttribute("aria-expanded", "false");
+      closeComposerCommands();
+      select("#composerModeMenu").open = false;
+      select("#runContextMenu").open = false;
     });
     const desktopLayout = window.matchMedia("(min-width: 1261px)");
     desktopLayout.addEventListener("change", (event) => {
       setSidebar(false);
-      setInspector(event.matches);
+      if (!event.matches) setInspector(false);
     });
     window.addEventListener("resize", () => {
       syncDrawerBackdrop();
       syncResponsiveA11y();
     });
+    resizeComposer();
   }
 
   async function restoreSession() {
@@ -4382,7 +4563,7 @@
     renderLearningCommandBar(null, {});
     renderRecoveryConsole(null, {});
     renderStudentStateTimeline(null);
-    showSetupForm(true);
+    showSetupForm(false);
     renderSessionCatalog();
     setControlMode("auto");
     syncReplacementDraftUi();

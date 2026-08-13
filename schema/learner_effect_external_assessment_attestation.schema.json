@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:learner-effect-external-assessment-attestation:1",
+  "title": "Independent blind assessor signature over an exact learner-effect analysis",
+  "type": "object",
+  "required": ["schema", "protocol", "protocol_version", "study_id", "analysis_sha256", "preregistration_core_sha256", "completed_outcomes_csv_sha256", "completed_teacher_burden_csv_sha256", "analysis_code_sha256", "semantic_lockbox_report_sha256", "assessor", "signed_at_utc", "claim_boundary", "signature_base64", "content_sha256"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.learner_effect_external_assessment_attestation.v1"},
+    "protocol": {"const": "ed25519_learner_effect_external_assessment_v1"},
+    "protocol_version": {"const": "2.0"},
+    "study_id": {"$ref": "#/$defs/id"},
+    "analysis_sha256": {"$ref": "#/$defs/sha256"},
+    "preregistration_core_sha256": {"$ref": "#/$defs/sha256"},
+    "completed_outcomes_csv_sha256": {"$ref": "#/$defs/sha256"},
+    "completed_teacher_burden_csv_sha256": {"$ref": "#/$defs/sha256"},
+    "analysis_code_sha256": {"$ref": "#/$defs/sha256"},
+    "semantic_lockbox_report_sha256": {"$ref": "#/$defs/sha256"},
+    "assessor": {
+      "type": "object",
+      "required": ["organization", "key_id", "independent_from_developer_and_intervention_provider_declared", "blind_to_randomized_arm_during_grading_declared", "all_registered_outcomes_reported_declared"],
+      "properties": {
+        "organization": {"type": "string", "minLength": 1},
+        "key_id": {"$ref": "#/$defs/id"},
+        "independent_from_developer_and_intervention_provider_declared": {"const": true},
+        "blind_to_randomized_arm_during_grading_declared": {"const": true},
+        "all_registered_outcomes_reported_declared": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "signed_at_utc": {"type": "string", "format": "date-time"},
+    "claim_boundary": {
+      "type": "object",
+      "required": ["signature_proves_key_control_and_exact_content_only", "assessor_independence_externally_verified_by_signature_alone", "semantic_lockbox_is_causal_learning_evidence", "learner_effectiveness_established", "external_validation_status"],
+      "properties": {
+        "signature_proves_key_control_and_exact_content_only": {"const": true},
+        "assessor_independence_externally_verified_by_signature_alone": {"const": false},
+        "semantic_lockbox_is_causal_learning_evidence": {"const": false},
+        "learner_effectiveness_established": {"const": false},
+        "external_validation_status": {"const": "external_validation_pending"}
+      },
+      "additionalProperties": false
+    },
+    "signature_base64": {"type": "string", "minLength": 1},
+    "content_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{5,127}$"},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

@@ -152,6 +152,26 @@ def _stable_evidence_id(
     return "evi_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
 
 
+def _parent_segment_index(segment: dict[str, Any], local_index: int) -> int:
+    """Return the immutable index in the parent transcript when available.
+
+    Episode mining passes segments through a provenance-preserving slice.  The
+    slice is intentionally allowed to be re-indexed for the phase detector,
+    but evidence IDs must continue to use the parent's index.  Keeping this
+    fallback local-index based preserves the exact behaviour for ordinary
+    (unsliced) transcripts and for older callers.
+    """
+
+    value = segment.get("_parent_segment_index")
+    if value is None:
+        return local_index
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return local_index
+    return parsed if parsed >= 0 else local_index
+
+
 #: Quotes are truncated for readability; strategy support is therefore matched
 #: against the truncated quote, never against the full segment, so that what a
 #: reader can verify in the Skill is exactly what the evaluator checked.
@@ -214,16 +234,24 @@ def select_evidence(
         segment = segments[index]
         quote = _quote_of(segment)
         supports = _supported_strategies(quote, strategy_ids)
-        evidence.append(
-            {
-                "evidence_id": _stable_evidence_id(transcript, index, segment),
-                "start": segment["start"],
-                "end": segment["end"],
-                "quote": quote,
-                "supports": supports or ["teaching_sequence"],
-                "segment_index": index,
-            }
-        )
+        parent_index = _parent_segment_index(segment, index)
+        item = {
+            "evidence_id": _stable_evidence_id(transcript, parent_index, segment),
+            "start": segment["start"],
+            "end": segment["end"],
+            "quote": quote,
+            "supports": supports or ["teaching_sequence"],
+            # ``segment_index`` is the parent/global index for an episode
+            # slice, while ordinary transcripts retain their historical local
+            # index semantics.
+            "segment_index": parent_index,
+        }
+        if "_parent_segment_index" in segment:
+            # The local index is retained solely so phase observations on a
+            # slice can be joined back to evidence records without changing
+            # the stable parent ID namespace.
+            item["local_segment_index"] = index
+        evidence.append(item)
     return evidence
 
 
@@ -372,7 +400,7 @@ def mine_skill(transcript: dict[str, Any]) -> dict[str, Any]:
         transcript, {item["id"] for item in strategies}
     )
     evidence_id_by_segment = {
-        int(item["segment_index"]): str(item["evidence_id"])
+        int(item.get("local_segment_index", item["segment_index"])): str(item["evidence_id"])
         for item in text_evidence
         if item.get("segment_index") is not None
     }

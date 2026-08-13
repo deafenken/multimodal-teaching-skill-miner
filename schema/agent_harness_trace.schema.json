@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/agent_harness_trace.schema.json",
+  "title": "TeachLab Harness privacy-safe public trace",
+  "type": "object",
+  "required": ["schema", "run_id", "turn_id", "status", "steps", "model_call_count", "tool_call_count", "duration_ms", "events", "trace_sha256"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.agent_harness.v1"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "status": {"enum": ["completed", "cancelled", "deadline_exceeded", "failed", "handoff"]},
+    "steps": {"type": "integer", "minimum": 0},
+    "model_call_count": {"type": "integer", "minimum": 0},
+    "tool_call_count": {"type": "integer", "minimum": 0},
+    "duration_ms": {"type": "integer", "minimum": 0},
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["schema", "event_id", "run_id", "turn_id", "sequence", "type", "payload"],
+        "properties": {
+          "schema": {"const": "teaching_skill_miner.agent_harness_event.v1"},
+          "event_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+          "run_id": {"type": "string", "minLength": 1, "maxLength": 160},
+          "turn_id": {"type": "string", "minLength": 1, "maxLength": 160},
+          "sequence": {"type": "integer", "minimum": 1},
+          "type": {"type": "string", "minLength": 1, "maxLength": 100},
+          "payload": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "trace_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

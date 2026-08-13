@@ -22,10 +22,38 @@ python_command=${PYTHON:-python3}
 verification_tmp=$(mktemp -d "${TMPDIR:-/tmp}/tsm-verify.XXXXXX")
 trap 'rm -rf "$verification_tmp"' EXIT HUP INT TERM
 
-"$python_command" -m pytest --junitxml="$verification_tmp/pytest.xml"
+"$python_command" scripts/generate_release_acceptance.py verification-scope \
+  --repository-root "$repo_root" \
+  --output "$verification_tmp/initial-verification-scope.json" >/dev/null
+
+# The release receipt covers the authenticated API, Console, and deployment
+# sources as well as Python. Reinstall from each committed lockfile so a stale
+# or locally-mutated node_modules tree cannot make the project gate pass. Do
+# this before Python's cross-stack delivery tests, which intentionally inspect
+# the exact installed Console runtime version.
+npm --prefix apps/api ci
+npm --prefix apps/console ci
+# Evidence selectors belong to this outer release gate. Unit tests create
+# independent temporary repositories and must not accidentally resolve those
+# fixtures against the real snapshot's absolute private-evidence paths.
+(
+  unset TSM_TEACHOBS_HUMAN_ROOT
+  unset TSM_TEACHOBS_HUMAN_RECEIPT
+  unset TSM_TEACHOBS_LOCKBOX_DRAFT
+  unset TSM_TEACHOBS_FROZEN_MODEL_ROOT
+  "$python_command" -m pytest --junitxml="$verification_tmp/pytest.xml"
+)
 "$python_command" -m ruff check teaching_skill_miner tests scripts
 "$python_command" -m compileall -q teaching_skill_miner scripts
 sh -n scripts/*.sh
+npm --prefix apps/api audit --audit-level=high
+npm --prefix apps/api test
+npm --prefix apps/api run typecheck
+npm --prefix apps/api run build
+npm --prefix apps/console audit --audit-level=high
+npm --prefix apps/console test
+npm --prefix apps/console run typecheck
+npm --prefix apps/console run build:runtime
 "$python_command" -m teaching_skill_miner fetch-full-videos --help >/dev/null
 "$python_command" -m teaching_skill_miner audit-teachobs-captions --help >/dev/null
 "$python_command" -m teaching_skill_miner fetch-teachobs-captions --help >/dev/null
@@ -107,7 +135,21 @@ teachobs_human_root=${TSM_TEACHOBS_HUMAN_ROOT:-"$repo_root/artifacts/private/ext
 teachobs_human_manifest="$teachobs_human_root/assignment_manifest.json"
 teachobs_human_receipt=${TSM_TEACHOBS_HUMAN_RECEIPT:-"$repo_root/artifacts/public/teachobs_human_annotation_receipt.json"}
 teachobs_lockbox_draft=${TSM_TEACHOBS_LOCKBOX_DRAFT:-"$repo_root/artifacts/public/teachobs_new_site_lockbox_preregistration_draft.json"}
+teachobs_frozen_root=${TSM_TEACHOBS_FROZEN_MODEL_ROOT:-"$repo_root/artifacts/private/external_datasets/teachobs/frozen_models"}
 teachobs_lockbox_analysis="$repo_root/teaching_skill_miner/teachobs_lockbox.py"
+if { [ -f "$teachobs_media_manifest" ] && [ ! -f "$teachobs_caption_audit" ]; } || \
+   { [ ! -f "$teachobs_media_manifest" ] && [ -f "$teachobs_caption_audit" ]; }; then
+  echo "TeachObs private evidence is partial; media manifest and caption audit must appear together." >&2
+  exit 2
+fi
+if [ ! -f "$teachobs_media_manifest" ] && [ ! -f "$teachobs_caption_audit" ] && \
+   { [ -e "$teachobs_frozen_root" ] || [ -L "$teachobs_frozen_root" ] || \
+     [ -e "$teachobs_human_root" ] || [ -L "$teachobs_human_root" ] || \
+     [ -e "$teachobs_human_receipt" ] || [ -L "$teachobs_human_receipt" ] || \
+     [ -e "$teachobs_lockbox_draft" ] || [ -L "$teachobs_lockbox_draft" ]; }; then
+  echo "TeachObs frozen/human/lockbox evidence cannot be verified without the base media manifest and caption audit." >&2
+  exit 2
+fi
 if [ -f "$teachobs_media_manifest" ] && [ -f "$teachobs_caption_audit" ]; then
   teachobs_annotation_audit="$repo_root/artifacts/private/external_datasets/teachobs/imported_annotations/dataset_audit.json"
   teachobs_annotation_receipt="$repo_root/artifacts/public/teachobs_annotation_receipt.json"
@@ -177,7 +219,6 @@ if [ -f "$teachobs_media_manifest" ] && [ -f "$teachobs_caption_audit" ]; then
   fi
   teachobs_benchmark_result="$repo_root/artifacts/private/external_datasets/teachobs/multimodal_benchmark_result.json"
   teachobs_benchmark_receipt="$repo_root/artifacts/public/teachobs_multimodal_benchmark_receipt.json"
-  teachobs_frozen_root=${TSM_TEACHOBS_FROZEN_MODEL_ROOT:-"$repo_root/artifacts/private/external_datasets/teachobs/frozen_models"}
   teachobs_benchmark_required=false
   if [ "$teachobs_asr_receipt_mode" = completed_import ] && \
      [ "$teachobs_transcript_materialization_status" = complete ]; then
@@ -334,7 +375,14 @@ if [ -n "$receipt_path" ]; then
     --public-directory "$repo_root/artifacts/public" \
     --public-release-audit "$verification_tmp/public-release-audit.json" \
     --repository-root "$repo_root" \
+    --expected-verification-scope \
+      "$verification_tmp/initial-verification-scope.json" \
     --output "$receipt_path"
+  if [ -f "$repo_root/.release-source-snapshot.json" ] && \
+     [ ! -L "$repo_root/.release-source-snapshot.json" ]; then
+    set -- "$@" \
+      --source-snapshot-manifest "$repo_root/.release-source-snapshot.json"
+  fi
   if [ "$formal_caption_audit_run" = true ]; then
     set -- "$@" --formal-caption-audit-run
   fi
@@ -353,4 +401,4 @@ if [ -n "$receipt_path" ]; then
   "$python_command" scripts/generate_release_acceptance.py "$@" >/dev/null
 fi
 
-echo "Project verification passed: tests, lint, syntax, dependencies, new multimodal entrypoint smoke tests, public audit, reproducible clean builds, and exact-wheel verification."
+echo "Project verification passed: Python/API/Console tests and builds, lint, deployment-bound source scope, dependencies, entrypoint smoke tests, public audit, reproducible clean builds, and exact-wheel verification."

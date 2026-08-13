@@ -8,6 +8,7 @@ from html.parser import HTMLParser
 import http.client
 import io
 import json
+import os
 from pathlib import Path
 import threading
 from tempfile import TemporaryDirectory
@@ -16,8 +17,13 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from teaching_skill_miner.cli import main
-from teaching_skill_miner.deepseek_client import DeepSeekClientError
+from teaching_skill_miner.deepseek_client import (
+    DeepSeekClient,
+    DeepSeekClientError,
+    DeepSeekConfig,
+)
 from teaching_skill_miner.io_utils import project_root
+from teaching_skill_miner.harness import HarnessJournal, HarnessJournalError
 from teaching_skill_miner.teacher_agent_dashboard import (
     HTML_RESOURCE,
     SCRIPT_RESOURCE,
@@ -25,6 +31,8 @@ from teaching_skill_miner.teacher_agent_dashboard import (
     TeacherAgentDashboardError,
     TeacherAgentDashboardSnapshot,
     _resource_bytes,
+    _safe_stream_usage,
+    _stream_run_file_lease,
     build_teacher_agent_dashboard_snapshot,
     create_teacher_agent_dashboard_server,
     teacher_agent_dashboard_self_check,
@@ -32,10 +40,126 @@ from teaching_skill_miner.teacher_agent_dashboard import (
 from teaching_skill_miner.teacher_agent_live import LiveAgentOptions
 
 
+_ORIGINAL_BUILD_DASHBOARD_SNAPSHOT = build_teacher_agent_dashboard_snapshot
+
+
 _SYNTHETIC_ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
     "+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+
+
+def _consented_dashboard_snapshot(*args, **kwargs):
+    """Build a fake-provider snapshot with real server-minted test receipts."""
+
+    client = kwargs.get("client")
+    if client is None:
+        return _ORIGINAL_BUILD_DASHBOARD_SNAPSHOT(*args, **kwargs)
+    directory = kwargs.get("store_path")
+    if directory is not None:
+        consent_path = Path(directory).with_name(Path(directory).name + ".consent")
+    else:
+        temporary = TemporaryDirectory()
+        consent_path = Path(temporary.name) / "consent.json"
+    kwargs["consent_store_path"] = consent_path
+    kwargs["consent_signing_secret"] = b"dashboard-test-consent-secret-material-32-bytes"
+    snapshot = _ORIGINAL_BUILD_DASHBOARD_SNAPSHOT(*args, **kwargs)
+    existing_purposes = {
+        item["purpose"]
+        for item in snapshot.list_remote_consents({})["receipts"]
+        if item["status"] == "active"
+    }
+    for purpose in (
+        "remote_chat",
+        "remote_teaching",
+        "remote_syllabus_generation",
+        "public_web_search",
+    ):
+        if purpose not in existing_purposes:
+            snapshot.grant_remote_consent(
+                {
+                    "purpose": purpose,
+                    "validity_days": 1,
+                    "likely_minor": False,
+                    "guardian_or_school_policy": "not_required",
+                }
+            )
+    return _ConsentSnapshotProxy(snapshot, locals().get("temporary"))
+
+
+def _test_consent_id(snapshot, purpose: str) -> str:
+    return next(
+        receipt["consent_id"]
+        for receipt in snapshot.list_remote_consents({})["receipts"]
+        if receipt["purpose"] == purpose and receipt["status"] == "active"
+    )
+
+
+class _ConsentSnapshotProxy:
+    """Translate old fixture syntax into genuine server receipt references.
+
+    The adapter exists only in this legacy test module. Production request
+    parsing still rejects the browser booleans, which is covered by the
+    dedicated consent-dashboard attack tests.
+    """
+
+    def __init__(self, snapshot, temporary) -> None:
+        object.__setattr__(self, "_snapshot", snapshot)
+        object.__setattr__(self, "_temporary", temporary)
+
+    def __getattr__(self, name):
+        return getattr(self._snapshot, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._snapshot, name, value)
+
+    def _normalized(self, body, operation):
+        value = deepcopy(body)
+        if (
+            value.get("remote_processing_acknowledged") is True
+            and value.get("remote_processing_consent_version") == 1
+        ):
+            value.pop("remote_processing_acknowledged")
+            value.pop("remote_processing_consent_version")
+            purpose = "remote_chat" if operation == "chat" else "remote_teaching"
+            value["remote_consent_id"] = _test_consent_id(self, purpose)
+        if value.get("web_search_consent_version") == 1:
+            value.pop("web_search_consent_version")
+            value["web_search_consent_id"] = _test_consent_id(
+                self, "public_web_search"
+            )
+        if (
+            operation in {"start", "step"}
+            and "remote_consent_id" not in value
+            and not {"remote_processing_acknowledged", "remote_processing_consent_version"}.intersection(value)
+        ):
+            value["remote_consent_id"] = _test_consent_id(
+                self, "remote_teaching"
+            )
+        return value
+
+    def chat(self, body, **kwargs):
+        return self._snapshot.chat(self._normalized(body, "chat"), **kwargs)
+
+    def start(self, body, **kwargs):
+        return self._snapshot.start(self._normalized(body, "start"), **kwargs)
+
+    def step(self, body, **kwargs):
+        return self._snapshot.step(self._normalized(body, "step"), **kwargs)
+
+    def open_harness_stream(self, body):
+        request = deepcopy(body)
+        operation = request.get("operation")
+        if operation in {"chat", "start", "step"} and isinstance(
+            request.get("payload"), dict
+        ):
+            request["payload"] = self._normalized(request["payload"], operation)
+        return self._snapshot.open_harness_stream(request)
+
+
+# Every fake remote provider in this module now crosses the same durable
+# server-receipt boundary as production. Offline snapshots remain unchanged.
+build_teacher_agent_dashboard_snapshot = _consented_dashboard_snapshot
 
 
 class _AgentDashboardParser(HTMLParser):
@@ -124,6 +248,76 @@ class _FakeLiveClient:
                 "response_id": "fake",
                 "usage": {},
                 "credential_logged": False,
+            },
+        )
+
+
+class _FakeDirectChatClient(_FakeLiveClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_messages: object = None
+        self.last_web_messages: object = None
+
+    def chat_json(
+        self,
+        messages: object,
+        *,
+        request_kind: str,
+        require_remote_consent: bool = True,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        self.chat_json_call_count += 1
+        self.last_messages = messages
+        if request_kind != "console_direct_chat" or not require_remote_consent:
+            raise AssertionError("direct Chat used the wrong model request contract")
+        return (
+            {
+                "message": (
+                    "机器学习是让计算机从数据中归纳规律，并用这些规律对新数据做预测。"
+                    "例如，用历史房价学习面积与价格的关系，再估计一套新房的价格。"
+                )
+            },
+            {
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "latency_ms": 2.0,
+                "usage": {"total_tokens": 42},
+            },
+        )
+
+    def chat_web(
+        self,
+        messages: object,
+        *,
+        system: str,
+        request_kind: str,
+        max_uses: int = 3,
+        require_remote_consent: bool = True,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        self.chat_json_call_count += 1
+        self.last_web_messages = messages
+        if (
+            request_kind != "console_direct_chat_web"
+            or not require_remote_consent
+            or max_uses != 3
+            or "不得伪造搜索" not in system
+        ):
+            raise AssertionError("direct Chat web search used the wrong contract")
+        return (
+            {
+                "message": "DeepSeek V4 已发布。",
+                "web_search_used": True,
+                "sources": [
+                    {
+                        "title": "DeepSeek API Change Log",
+                        "url": "https://api-docs.deepseek.com/updates/",
+                    }
+                ],
+            },
+            {
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "latency_ms": 3.0,
+                "usage": {"server_tool_use": {"web_search_requests": 1}},
             },
         )
 
@@ -313,6 +507,1469 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             self.library_path, self.input_path, self.cases_path
         )
 
+    def test_local_bootstrap_declares_no_account_authority(self) -> None:
+        bootstrap = self._offline_snapshot().bootstrap()
+
+        self.assertEqual(
+            bootstrap["account_data_rights"],
+            {
+                "mode": "local_only_no_account_authority",
+                "recent_auth_required": False,
+                "remote_provider_copies_deleted": False,
+            },
+        )
+        self.assertNotIn("cache_scope", bootstrap)
+
+    def test_stream_usage_preserves_only_safe_deepseek_cache_counters(self) -> None:
+        self.assertEqual(
+            _safe_stream_usage(
+                {
+                    "prompt_tokens": 300,
+                    "prompt_cache_hit_tokens": 256,
+                    "prompt_cache_miss_tokens": 44,
+                    "negative": -1,
+                    "provider_debug": "private",
+                }
+            ),
+            {
+                "prompt_tokens": 300,
+                "prompt_cache_hit_tokens": 256,
+                "prompt_cache_miss_tokens": 44,
+            },
+        )
+
+    def test_completed_stream_restart_replay_capability_requires_durable_root(
+        self,
+    ) -> None:
+        transient = self._offline_snapshot()
+        self.assertFalse(
+            transient.bootstrap()["interaction_contract"][
+                "harness_stream_completed_restart_replay_enabled"
+            ]
+        )
+        with TemporaryDirectory() as directory:
+            durable = build_teacher_agent_dashboard_snapshot(
+                self.library_path,
+                self.input_path,
+                self.cases_path,
+                store_path=Path(directory) / "sessions.jsonl",
+            )
+            self.assertTrue(
+                durable.bootstrap()["interaction_contract"][
+                    "harness_stream_completed_restart_replay_enabled"
+                ]
+            )
+
+    def test_harness_transport_cancellation_capability_matches_native_client(
+        self,
+    ) -> None:
+        offline = self._offline_snapshot()
+        self.assertFalse(
+            offline.bootstrap()["interaction_contract"][
+                "harness_sse_transport_cancellation_supported"
+            ]
+        )
+
+        def stream_transport(*_args, **_kwargs):
+            # Bootstrap only projects capability; it must not open a stream.
+            raise AssertionError("bootstrap must not open a provider stream")
+
+        native_client = DeepSeekClient(
+            DeepSeekConfig(allow_remote_student_data=True),
+            stream_transport=stream_transport,
+            api_key="dashboard-native-stream-test-key",
+        )
+        native = _ORIGINAL_BUILD_DASHBOARD_SNAPSHOT(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=native_client,
+        )
+        self.assertTrue(
+            native.bootstrap()["interaction_contract"][
+                "harness_sse_transport_cancellation_supported"
+            ]
+        )
+
+    def test_validated_teach_message_is_split_losslessly_for_progressive_reveal(
+        self,
+    ) -> None:
+        snapshot = self._offline_snapshot()
+        message = (
+            "先用一句大白话说明这个概念解决什么问题。"
+            "接着由教师完整示范一个最小例子，不要求学习者从空白开始猜。"
+            "最后只问一个低负担的问题，确认刚才哪一步已经听懂。"
+        )
+
+        chunks = snapshot._stream_teacher_message_chunks(message)
+
+        self.assertGreater(len(chunks), 1)
+        self.assertLessEqual(len(chunks), 7)
+        self.assertTrue(all(chunks))
+        self.assertEqual("".join(chunks), message)
+        self.assertEqual(
+            snapshot._stream_teacher_message_chunks("一句很短的已验证回复。"),
+            ("一句很短的已验证回复。",),
+        )
+
+    def test_chat_harness_stream_is_native_durable_and_cursor_replayable(self) -> None:
+        def stream_transport(_url, _headers, payload, _timeout, _token):
+            request_body = json.loads(payload)
+            self.assertTrue(request_body["stream"])
+            self.assertNotIn("response_format", request_body)
+            return 200, [
+                b'data: {"id":"chat-stream-1","choices":[{"delta":{"content":"hello "}}]}\n',
+                b'data: {"id":"chat-stream-1","choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}\n',
+                b'data: {"id":"chat-stream-1","choices":[],"usage":{"total_tokens":4}}\n',
+                b"data: [DONE]\n",
+            ]
+
+        client = DeepSeekClient(
+            DeepSeekConfig(allow_remote_student_data=True, max_retries=0),
+            api_key="stream-test-secret",
+            stream_transport=stream_transport,
+        )
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+        request_body = {
+            "operation": "chat",
+            "request_id": "native-chat-request-001",
+            "payload": {"remote_processing_acknowledged": True, "remote_processing_consent_version": 1, "messages": [{"role": "user", "content": "say hello"}]},
+        }
+        record, cursor = snapshot.open_harness_stream(request_body)
+        self.assertEqual(cursor, 0)
+        result = record.handle.wait(timeout=5)
+        self.assertEqual(result["status"], "completed")
+        events = record.journal.replay()
+        self.assertEqual(events, record.handle.events_after())
+        self.assertEqual(events[-1]["type"], "run.completed")
+        self.assertEqual(
+            "".join(
+                event["payload"].get("delta", "")
+                for event in events
+                if event["type"] == "message.delta"
+            ),
+            "hello world",
+        )
+        operation_result = next(
+            event for event in events if event["type"] == "operation.result"
+        )
+        chat_reference = operation_result["payload"]["result"]["chat"]
+        self.assertNotIn("message", chat_reference)
+        self.assertEqual(
+            chat_reference["message_sha256"],
+            sha256(b"hello world").hexdigest(),
+        )
+        self.assertEqual(chat_reference["message_chars"], len("hello world"))
+        self.assertNotIn(
+            "result",
+            next(event for event in events if event["type"] == "action.completed")[
+                "payload"
+            ],
+        )
+
+        replay_record, replay_cursor = snapshot.open_harness_stream(
+            {**request_body, "after_sequence": 2}
+        )
+        self.assertIs(replay_record, record)
+        self.assertEqual(replay_cursor, 2)
+        self.assertEqual(replay_record.journal.replay(after_sequence=2), events[2:])
+        with self.assertRaisesRegex(TeacherAgentDashboardError, "different request"):
+            snapshot.open_harness_stream(
+                {
+                    **request_body,
+                    "payload": {
+                        "remote_processing_acknowledged": True,
+                    "remote_processing_consent_version": 1,
+                    "messages": [{"role": "user", "content": "different prompt"}]
+                    },
+                }
+            )
+
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError, "exceeds the durable stream head"
+        ):
+            snapshot.open_harness_stream(
+                {**request_body, "after_sequence": events[-1]["sequence"] + 1}
+            )
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError, "run_id and turn_id must be provided together"
+        ):
+            snapshot.open_harness_stream(
+                {**request_body, "run_id": record.handle.run_id}
+            )
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError, "run_id and turn_id must be provided together"
+        ):
+            snapshot.open_harness_stream(
+                {**request_body, "turn_id": record.handle.turn_id}
+            )
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError,
+            "run_id and request_id do not identify the same run",
+        ):
+            snapshot.cancel_harness_stream(
+                {
+                    "run_id": record.handle.run_id,
+                    "request_id": "different-cancel-request-id",
+                }
+            )
+
+    def test_new_stream_rejects_a_nonzero_cursor_without_creating_a_run(self) -> None:
+        snapshot = self._offline_snapshot()
+        body = {
+            "operation": "start",
+            "request_id": "future-cursor-new-run-001",
+            "after_sequence": 1,
+            "payload": {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "future-cursor-start-001",
+            },
+        }
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError, "new stream requires after_sequence=0"
+        ):
+            snapshot.open_harness_stream(body)
+        self.assertEqual(snapshot.stream_runs, {})
+
+    def test_evicted_terminal_stream_reopens_from_journal_without_provider_call(
+        self,
+    ) -> None:
+        provider_calls = 0
+
+        def stream_transport(_url, _headers, _payload, _timeout, _token):
+            nonlocal provider_calls
+            provider_calls += 1
+            return 200, [
+                (
+                    'data: {"id":"eviction-stream","choices":'
+                    '[{"delta":{"content":"durable answer"},'
+                    '"finish_reason":"stop"}]}\n\n'
+                ).encode(),
+                b"data: [DONE]\n\n",
+            ]
+
+        client = DeepSeekClient(
+            DeepSeekConfig(allow_remote_student_data=True, max_retries=0),
+            api_key="stream-test-secret",
+            stream_transport=stream_transport,
+        )
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+        first_body = {
+            "operation": "chat",
+            "request_id": "evicted-terminal-request-001",
+            "payload": {"remote_processing_acknowledged": True, "remote_processing_consent_version": 1, "messages": [{"role": "user", "content": "first"}]},
+        }
+        second_body = {
+            "operation": "chat",
+            "request_id": "evicted-terminal-request-002",
+            "payload": {"remote_processing_acknowledged": True, "remote_processing_consent_version": 1, "messages": [{"role": "user", "content": "second"}]},
+        }
+        with patch("teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_RUNS", 1):
+            first, _ = snapshot.open_harness_stream(first_body)
+            self.assertEqual(first.handle.wait(timeout=5)["status"], "completed")
+            second, _ = snapshot.open_harness_stream(second_body)
+            self.assertEqual(second.handle.wait(timeout=5)["status"], "completed")
+            self.assertNotIn(first.handle.run_id, snapshot.stream_runs)
+
+            with self.assertRaisesRegex(
+                TeacherAgentDashboardError,
+                "identity collides with a retained request",
+            ):
+                snapshot.open_harness_stream(
+                    {
+                        **first_body,
+                        "payload": {
+                            "remote_processing_acknowledged": True,
+                    "remote_processing_consent_version": 1,
+                    "messages": [{"role": "user", "content": "changed first"}]
+                        },
+                    }
+                )
+
+            with self.assertRaisesRegex(
+                TeacherAgentDashboardError,
+                "replay expired.*not be re-executed",
+            ):
+                snapshot.open_harness_stream({**first_body, "after_sequence": 1})
+        self.assertEqual(provider_calls, 2)
+
+    def test_cancel_after_domain_commit_reports_commit_won_and_completes(self) -> None:
+        snapshot = self._offline_snapshot()
+        committed = threading.Event()
+        release_return = threading.Event()
+        original_start = TeacherAgentDashboardSnapshot.start
+
+        def paused_start(current, body, **kwargs):
+            result = original_start(current, body, **kwargs)
+            committed.set()
+            if not release_return.wait(timeout=5):
+                raise AssertionError("timed out releasing committed start")
+            return result
+
+        body = {
+            "operation": "start",
+            "request_id": "commit-wins-start-request-001",
+            "payload": {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "commit-wins-start-001",
+            },
+        }
+        with patch.object(TeacherAgentDashboardSnapshot, "start", new=paused_start):
+            record, _ = snapshot.open_harness_stream(body)
+            self.assertTrue(committed.wait(timeout=5))
+            cancellation = snapshot.cancel_harness_stream(
+                {
+                    "request_id": body["request_id"],
+                    "reason": "late_user_stop",
+                }
+            )
+            self.assertFalse(cancellation["cancellation_requested"])
+            self.assertTrue(cancellation["commit_won"])
+            release_return.set()
+            result = record.handle.wait(timeout=5)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(record.journal.terminal_type, "run.completed")
+        self.assertTrue(
+            any(event["type"] == "state.committed" for event in record.journal.replay())
+        )
+
+    def test_journal_failure_after_domain_commit_handoffs_without_false_failure(
+        self,
+    ) -> None:
+        snapshot = self._offline_snapshot()
+        original_append = HarnessJournal.append
+        injected = False
+
+        def fail_first_post_commit_append(journal, event):
+            nonlocal injected
+            if not injected and event.get("type") == "message.start":
+                injected = True
+                raise HarnessJournalError("injected fsync failure after commit")
+            return original_append(journal, event)
+
+        with patch.object(HarnessJournal, "append", new=fail_first_post_commit_append):
+            record, _ = snapshot.open_harness_stream(
+                {
+                    "operation": "start",
+                    "request_id": "post-commit-journal-failure-request-001",
+                    "payload": {
+                        "goal": snapshot.demo_input["goal"],
+                        "student_profile": snapshot.demo_input["student_profile"],
+                        "start_idempotency_key": (
+                            "post-commit-journal-failure-start-001"
+                        ),
+                    },
+                }
+            )
+            result = record.handle.wait(timeout=5)
+
+        self.assertTrue(injected)
+        self.assertEqual(result["status"], "handoff")
+        events = record.journal.replay()
+        self.assertEqual(events[-1]["type"], "run.handoff")
+        self.assertFalse(
+            any(event["type"] in {"run.failed", "run.cancelled"} for event in events)
+        )
+        self.assertTrue(record.handle.cancellation_token.committed)
+        self.assertTrue(record.session_id)
+        resumed = snapshot.resume({"session_id": record.session_id})
+        self.assertEqual(resumed["session_id"], record.session_id)
+
+    def test_post_commit_fsync_faults_rollback_and_retry_without_false_failure(
+        self,
+    ) -> None:
+        original_append = HarnessJournal.append
+        original_fsync = os.fsync
+        targets = (
+            "message.start",
+            "operation.result",
+            "state.committed",
+            "run.completed",
+        )
+        for index, target in enumerate(targets):
+            with self.subTest(target=target):
+                snapshot = self._offline_snapshot()
+                state = {"armed": False, "failed": False}
+
+                def append_with_fault_window(journal, event):
+                    should_arm = not state["failed"] and event.get("type") == target
+                    state["armed"] = should_arm
+                    try:
+                        return original_append(journal, event)
+                    finally:
+                        state["armed"] = False
+
+                def fail_one_fsync(file_descriptor):
+                    if state["armed"] and not state["failed"]:
+                        state["failed"] = True
+                        raise OSError("injected post-commit fsync failure")
+                    return original_fsync(file_descriptor)
+
+                with (
+                    patch.object(
+                        HarnessJournal,
+                        "append",
+                        new=append_with_fault_window,
+                    ),
+                    patch(
+                        "teaching_skill_miner.harness.journal.os.fsync",
+                        new=fail_one_fsync,
+                    ),
+                ):
+                    record, _ = snapshot.open_harness_stream(
+                        {
+                            "operation": "start",
+                            "request_id": f"fsync-handoff-request-{index}",
+                            "payload": {
+                                "goal": snapshot.demo_input["goal"],
+                                "student_profile": snapshot.demo_input[
+                                    "student_profile"
+                                ],
+                                "start_idempotency_key": (
+                                    f"fsync-handoff-start-{index}"
+                                ),
+                            },
+                        }
+                    )
+                    result = record.handle.wait(timeout=5)
+
+                self.assertTrue(state["failed"])
+                self.assertEqual(result["status"], "completed")
+                events = record.journal.replay()
+                event_types = [event["type"] for event in events]
+                self.assertEqual(event_types[-1], "run.completed")
+                self.assertEqual(event_types.count(target), 1)
+                self.assertNotIn("run.handoff", event_types)
+                self.assertNotIn("run.failed", event_types)
+                self.assertNotIn("run.cancelled", event_types)
+                self.assertFalse(record.journal.durability_uncertain)
+                self.assertTrue(record.handle.cancellation_token.committed)
+                self.assertTrue(record.session_id)
+                resumed = snapshot.resume({"session_id": record.session_id})
+                self.assertEqual(resumed["session_id"], record.session_id)
+
+    def test_poisoned_post_commit_journal_detaches_without_reexecution(self) -> None:
+        snapshot = self._offline_snapshot()
+        original_append = HarnessJournal.append
+        original_fsync = os.fsync
+        original_start = TeacherAgentDashboardSnapshot.start
+        state = {"armed": False, "start_calls": 0}
+
+        def counted_start(current, body, **kwargs):
+            state["start_calls"] += 1
+            return original_start(current, body, **kwargs)
+
+        def append_with_fault_window(journal, event):
+            state["armed"] = event.get("type") == "message.start"
+            try:
+                return original_append(journal, event)
+            finally:
+                state["armed"] = False
+
+        def fail_primary_and_rollback_fsync(file_descriptor):
+            if state["armed"]:
+                raise OSError("injected persistent fsync failure")
+            return original_fsync(file_descriptor)
+
+        body = {
+            "operation": "start",
+            "request_id": "poisoned-journal-request-001",
+            "payload": {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "poisoned-journal-start-001",
+            },
+        }
+        with patch.object(TeacherAgentDashboardSnapshot, "start", new=counted_start):
+            with (
+                patch.object(HarnessJournal, "append", new=append_with_fault_window),
+                patch(
+                    "teaching_skill_miner.harness.journal.os.fsync",
+                    new=fail_primary_and_rollback_fsync,
+                ),
+            ):
+                record, _ = snapshot.open_harness_stream(body)
+                result = record.handle.wait(timeout=5)
+
+            self.assertEqual(result["status"], "handoff")
+            self.assertTrue(record.journal.durability_uncertain)
+            with self.assertRaises(HarnessJournalError):
+                record.journal.replay()
+            with self.assertRaisesRegex(
+                TeacherAgentDashboardError,
+                "requires authoritative session reconciliation",
+            ):
+                snapshot.open_harness_stream(body)
+
+        self.assertEqual(state["start_calls"], 1)
+        self.assertTrue(record.handle.cancellation_token.committed)
+        self.assertTrue(record.session_id)
+        resumed = snapshot.resume({"session_id": record.session_id})
+        self.assertEqual(resumed["session_id"], record.session_id)
+
+    def test_stream_retention_tombstone_blocks_old_start_after_restart(self) -> None:
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent-store.jsonl"
+            original_start = TeacherAgentDashboardSnapshot.start
+            start_calls = 0
+
+            def counted_start(current, body, **kwargs):
+                nonlocal start_calls
+                start_calls += 1
+                return original_start(current, body, **kwargs)
+
+            bodies = []
+            with (
+                patch(
+                    "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_RUNS",
+                    2,
+                ),
+                patch(
+                    "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_RETAINED_JOURNALS",
+                    2,
+                ),
+                patch(
+                    "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_TOMBSTONES",
+                    8,
+                ),
+                patch.object(TeacherAgentDashboardSnapshot, "start", new=counted_start),
+            ):
+                snapshot = build_teacher_agent_dashboard_snapshot(
+                    self.library_path,
+                    self.input_path,
+                    self.cases_path,
+                    store_path=store_path,
+                )
+                for index in range(3):
+                    body = {
+                        "operation": "start",
+                        "request_id": f"retained-start-request-{index}",
+                        "payload": {
+                            "goal": snapshot.demo_input["goal"],
+                            "student_profile": snapshot.demo_input["student_profile"],
+                            "start_idempotency_key": f"retained-start-key-{index}",
+                        },
+                    }
+                    bodies.append(body)
+                    record, _ = snapshot.open_harness_stream(body)
+                    self.assertEqual(
+                        record.handle.wait(timeout=5)["status"], "completed"
+                    )
+
+                journal_root = snapshot.stream_journal_directory
+                assert journal_root is not None
+                self.assertLessEqual(len(list(journal_root.glob("stream_*.jsonl"))), 2)
+                self.assertTrue(list(journal_root.glob("stream_*.tombstone.json")))
+                with self.assertRaisesRegex(
+                    TeacherAgentDashboardError,
+                    "replay expired.*not be re-executed",
+                ):
+                    snapshot.open_harness_stream(bodies[0])
+
+                restarted = build_teacher_agent_dashboard_snapshot(
+                    self.library_path,
+                    self.input_path,
+                    self.cases_path,
+                    store_path=store_path,
+                )
+                with self.assertRaisesRegex(
+                    TeacherAgentDashboardError,
+                    "replay expired.*not be re-executed",
+                ):
+                    restarted.open_harness_stream(bodies[0])
+                with self.assertRaisesRegex(
+                    TeacherAgentDashboardError,
+                    "identity collides",
+                ):
+                    restarted.open_harness_stream(
+                        {
+                            **bodies[0],
+                            "payload": {
+                                **bodies[0]["payload"],
+                                "student_profile": {
+                                    **bodies[0]["payload"]["student_profile"],
+                                    "display_name": "changed",
+                                },
+                            },
+                        }
+                    )
+                with self.assertRaisesRegex(
+                    TeacherAgentDashboardError,
+                    "identity collides",
+                ):
+                    restarted.open_harness_stream(
+                        {
+                            **bodies[0],
+                            "request_id": "retained-start-request-alias",
+                        }
+                    )
+
+            self.assertEqual(start_calls, 3)
+
+    def test_stream_retention_tombstone_blocks_old_chat_provider_reexecution(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent-store.jsonl"
+            client = _FakeDirectChatClient()
+            first_body = {
+                "operation": "chat",
+                "request_id": "retained-chat-request-1",
+                "payload": {"remote_processing_acknowledged": True, "remote_processing_consent_version": 1, "messages": [{"role": "user", "content": "first answer"}]},
+            }
+            second_body = {
+                "operation": "chat",
+                "request_id": "retained-chat-request-2",
+                "payload": {"remote_processing_acknowledged": True, "remote_processing_consent_version": 1, "messages": [{"role": "user", "content": "second answer"}]},
+            }
+            with (
+                patch(
+                    "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_RUNS",
+                    1,
+                ),
+                patch(
+                    "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_RETAINED_JOURNALS",
+                    1,
+                ),
+                patch(
+                    "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_TOMBSTONES",
+                    8,
+                ),
+            ):
+                snapshot = build_teacher_agent_dashboard_snapshot(
+                    self.library_path,
+                    self.input_path,
+                    self.cases_path,
+                    client=client,
+                    store_path=store_path,
+                )
+                for body in (first_body, second_body):
+                    record, _ = snapshot.open_harness_stream(body)
+                    self.assertEqual(
+                        record.handle.wait(timeout=5)["status"], "completed"
+                    )
+                    if body is first_body:
+                        first_run_id = record.handle.run_id
+                self.assertEqual(client.chat_json_call_count, 2)
+                receipt_bytes = (
+                    snapshot.stream_journal_directory / f"{first_run_id}.tombstone.json"
+                ).read_bytes()
+                self.assertNotIn(b"first answer", receipt_bytes)
+                self.assertNotIn(b"retained-chat-request-1", receipt_bytes)
+                with self.assertRaisesRegex(
+                    TeacherAgentDashboardError,
+                    "replay expired.*not be re-executed",
+                ):
+                    snapshot.open_harness_stream(first_body)
+                self.assertEqual(client.chat_json_call_count, 2)
+
+                restarted_client = _FakeDirectChatClient()
+                restarted = build_teacher_agent_dashboard_snapshot(
+                    self.library_path,
+                    self.input_path,
+                    self.cases_path,
+                    client=restarted_client,
+                    store_path=store_path,
+                )
+                with self.assertRaisesRegex(
+                    TeacherAgentDashboardError,
+                    "replay expired.*not be re-executed",
+                ):
+                    restarted.open_harness_stream(first_body)
+                self.assertEqual(restarted_client.chat_json_call_count, 0)
+
+    def test_poisoned_stream_is_tombstoned_without_consuming_run_capacity(
+        self,
+    ) -> None:
+        snapshot = self._offline_snapshot()
+        original_append = HarnessJournal.append
+        original_fsync = os.fsync
+        state = {"armed": False}
+
+        def append_with_fault_window(journal, event):
+            state["armed"] = event.get("type") == "message.start"
+            try:
+                return original_append(journal, event)
+            finally:
+                state["armed"] = False
+
+        def fail_primary_and_rollback_fsync(file_descriptor):
+            if state["armed"]:
+                raise OSError("injected persistent stream journal failure")
+            return original_fsync(file_descriptor)
+
+        poisoned_body = {
+            "operation": "start",
+            "request_id": "poison-retention-request-1",
+            "payload": {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "poison-retention-start-1",
+            },
+        }
+        with (
+            patch("teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_RUNS", 1),
+            patch(
+                "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_RETAINED_JOURNALS",
+                1,
+            ),
+            patch(
+                "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_TOMBSTONES",
+                8,
+            ),
+            patch.object(HarnessJournal, "append", new=append_with_fault_window),
+            patch(
+                "teaching_skill_miner.harness.journal.os.fsync",
+                new=fail_primary_and_rollback_fsync,
+            ),
+        ):
+            poisoned, _ = snapshot.open_harness_stream(poisoned_body)
+            self.assertEqual(poisoned.handle.wait(timeout=5)["status"], "handoff")
+
+        self.assertNotIn(poisoned.handle.run_id, snapshot.stream_runs)
+        root = snapshot.stream_journal_directory
+        assert root is not None
+        self.assertTrue((root / f"{poisoned.handle.run_id}.tombstone.json").is_file())
+        self.assertFalse((root / f"{poisoned.handle.run_id}.jsonl").exists())
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError,
+            "requires authoritative session reconciliation",
+        ):
+            snapshot.open_harness_stream(poisoned_body)
+
+        healthy_body = {
+            "operation": "start",
+            "request_id": "healthy-after-poison-request-1",
+            "payload": {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "healthy-after-poison-start-1",
+            },
+        }
+        healthy, _ = snapshot.open_harness_stream(healthy_body)
+        self.assertEqual(healthy.handle.wait(timeout=5)["status"], "completed")
+
+    def test_stream_tombstone_capacity_fails_closed_before_new_execution(self) -> None:
+        snapshot = self._offline_snapshot()
+        original_start = TeacherAgentDashboardSnapshot.start
+        start_calls = 0
+
+        def counted_start(current, body, **kwargs):
+            nonlocal start_calls
+            start_calls += 1
+            return original_start(current, body, **kwargs)
+
+        def body(index):
+            return {
+                "operation": "start",
+                "request_id": f"bounded-tombstone-request-{index}",
+                "payload": {
+                    "goal": snapshot.demo_input["goal"],
+                    "student_profile": snapshot.demo_input["student_profile"],
+                    "start_idempotency_key": f"bounded-tombstone-start-{index}",
+                },
+            }
+
+        with (
+            patch(
+                "teaching_skill_miner.teacher_agent_dashboard._MAX_STREAM_TOMBSTONES",
+                1,
+            ),
+            patch.object(TeacherAgentDashboardSnapshot, "start", new=counted_start),
+        ):
+            first, _ = snapshot.open_harness_stream(body(1))
+            self.assertEqual(first.handle.wait(timeout=5)["status"], "completed")
+            with self.assertRaisesRegex(
+                TeacherAgentDashboardError,
+                "idempotency retention capacity is exhausted",
+            ):
+                snapshot.open_harness_stream(body(2))
+            reopened, _ = snapshot.open_harness_stream(body(1))
+            self.assertIs(reopened, first)
+
+        self.assertEqual(start_calls, 1)
+
+    def test_registered_background_task_recovers_after_journal_create_crash(
+        self,
+    ) -> None:
+        snapshot = self._offline_snapshot()
+        original_start = TeacherAgentDashboardSnapshot.start
+        start_calls = 0
+
+        def counted_start(current, body, **kwargs):
+            nonlocal start_calls
+            start_calls += 1
+            return original_start(current, body, **kwargs)
+
+        body = {
+            "operation": "start",
+            "request_id": "registered-before-journal-request-1",
+            "payload": {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "registered-before-journal-start-1",
+            },
+        }
+        with (
+            patch.object(TeacherAgentDashboardSnapshot, "start", new=counted_start),
+            patch(
+                "teaching_skill_miner.teacher_agent_dashboard.HarnessJournal",
+                side_effect=HarnessJournalError("simulated journal create crash"),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                TeacherAgentDashboardError,
+                "durable stream journal does not match",
+            ):
+                snapshot.open_harness_stream(body)
+
+        root = snapshot.stream_journal_directory
+        assert root is not None
+        self.assertEqual(len(list(root.glob("stream_*.tombstone.json"))), 1)
+        self.assertEqual(start_calls, 0)
+        with patch.object(
+            TeacherAgentDashboardSnapshot, "start", new=counted_start
+        ):
+            recovered, _ = snapshot.open_harness_stream(body)
+            self.assertEqual(
+                recovered.handle.wait(timeout=5)["status"], "completed"
+            )
+        self.assertEqual(start_calls, 1)
+        replayed, _ = snapshot.open_harness_stream(body)
+        self.assertIs(replayed, recovered)
+        self.assertEqual(start_calls, 1)
+
+    @unittest.skipIf(os.name == "nt", "POSIX flock is unavailable")
+    def test_stream_file_lease_blocks_cross_snapshot_journal_retirement(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent-store.jsonl"
+            first = build_teacher_agent_dashboard_snapshot(
+                self.library_path,
+                self.input_path,
+                self.cases_path,
+                store_path=store_path,
+            )
+            body = {
+                "operation": "start",
+                "request_id": "cross-snapshot-lease-request-1",
+                "payload": {
+                    "goal": first.demo_input["goal"],
+                    "student_profile": first.demo_input["student_profile"],
+                    "start_idempotency_key": "cross-snapshot-lease-start-1",
+                },
+            }
+            record, _ = first.open_harness_stream(body)
+            self.assertEqual(record.handle.wait(timeout=5)["status"], "completed")
+            root = first.stream_journal_directory
+            assert root is not None
+            journal_path = root / f"{record.handle.run_id}.jsonl"
+            second = build_teacher_agent_dashboard_snapshot(
+                self.library_path,
+                self.input_path,
+                self.cases_path,
+                store_path=store_path,
+            )
+            second.stream_journal_directory = root
+
+            with _stream_run_file_lease(
+                root, record.handle.run_id, exclusive=False
+            ) as acquired:
+                self.assertTrue(acquired)
+                with self.assertRaisesRegex(
+                    TeacherAgentDashboardError, "active subscriber"
+                ):
+                    second._delete_stream_journal_files(root, record.handle.run_id)
+                self.assertTrue(journal_path.is_file())
+
+            second._delete_stream_journal_files(root, record.handle.run_id)
+            self.assertFalse(journal_path.exists())
+            self.assertTrue((root / f"{record.handle.run_id}.tombstone.json").is_file())
+
+    def test_teach_stream_result_reference_excludes_private_session_snapshot(
+        self,
+    ) -> None:
+        snapshot = self._offline_snapshot()
+        profile = deepcopy(snapshot.demo_input["student_profile"])
+        sentinel = "PRIVATE_CONVERSATION_SENTINEL_3f5ea10b"
+        profile["conversation_history"] = [
+            {
+                "response": sentinel,
+                "signal": "partial",
+                "focus_dimension": "conceptual",
+            }
+        ]
+        record, _ = snapshot.open_harness_stream(
+            {
+                "operation": "start",
+                "request_id": "private-result-reference-request-001",
+                "payload": {
+                    "goal": snapshot.demo_input["goal"],
+                    "student_profile": profile,
+                    "start_idempotency_key": "private-result-reference-start-001",
+                },
+            }
+        )
+        self.assertEqual(record.handle.wait(timeout=5)["status"], "completed")
+        events = record.journal.replay()
+        encoded = json.dumps(events, ensure_ascii=False)
+        self.assertNotIn(sentinel, encoded)
+        self.assertNotIn("setup_snapshot", encoded)
+        operation_result = next(
+            event for event in events if event["type"] == "operation.result"
+        )
+        self.assertEqual(set(operation_result["payload"]["result"]), {"session_ref"})
+        self.assertEqual(
+            set(operation_result["payload"]["result"]["session_ref"]),
+            {"session_id", "context_version", "response_sha256"},
+        )
+        session_reference = operation_result["payload"]["result"]["session_ref"]
+        resumed = snapshot.resume({"session_id": session_reference["session_id"]})
+        self.assertEqual(
+            resumed["response_sha256"], session_reference["response_sha256"]
+        )
+
+    def test_teach_step_refetch_matches_the_committed_snapshot_hash(self) -> None:
+        snapshot = self._offline_snapshot()
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "step-hash-start-001",
+            }
+        )
+        record, _ = snapshot.open_harness_stream(
+            {
+                "operation": "step",
+                "request_id": "step-hash-request-001",
+                "payload": {
+                    "session_id": started["session_id"],
+                    "expected_round": started["rounds_completed"],
+                    "expected_question_id": started["expected_question_id"],
+                    "expected_context_version": started["context_version"],
+                    "profile_revision": started["profile_summary"][
+                        "profile_revision"
+                    ],
+                    "idempotency_key": "step-hash-turn-001",
+                    "learner_response": "我能说出其中一个关系，但还不完整。",
+                    "signal": "partial",
+                    "signal_confidence": 0.8,
+                },
+            }
+        )
+        self.assertEqual(record.handle.wait(timeout=5)["status"], "completed")
+        operation_result = next(
+            event
+            for event in record.journal.replay()
+            if event["type"] == "operation.result"
+        )
+        reference = operation_result["payload"]["result"]["session_ref"]
+        resumed = snapshot.resume({"session_id": reference["session_id"]})
+        self.assertEqual(resumed["context_version"], reference["context_version"])
+        self.assertEqual(resumed["response_sha256"], reference["response_sha256"])
+
+    def test_chat_harness_web_search_streams_provider_tool_lifecycle(self) -> None:
+        def stream_transport(_url, _headers, payload, _timeout, _token):
+            request_body = json.loads(payload)
+            self.assertTrue(request_body["stream"])
+            self.assertEqual(request_body["tools"][0]["name"], "web_search")
+            events = [
+                {
+                    "type": "message_start",
+                    "message": {
+                        "id": "web-dashboard-1",
+                        "stop_reason": None,
+                        "usage": {},
+                    },
+                },
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu-dashboard-1",
+                        "name": "web_search",
+                    },
+                },
+                {"type": "content_block_stop", "index": 0},
+                {
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": {
+                        "type": "web_search_tool_result",
+                        "tool_use_id": "srvtoolu-dashboard-1",
+                        "content": [
+                            {
+                                "type": "web_search_result",
+                                "title": "Current source",
+                                "url": "https://example.com/current",
+                            }
+                        ],
+                    },
+                },
+                {"type": "content_block_stop", "index": 1},
+                {
+                    "type": "content_block_start",
+                    "index": 2,
+                    "content_block": {"type": "text", "text": ""},
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 2,
+                    "delta": {"type": "text_delta", "text": "current answer"},
+                },
+                {"type": "content_block_stop", "index": 2},
+                {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": "end_turn"},
+                    "usage": {"output_tokens": 2},
+                },
+                {"type": "message_stop"},
+            ]
+            return 200, [
+                b"event: "
+                + str(event["type"]).encode()
+                + b"\ndata: "
+                + json.dumps(event).encode()
+                + b"\n\n"
+                for event in events
+            ]
+
+        client = DeepSeekClient(
+            DeepSeekConfig(allow_remote_student_data=True, max_retries=0),
+            api_key="stream-test-secret",
+            stream_transport=stream_transport,
+        )
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+        record, _cursor = snapshot.open_harness_stream(
+            {
+                "operation": "chat",
+                "request_id": "native-web-chat-request-001",
+                "payload": {
+                    "remote_processing_acknowledged": True,
+                    "remote_processing_consent_version": 1,
+                    "messages": [{"role": "user", "content": "latest?"}],
+                    "web_search": True,
+                    "web_search_consent_version": 1,
+                },
+            }
+        )
+        result = record.handle.wait(timeout=5)
+        self.assertEqual(result["status"], "completed")
+        events = record.journal.replay()
+        self.assertIn("tool.started", [event["type"] for event in events])
+        self.assertIn("tool.completed", [event["type"] for event in events])
+        self.assertEqual(
+            "".join(
+                event["payload"].get("delta", "")
+                for event in events
+                if event["type"] == "message.delta"
+            ),
+            "current answer",
+        )
+        chat = next(
+            event["payload"]["result"]["chat"]
+            for event in events
+            if event["type"] == "operation.result"
+        )
+        self.assertTrue(chat["web_search_used"])
+        self.assertEqual(chat["sources"][0]["title"], "Current source")
+
+    def test_stream_cancel_tombstone_closes_registration_race(self) -> None:
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=_FakeDirectChatClient(),
+        )
+        cancellation = snapshot.cancel_harness_stream(
+            {
+                "request_id": "cancel-before-register-001",
+                "reason": "user_pressed_stop",
+            }
+        )
+        self.assertTrue(cancellation["pending_registration"])
+        record, _cursor = snapshot.open_harness_stream(
+            {
+                "operation": "chat",
+                "request_id": "cancel-before-register-001",
+                "payload": {"remote_processing_acknowledged": True, "remote_processing_consent_version": 1, "messages": [{"role": "user", "content": "do not send"}]},
+            }
+        )
+        result = record.handle.wait(timeout=5)
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(record.journal.terminal_type, "run.cancelled")
+        self.assertFalse(
+            any(
+                event["type"] == "operation.result" for event in record.journal.replay()
+            )
+        )
+
+    def test_explicit_stream_cancel_prevents_late_teaching_commit(self) -> None:
+        client = _BlockingCallLiveClient(block_call=2)
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+            live_options=LiveAgentOptions(agent_loop_enabled=False),
+        )
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "profile_revision": "stream-cancel-profile-v1",
+                "start_idempotency_key": "stream-cancel-start-001",
+                "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
+            }
+        )
+        request_id = "stream-cancel-turn-request-001"
+        record, _cursor = snapshot.open_harness_stream(
+            {
+                "operation": "step",
+                "request_id": request_id,
+                "payload": {
+                    "session_id": started["session_id"],
+                    "expected_round": started["rounds_completed"],
+                    "expected_question_id": started["expected_question_id"],
+                    "expected_context_version": started["context_version"],
+                    "profile_revision": started["profile_summary"]["profile_revision"],
+                    "idempotency_key": "stream-cancel-step-001",
+                    "learner_response": "这是一个不会被提交的迟到回答。",
+                },
+            }
+        )
+        self.assertTrue(client.blocked_call_entered.wait(timeout=5))
+        cancellation = snapshot.cancel_harness_stream(
+            {"request_id": request_id, "reason": "user_pressed_stop"}
+        )
+        self.assertTrue(cancellation["cancellation_requested"])
+        client.release_blocked_call.set()
+        result = record.handle.wait(timeout=5)
+        self.assertEqual(result["status"], "cancelled")
+        resumed = snapshot.resume({"session_id": started["session_id"]})
+        self.assertEqual(resumed["rounds_completed"], 0)
+        self.assertFalse(
+            any(
+                event["type"] in {"operation.result", "state.committed"}
+                for event in record.journal.replay()
+            )
+        )
+
+    def test_direct_chat_answers_without_creating_or_mutating_teaching_session(
+        self,
+    ) -> None:
+        client = _FakeDirectChatClient()
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+
+        response = snapshot.chat(
+            {
+                "messages": [{"role": "user", "content": "给我讲解一下机器学习"}],
+                "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
+            }
+        )
+
+        self.assertEqual(response["mode"], "chat")
+        self.assertIn("从数据中归纳规律", response["message"])
+        self.assertEqual(response["model"], "deepseek-v4-flash")
+        self.assertEqual(snapshot.sessions, {})
+        self.assertIsNone(snapshot.session)
+        self.assertEqual(client.chat_json_call_count, 1)
+        sent = client.last_messages
+        self.assertIsInstance(sent, list)
+        self.assertEqual(sent[-1], {"role": "user", "content": "给我讲解一下机器学习"})
+        self.assertIn("不要默认进行前置知识诊断", sent[0]["content"])
+        contract = snapshot.bootstrap()["interaction_contract"]
+        self.assertTrue(contract["direct_chat_enabled"])
+        self.assertTrue(contract["chat_and_teach_contexts_are_isolated"])
+
+    def test_direct_chat_can_use_deepseek_server_web_search(self) -> None:
+        client = _FakeDirectChatClient()
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=client,
+        )
+        response = snapshot.chat(
+            {
+                "messages": [{"role": "user", "content": "DeepSeek 最近发布了什么？"}],
+                "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
+                "web_search": True,
+                "web_search_consent_version": 1,
+            }
+        )
+        self.assertTrue(response["web_search_requested"])
+        self.assertTrue(response["web_search_used"])
+        self.assertEqual(response["sources"][0]["title"], "DeepSeek API Change Log")
+        self.assertEqual(client.last_web_messages[-1]["role"], "user")
+        self.assertEqual(snapshot.sessions, {})
+
+    def test_direct_chat_requires_server_minted_remote_and_search_consent(self) -> None:
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=_FakeDirectChatClient(),
+        )
+        messages = [{"role": "user", "content": "解释一个概念"}]
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError,
+            "remote_consent_id",
+        ):
+            snapshot._snapshot.chat({"messages": messages})
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError,
+            "legacy browser consent flags",
+        ):
+            snapshot._snapshot.chat(
+                {"messages": messages, "remote_processing_acknowledged": True}
+            )
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError,
+            "web_search_consent_id",
+        ):
+            snapshot._snapshot.chat(
+                {
+                    "messages": messages,
+                    "remote_consent_id": _test_consent_id(
+                        snapshot, "remote_chat"
+                    ),
+                    "web_search": True,
+                }
+            )
+
+    def test_project_chat_commits_assistant_before_returning(self) -> None:
+        with TemporaryDirectory() as directory:
+            snapshot = build_teacher_agent_dashboard_snapshot(
+                self.library_path,
+                self.input_path,
+                self.cases_path,
+                client=_FakeDirectChatClient(),
+                project_store_path=Path(directory) / "projects",
+            )
+            project = snapshot.create_project({"title": "权威 Chat"})["project"]
+            response = snapshot.chat(
+                {
+                    "request_id": "loopback-direct-chat-001",
+                    "messages": [{"role": "user", "content": "解释机器学习"}],
+                    "remote_processing_acknowledged": True,
+                    "remote_processing_consent_version": 1,
+                    "project_id": project["project_id"],
+                    "chat_thread_id": "chat_" + "4" * 24,
+                }
+            )
+
+            stored = snapshot.read_project(project["project_id"])["project"]
+            messages = stored["chat_threads"][0]["messages"]
+            self.assertEqual([item["role"] for item in messages], ["user", "assistant"])
+            self.assertEqual(messages[-1]["content"], response["message"])
+            self.assertEqual(messages[-1]["status"], "completed")
+
+    def test_direct_chat_rejects_non_alternating_or_assistant_final_context(
+        self,
+    ) -> None:
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=_FakeDirectChatClient(),
+        )
+        invalid_contexts = (
+            [{"role": "assistant", "content": "越过首条用户消息"}],
+            [
+                {"role": "user", "content": "问题"},
+                {"role": "assistant", "content": "回答"},
+            ],
+            [
+                {"role": "user", "content": "问题一"},
+                {"role": "user", "content": "问题二"},
+            ],
+        )
+        for context in invalid_contexts:
+            with (
+                self.subTest(context=context),
+                self.assertRaises(TeacherAgentDashboardError),
+            ):
+                snapshot.chat(
+                    {
+                        "messages": context,
+                        "remote_processing_acknowledged": True,
+                        "remote_processing_consent_version": 1,
+                    }
+                )
+
+    def test_loopback_direct_chat_route_returns_chat_payload(self) -> None:
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=_FakeDirectChatClient(),
+        )
+        try:
+            server, url = create_teacher_agent_dashboard_server(
+                snapshot, capability_token="h" * 24
+            )
+        except PermissionError:
+            self.skipTest("sandbox does not permit loopback socket binding")
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        parsed = urlsplit(url)
+        connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+        try:
+            body = json.dumps(
+                {
+                    "request_id": "loopback-direct-chat-route-001",
+                    "messages": [{"role": "user", "content": "解释机器学习"}],
+                    "remote_processing_acknowledged": True,
+                    "remote_processing_consent_version": 1,
+                },
+                ensure_ascii=False,
+            ).encode("utf-8")
+            missing_identity = json.loads(body)
+            del missing_identity["request_id"]
+            connection.request(
+                "POST",
+                f"{parsed.path}api/chat",
+                body=json.dumps(missing_identity).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            rejected = connection.getresponse()
+            rejected.read()
+            self.assertEqual(rejected.status, 400)
+            connection.request(
+                "POST",
+                f"{parsed.path}api/chat",
+                body=body,
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            payload = json.loads(response.read())
+            self.assertEqual(response.status, 200)
+            self.assertEqual(payload["mode"], "chat")
+            self.assertIn("机器学习", payload["message"])
+            self.assertEqual(snapshot.sessions, {})
+        finally:
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+
+    def test_loopback_harness_sse_is_typed_wire_filtered_and_replayable(self) -> None:
+        snapshot = self._offline_snapshot()
+        try:
+            server, url = create_teacher_agent_dashboard_server(
+                snapshot, capability_token="s" * 24
+            )
+        except PermissionError:
+            self.skipTest("sandbox does not permit loopback socket binding")
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        parsed = urlsplit(url)
+        request_id = "http-harness-start-request-001"
+        payload = {
+            "operation": "start",
+            "request_id": request_id,
+            "payload": {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "http-harness-start-001",
+            },
+        }
+
+        def post_stream(
+            body: dict[str, object],
+        ) -> tuple[http.client.HTTPResponse, list[dict]]:
+            connection = http.client.HTTPConnection(
+                parsed.hostname, parsed.port, timeout=5
+            )
+            encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            connection.request(
+                "POST",
+                f"{parsed.path}api/stream",
+                body=encoded,
+                headers={"Content-Type": "application/json"},
+            )
+            response = connection.getresponse()
+            raw = response.read().decode("utf-8")
+            events: list[dict] = []
+            for block in raw.split("\n\n"):
+                data = "\n".join(
+                    line[6:] for line in block.splitlines() if line.startswith("data: ")
+                )
+                if data:
+                    events.append(json.loads(data))
+            connection.close()
+            return response, events
+
+        try:
+            response, events = post_stream(payload)
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Connection"), "close")
+            self.assertTrue(response.getheader("X-Harness-Run-ID"))
+            self.assertTrue(response.getheader("X-Harness-Turn-ID"))
+            self.assertEqual(
+                [event["sequence"] for event in events],
+                list(range(1, len(events) + 1)),
+            )
+            self.assertEqual(events[0]["type"], "run.started")
+            self.assertEqual(events[-1]["type"], "run.completed")
+            action = next(
+                event for event in events if event["type"] == "action.completed"
+            )
+            self.assertNotIn("result", action["payload"])
+            operation_result = next(
+                event for event in events if event["type"] == "operation.result"
+            )
+            self.assertTrue(
+                operation_result["payload"]["result"]["session_ref"]["session_id"]
+            )
+            self.assertNotIn("model_response", json.dumps(events, ensure_ascii=False))
+
+            response, replay = post_stream(
+                {**payload, "after_sequence": events[-1]["sequence"] - 1}
+            )
+            self.assertEqual(response.status, 200)
+            self.assertEqual(len(replay), 1)
+            self.assertEqual(replay[0]["type"], "run.completed")
+            self.assertEqual(replay[0]["sequence"], events[-1]["sequence"])
+
+            response, replay = post_stream(
+                {**payload, "after_sequence": events[-1]["sequence"] + 1}
+            )
+            self.assertEqual(response.status, 400)
+            self.assertEqual(replay, [])
+        finally:
+            server.shutdown()
+            server.server_close()
+            worker.join(timeout=5)
+
     def _start_offline(
         self,
         snapshot,
@@ -403,6 +2060,32 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "data_base64": base64.b64encode(_SYNTHETIC_ONE_PIXEL_PNG).decode("ascii"),
         }
 
+    def _resource_body(
+        self,
+        *,
+        key: str,
+        text: str,
+        session: dict | None = None,
+        display_name: str = "教学文稿.txt",
+    ) -> dict[str, object]:
+        body: dict[str, object] = {
+            "resource_idempotency_key": key,
+            "mime_type": "text/plain",
+            "display_name": display_name,
+            "data_base64": base64.b64encode(text.encode("utf-8")).decode("ascii"),
+        }
+        if session is not None:
+            body.update(
+                {
+                    "session_id": session["session_id"],
+                    "expected_round": session["rounds_completed"],
+                    "expected_question_id": session["expected_question_id"],
+                    "expected_context_version": session["context_version"],
+                    "profile_revision": session["profile_summary"]["profile_revision"],
+                }
+            )
+        return body
+
     def test_generic_frontend_has_four_clear_screens_and_no_external_assets(
         self,
     ) -> None:
@@ -443,7 +2126,9 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertIn('id="liveSelectionReason"', html)
         self.assertIn('id="studentStateTimeline"', html)
         self.assertIn("renderContextMemory(session)", script)
-        self.assertIn("const replacingCurrentSession = Boolean(app.session?.session_id)", script)
+        self.assertIn(
+            "const replacingCurrentSession = Boolean(app.session?.session_id)", script
+        )
         self.assertNotIn(
             'const replacingActiveSession = app.session?.status === "active"',
             script,
@@ -731,6 +2416,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "stale-replacement-original",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         base = {
@@ -739,6 +2425,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "replace_session_id": original["session_id"],
             **self._replacement_guards(original),
             "remote_processing_acknowledged": True,
+            "remote_processing_consent_version": 1,
         }
         stale_values = (
             ("replace_expected_round", original["rounds_completed"] + 1),
@@ -780,6 +2467,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "student_profile": snapshot.demo_input["student_profile"],
             "start_idempotency_key": "concurrent-live-start-001",
             "remote_processing_acknowledged": True,
+            "remote_processing_consent_version": 1,
         }
         barrier = threading.Barrier(3)
         results: list[dict[str, object]] = []
@@ -820,6 +2508,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "student_profile": snapshot.demo_input["student_profile"],
             "start_idempotency_key": "retry-after-start-failure-001",
             "remote_processing_acknowledged": True,
+            "remote_processing_consent_version": 1,
         }
 
         with self.assertRaisesRegex(Exception, "initial action"):
@@ -895,6 +2584,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "student_profile": snapshot.demo_input["student_profile"],
             "start_idempotency_key": "fallback-preservation-original",
             "remote_processing_acknowledged": True,
+            "remote_processing_consent_version": 1,
         }
         original = snapshot.start(original_body)
         replacement_profile = deepcopy(snapshot.demo_input["student_profile"])
@@ -947,6 +2637,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "step-first-original",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         step_body = {
@@ -967,6 +2658,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "replace_session_id": original["session_id"],
             **self._replacement_guards(original),
             "remote_processing_acknowledged": True,
+            "remote_processing_consent_version": 1,
         }
         step_results: list[dict[str, object]] = []
         replacement_results: list[dict[str, object]] = []
@@ -1036,6 +2728,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "active-turn-start",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         body = {
@@ -1098,6 +2791,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "stop-preempt-start",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         step_body = {
@@ -1171,6 +2865,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "cancel-turn-start",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         step_body = {
@@ -1241,6 +2936,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                     "student_profile": snapshot.demo_input["student_profile"],
                     "start_idempotency_key": "stored-preempt-start",
                     "remote_processing_acknowledged": True,
+                    "remote_processing_consent_version": 1,
                 }
             )
             step_body = {
@@ -1273,9 +2969,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                     "expected_round": 0,
                     "expected_question_id": started["expected_question_id"],
                     "expected_context_version": started["context_version"],
-                    "profile_revision": started["profile_summary"][
-                        "profile_revision"
-                    ],
+                    "profile_revision": started["profile_summary"]["profile_revision"],
                 }
             )
             client.release_blocked_call.set()
@@ -1326,6 +3020,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "replacement-first-original",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         replacement_profile = deepcopy(snapshot.demo_input["student_profile"])
@@ -1337,6 +3032,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "replace_session_id": original["session_id"],
             **self._replacement_guards(original),
             "remote_processing_acknowledged": True,
+            "remote_processing_consent_version": 1,
         }
         step_body = {
             "session_id": original["session_id"],
@@ -1409,6 +3105,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "student_profile": snapshot.demo_input["student_profile"],
             "start_idempotency_key": "allowed-skills-type-check",
             "remote_processing_acknowledged": True,
+            "remote_processing_consent_version": 1,
         }
         invalid_values = (
             None,
@@ -1574,8 +3271,11 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertLessEqual(len(snapshot.start_idempotency_cache), 16)
         self.assertLessEqual(len(snapshot.sessions), 16)
         self.assertNotEqual(snapshot.session_id, first["session_id"])
-        with self.assertRaisesRegex(TeacherAgentDashboardError, "no longer available"):
-            snapshot.resume({"session_id": first["session_id"]})
+        self.assertEqual(
+            snapshot.resume({"session_id": first["session_id"]}),
+            first,
+        )
+        self.assertLessEqual(len(snapshot.sessions), 16)
         recreated = snapshot.start(first_body)
         self.assertNotEqual(recreated["session_id"], first["session_id"])
 
@@ -1633,6 +3333,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertFalse(stored_first["expired"])
         self.assertNotIn("data_base64", stored_first)
         self.assertNotIn("image_bytes", stored_first)
+
         serialized_record = json.dumps(stored_first, ensure_ascii=False)
         self.assertNotIn(str(first_body["data_base64"]), serialized_record)
         self.assertFalse(stored_first["evidence"]["raw_media_retained"])
@@ -1750,6 +3451,116 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             )
         self.assertEqual(record.session["round"], 1)
 
+    def test_teaching_resources_stage_before_start_and_commit_without_assessment(
+        self,
+    ) -> None:
+        snapshot = self._offline_snapshot()
+        staged = snapshot.upload_resource(
+            self._resource_body(
+                key="resource-stage-001",
+                text="本节课的核心材料是状态定义、状态转移与边界条件。",
+                display_name="动态规划讲义.txt",
+            )
+        )
+        self.assertTrue(staged["staged"])
+        staged_id = staged["resource"]["staged_resource_id"]
+        self.assertNotIn("extracted_text", staged["resource"])
+        self.assertFalse(staged["resource"]["raw_media_retained"])
+        self.assertFalse(staged["resource"]["remote_media_sent"])
+
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "resource-start-001",
+                "staged_resource_ids": [staged_id],
+            }
+        )
+        self.assertEqual(len(started["teaching_resources"]), 1)
+        self.assertEqual(
+            started["teaching_resources"][0]["display_name"], "动态规划讲义.txt"
+        )
+        resource_text = started["teaching_resources"][0]
+        self.assertEqual(
+            resource_text["extracted_char_count"],
+            len("本节课的核心材料是状态定义、状态转移与边界条件。"),
+        )
+        before_state = deepcopy(started["student_state"])
+
+        committed = snapshot.upload_resource(
+            self._resource_body(
+                key="resource-commit-001",
+                text="补充材料：用斐波那契数列比较递归与动态规划。",
+                session=started,
+                display_name="补充案例.txt",
+            )
+        )
+        self.assertEqual(committed["context_version"], started["context_version"] + 1)
+        self.assertEqual(len(committed["teaching_resources"]), 2)
+        self.assertEqual(committed["student_state"], before_state)
+        stored = snapshot.sessions[started["session_id"]]
+        self.assertEqual(len(stored.teaching_resources), 2)
+        self.assertNotIn("data_base64", json.dumps(stored.teaching_resources))
+
+    def test_live_turn_receives_committed_teaching_resource_as_fixed_context(
+        self,
+    ) -> None:
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            self.library_path,
+            self.input_path,
+            self.cases_path,
+            client=_FakeLiveClient(),
+        )
+        staged = snapshot.upload_resource(
+            self._resource_body(
+                key="live-resource-stage-001",
+                text="初始材料：状态由对未来决策有用的信息组成。",
+                display_name="初始讲义.txt",
+            )
+        )
+        started = snapshot.start(
+            {
+                "goal": snapshot.demo_input["goal"],
+                "student_profile": snapshot.demo_input["student_profile"],
+                "start_idempotency_key": "live-resource-start-001",
+                "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
+                "staged_resource_ids": [staged["resource"]["staged_resource_id"]],
+            }
+        )
+        self.assertEqual(len(started["teaching_resources"]), 1)
+        initial_resources = started["context_memory"]["fixed_context"]["teaching_goal"][
+            "teaching_resources"
+        ]
+        self.assertIn("状态由对未来决策有用的信息组成", initial_resources[0]["text"])
+        committed = snapshot.upload_resource(
+            self._resource_body(
+                key="live-resource-commit-001",
+                text="教师材料明确要求先定义状态，再写出状态转移方程。",
+                session=started,
+                display_name="状态转移课件.txt",
+            )
+        )
+        advanced = snapshot.step(
+            {
+                "session_id": committed["session_id"],
+                "expected_round": committed["rounds_completed"],
+                "expected_question_id": committed["expected_question_id"],
+                "expected_context_version": committed["context_version"],
+                "profile_revision": committed["profile_summary"]["profile_revision"],
+                "idempotency_key": "live-resource-step-001",
+                "learner_response": "我会先定义状态。",
+            }
+        )
+        self.assertEqual(advanced["rounds_completed"], 1)
+        fixed_resources = advanced["context_memory"]["fixed_context"]["teaching_goal"][
+            "teaching_resources"
+        ]
+        self.assertIn(
+            "先定义状态，再写出状态转移方程",
+            "\n".join(item["text"] for item in fixed_resources),
+        )
+
     def test_confirmation_required_ocr_cannot_consume_a_turn_without_student_input(
         self,
     ) -> None:
@@ -1781,7 +3592,9 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "attachment_ids": [attachment_id],
             "signal": "partial",
         }
-        with self.assertRaisesRegex(TeacherAgentDashboardError, "needs student confirmation"):
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError, "needs student confirmation"
+        ):
             snapshot.step(body)
         record = snapshot.sessions[started["session_id"]]
         self.assertEqual(record.session["round"], 0)
@@ -1840,7 +3653,9 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "图片里的正确答案是：状态与输入共同决定下一状态。",
         )
 
-    def test_failed_replacement_preserves_an_inflight_turn_until_it_commits(self) -> None:
+    def test_failed_replacement_preserves_an_inflight_turn_until_it_commits(
+        self,
+    ) -> None:
         client = _BlockingCallLiveClient(block_call=2)
         snapshot = build_teacher_agent_dashboard_snapshot(
             self.v2_library_path,
@@ -1854,6 +3669,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "preserve-active-turn-start-001",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         step_body = {
@@ -1887,13 +3703,18 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             "replace_session_id": started["session_id"],
             **self._replacement_guards(started),
             "remote_processing_acknowledged": True,
+            "remote_processing_consent_version": 1,
         }
         with self.assertRaisesRegex(Exception, "direct identity"):
             snapshot.start(replacement_body)
         record = snapshot.sessions[started["session_id"]]
         self.assertFalse(record.retiring)
         self.assertIsNotNone(record.active_turn_id)
-        self.assertTrue(snapshot.resume({"session_id": started["session_id"]})["turn_runtime"]["active"])
+        self.assertTrue(
+            snapshot.resume({"session_id": started["session_id"]})["turn_runtime"][
+                "active"
+            ]
+        )
         self.assertEqual(set(snapshot.sessions), {started["session_id"]})
 
         client.release_blocked_call.set()
@@ -2081,7 +3902,9 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         self.assertEqual(second["rounds_completed"], 2)
         self.assertEqual(len(second["history"]), 2)
 
-    def test_concurrent_identical_step_is_applied_once_or_explicitly_running(self) -> None:
+    def test_concurrent_identical_step_is_applied_once_or_explicitly_running(
+        self,
+    ) -> None:
         snapshot = self._offline_snapshot()
         started = self._start_offline(snapshot)
         body = {
@@ -2336,6 +4159,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "manual-lock-start-001",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
                 "manual_skill_id": skill_id,
             }
         )
@@ -2402,6 +4226,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "manual-guard-start-001",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
                 "manual_skill_id": "skill_transfer_check",
             }
         )
@@ -2441,6 +4266,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                     "student_profile": snapshot.demo_input["student_profile"],
                     "start_idempotency_key": "invalid-manual-start-001",
                     "remote_processing_acknowledged": True,
+                    "remote_processing_consent_version": 1,
                     "manual_skill_id": "skill_wait_and_elicit",
                 }
             )
@@ -2453,6 +4279,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                     "student_profile": snapshot.demo_input["student_profile"],
                     "start_idempotency_key": "excluded-manual-start-002",
                     "remote_processing_acknowledged": True,
+                    "remote_processing_consent_version": 1,
                     "manual_skill_id": "skill_concrete_example_bridge",
                     "allowed_skill_ids": ["skill_diagnostic_questioning"],
                 }
@@ -2483,6 +4310,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "terminal-command-start-001",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         stop_body = self._command_body(started, "stop", key="terminal-stop-001")
@@ -2525,6 +4353,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": "terminal-replacement-start-001",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         stopped = snapshot.command(
@@ -2555,6 +4384,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "replace_session_id": stopped["session_id"],
                 **self._replacement_guards(stopped),
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
         )
         self.assertNotEqual(replacement["session_id"], stopped["session_id"])
@@ -2565,7 +4395,9 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             replacement["profile_summary"]["profile_revision"],
             "terminal-replacement-profile-v2",
         )
-        self.assertEqual(snapshot.resume({"session_id": replacement["session_id"]}), replacement)
+        self.assertEqual(
+            snapshot.resume({"session_id": replacement["session_id"]}), replacement
+        )
         with self.assertRaisesRegex(TeacherAgentDashboardError, "no longer available"):
             snapshot.resume({"session_id": stopped["session_id"]})
 
@@ -2610,6 +4442,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 "student_profile": snapshot.demo_input["student_profile"],
                 "start_idempotency_key": f"online-capacity-{index:03d}",
                 "remote_processing_acknowledged": True,
+                "remote_processing_consent_version": 1,
             }
             if replace_session_id is not None:
                 body["replace_session_id"] = replace_session_id
@@ -2646,7 +4479,7 @@ class TeacherAgentDashboardTests(unittest.TestCase):
                 if record.lock.locked():
                     record.lock.release()
 
-    def test_online_start_requires_explicit_remote_processing_acknowledgement(
+    def test_online_start_requires_server_minted_remote_processing_consent(
         self,
     ) -> None:
         snapshot = build_teacher_agent_dashboard_snapshot(
@@ -2657,7 +4490,12 @@ class TeacherAgentDashboardTests(unittest.TestCase):
         )
         self.assertTrue(
             snapshot.bootstrap()["interaction_contract"][
-                "remote_processing_acknowledgement_required"
+                "remote_processing_server_consent_required"
+            ]
+        )
+        self.assertFalse(
+            snapshot.bootstrap()["interaction_contract"][
+                "remote_processing_legacy_boolean_authority"
             ]
         )
         start_body = {
@@ -2672,19 +4510,42 @@ class TeacherAgentDashboardTests(unittest.TestCase):
             with self.subTest(acknowledgement=acknowledgement):
                 with self.assertRaisesRegex(
                     TeacherAgentDashboardError,
-                    "remote_processing_acknowledged=true",
+                    (
+                        "remote_consent_id"
+                        if acknowledgement is None
+                        else "legacy browser consent flags"
+                    ),
                 ):
-                    snapshot.start(invalid)
+                    snapshot._snapshot.start(invalid)
                 self.assertIsNone(snapshot.session)
 
-        started = snapshot.start({**start_body, "remote_processing_acknowledged": True})
+        started = snapshot.start(
+            {
+                **start_body,
+                "remote_consent_id": _test_consent_id(
+                    snapshot, "remote_teaching"
+                ),
+            }
+        )
         self.assertEqual(started["rounds_completed"], 0)
         self.assertTrue(started["session_id"])
+
+        with self.assertRaisesRegex(
+            TeacherAgentDashboardError,
+            "legacy browser consent flags",
+        ):
+            snapshot._snapshot.start(
+                {
+                    **start_body,
+                    "start_idempotency_key": "online-consent-version-missing",
+                    "remote_processing_acknowledged": True,
+                }
+            )
 
         offline = self._offline_snapshot()
         self.assertFalse(
             offline.bootstrap()["interaction_contract"][
-                "remote_processing_acknowledgement_required"
+                "remote_processing_server_consent_required"
             ]
         )
         self.assertEqual(self._start_offline(offline)["rounds_completed"], 0)

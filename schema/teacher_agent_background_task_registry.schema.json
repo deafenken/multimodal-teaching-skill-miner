@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_background_task_registry.schema.json",
+  "title": "Private durable Teaching Agent background task registry",
+  "type": "object",
+  "required": ["schema", "tasks", "pending_cancellations", "purged_task_tombstones", "registry_sha256"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.background_task_registry.v1"},
+    "tasks": {
+      "type": "object",
+      "maxProperties": 4096,
+      "propertyNames": {"$ref": "#/$defs/taskId"},
+      "additionalProperties": {"$ref": "#/$defs/privateTask"}
+    },
+    "pending_cancellations": {
+      "type": "object",
+      "maxProperties": 256,
+      "propertyNames": {"$ref": "#/$defs/digest"},
+      "additionalProperties": {"$ref": "#/$defs/pendingCancellation"}
+    },
+    "purged_task_tombstones": {
+      "type": "object",
+      "maxProperties": 4096,
+      "propertyNames": {"$ref": "#/$defs/taskId"},
+      "additionalProperties": {"$ref": "#/$defs/purgeTombstone"}
+    },
+    "registry_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "taskId": {"type": "string", "pattern": "^task_[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "safeCode": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,79}$"},
+    "command": {
+      "type": "object",
+      "required": [
+        "schema",
+        "command_id",
+        "command_type",
+        "idempotency_key_sha256",
+        "reason_code",
+        "created_at_utc"
+      ],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.background_task_command.v1"},
+        "command_id": {"$ref": "#/$defs/digest"},
+        "command_type": {"enum": ["dispatch", "cancel", "resume"]},
+        "idempotency_key_sha256": {"$ref": "#/$defs/digest"},
+        "reason_code": {
+          "oneOf": [{"$ref": "#/$defs/safeCode"}, {"type": "null"}]
+        },
+        "created_at_utc": {"$ref": "#/$defs/timestamp"}
+      },
+      "additionalProperties": false
+    },
+    "pendingCancellation": {
+      "type": "object",
+      "required": [
+        "schema",
+        "command_id",
+        "command_type",
+        "idempotency_key_sha256",
+        "reason_code",
+        "created_at_utc",
+        "request_id_sha256"
+      ],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.background_task_command.v1"},
+        "command_id": {"$ref": "#/$defs/digest"},
+        "command_type": {"const": "cancel"},
+        "idempotency_key_sha256": {"$ref": "#/$defs/digest"},
+        "reason_code": {"$ref": "#/$defs/safeCode"},
+        "created_at_utc": {"$ref": "#/$defs/timestamp"},
+        "request_id_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    },
+    "privateTask": {
+      "type": "object",
+      "required": [
+        "schema",
+        "task_id",
+        "run_id",
+        "turn_id",
+        "operation",
+        "request_fingerprint",
+        "private_request",
+        "scope",
+        "session_id",
+        "status",
+        "version",
+        "created_at_utc",
+        "updated_at_utc",
+        "last_sequence",
+        "terminal_type",
+        "error_code",
+        "restart_policy",
+        "command_outbox",
+        "idempotency_receipts"
+      ],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.background_task_private.v1"},
+        "task_id": {"$ref": "#/$defs/taskId"},
+        "run_id": {"type": "string", "pattern": "^stream_[0-9a-f]{40}$"},
+        "turn_id": {"type": "string", "pattern": "^turn_[0-9a-f]{40}$"},
+        "operation": {"enum": ["chat", "start", "step"]},
+        "request_fingerprint": {"$ref": "#/$defs/digest"},
+        "private_request": {"type": "object"},
+        "scope": {"type": "object"},
+        "session_id": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "status": {
+          "enum": [
+            "queued",
+            "running",
+            "cancel_requested",
+            "suspended",
+            "completed",
+            "cancelled",
+            "failed",
+            "handoff"
+          ]
+        },
+        "version": {"type": "integer", "minimum": 0},
+        "created_at_utc": {"$ref": "#/$defs/timestamp"},
+        "updated_at_utc": {"$ref": "#/$defs/timestamp"},
+        "last_sequence": {"type": "integer", "minimum": 0},
+        "terminal_type": {
+          "oneOf": [
+            {"enum": ["run.completed", "run.cancelled", "run.failed", "run.handoff"]},
+            {"type": "null"}
+          ]
+        },
+        "error_code": {
+          "oneOf": [{"$ref": "#/$defs/safeCode"}, {"type": "null"}]
+        },
+        "restart_policy": {
+          "enum": ["safe_checkpoint_only", "unsafe_external_effect_handoff"]
+        },
+        "command_outbox": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"$ref": "#/$defs/command"}
+        },
+        "idempotency_receipts": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {"$ref": "#/$defs/digest"},
+          "additionalProperties": {
+            "type": "object",
+            "required": ["fingerprint", "applied", "command_type"],
+            "properties": {
+              "fingerprint": {"$ref": "#/$defs/digest"},
+              "applied": {"type": "boolean"},
+              "command_type": {"enum": ["cancel", "resume"]}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "purgeTombstone": {
+      "type": "object",
+      "required": ["task_id", "purged_at_utc", "record_sha256"],
+      "properties": {
+        "task_id": {"$ref": "#/$defs/taskId"},
+        "purged_at_utc": {"$ref": "#/$defs/timestamp"},
+        "record_sha256": {"$ref": "#/$defs/digest"}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -524,11 +524,57 @@ def _exercise_browser(
     checks["page_loaded"] = True
     _require(
         page.locator("#learningView").is_visible()
-        and page.locator("#setupForm").is_visible(),
+        and page.locator("#emptySession").is_visible()
+        and page.locator("#setupForm").is_hidden(),
         stage="page_load",
-        code="initial_learning_setup_not_visible",
+        code="initial_session_workspace_not_visible",
     )
-    checks["initial_setup_visible"] = True
+    checks["initial_session_workspace_visible"] = True
+    _wait_for_js(
+        page,
+        """() => {
+            const setup = document.querySelector('#setupPanel');
+            const live = document.querySelector('#liveLoop');
+            const state = document.querySelector('#statePanel');
+            const rail = state?.querySelector('.inspector-tabs');
+            if (!setup || !live || !state || !rail) return false;
+            const setupRect = setup.getBoundingClientRect();
+            const liveRect = live.getBoundingClientRect();
+            const stateRect = state.getBoundingClientRect();
+            const railRect = rail.getBoundingClientRect();
+            return getComputedStyle(state).position === 'relative'
+                && state.getAttribute('aria-modal') === null
+                && stateRect.width >= 340 && stateRect.width <= 560
+                && railRect.width >= 60 && railRect.width <= 76
+                && Math.abs(setupRect.right - liveRect.left) <= 2
+                && Math.abs(liveRect.right - stateRect.left) <= 2
+                && Math.abs(stateRect.right - innerWidth) <= 2
+                && document.querySelector('#drawerBackdrop')?.hidden === true;
+        }""",
+        stage="page_load",
+        code="initial_docked_inspector_geometry_failed",
+        timeout_ms=timeout_ms,
+    )
+    checks["initial_docked_inspector_geometry"] = True
+    _perform(
+        lambda: page.locator("#emptyStartButton").click(),
+        stage="profile_a_start",
+        code="initial_setup_sheet_open_failed",
+    )
+    _wait_for_js(
+        page,
+        """() => {
+            const form = document.querySelector('#setupForm');
+            const panel = document.querySelector('#setupPanel');
+            return Boolean(form && !form.hidden
+                && panel?.classList.contains('setup-expanded')
+                && document.activeElement?.id === 'conceptInput');
+        }""",
+        stage="profile_a_start",
+        code="initial_setup_sheet_not_visible",
+        timeout_ms=timeout_ms,
+    )
+    checks["initial_setup_sheet_visible"] = True
 
     profile_a_mastery = _perform(
         lambda: _form_mastery(page),
@@ -886,7 +932,42 @@ def _exercise_browser(
     )
     checks["draft_cancel_restored_active_composer"] = True
 
+    # The inspector is docked and open by default on wide screens, but becomes
+    # a closed modal drawer on narrower viewports.  A hidden manual control can
+    # therefore mean either "the method tab is not selected" or "the drawer is
+    # closed"; only click the toggle in the latter case.
     if page.locator("#manualModeButton").is_hidden():
+        inspector_is_open = _perform(
+            lambda: page.locator("#appShell").evaluate(
+                "element => element.classList.contains('inspector-open')"
+            ),
+            stage="manual_skill",
+            code="inspector_state_unreadable",
+        )
+        inspector_toggle = page.locator("#inspectorToggle")
+        if not inspector_is_open:
+            _require(
+                _perform(
+                    lambda: inspector_toggle.is_visible()
+                    and inspector_toggle.is_enabled(),
+                    stage="manual_skill",
+                    code="inspector_toggle_unusable",
+                ),
+                stage="manual_skill",
+                code="inspector_toggle_unusable",
+            )
+            _perform(
+                lambda: inspector_toggle.click(),
+                stage="manual_skill",
+                code="inspector_open_failed",
+            )
+            _wait_for_js(
+                page,
+                "() => document.querySelector('#appShell')?.classList.contains('inspector-open')",
+                stage="manual_skill",
+                code="inspector_did_not_open",
+                timeout_ms=timeout_ms,
+            )
         _perform(
             lambda: page.locator("#methodTab").click(),
             stage="manual_skill",
@@ -1647,6 +1728,71 @@ def _exercise_browser(
                 code="desktop_drawer_inert_not_cleared",
             )
             checks[f"responsive_desktop_inert_cleared_{width}"] = True
+            _perform(
+                lambda: page.locator("#inspectorToggle").click(),
+                stage="responsive_accessibility",
+                code="desktop_inspector_open_failed",
+            )
+            open_width = _perform(
+                lambda: page.evaluate(
+                    """() => {
+                        const panel = document.querySelector('#statePanel');
+                        const live = document.querySelector('#liveLoop');
+                        const rail = panel?.querySelector('.inspector-tabs');
+                        const head = panel?.querySelector('.inspector-head');
+                        const body = panel?.querySelector('.state-body');
+                        const backdrop = document.querySelector('#drawerBackdrop');
+                        if (!panel || !live || !rail || !head || !body || !backdrop) return 0;
+                        const panelRect = panel.getBoundingClientRect();
+                        const liveRect = live.getBoundingClientRect();
+                        const railRect = rail.getBoundingClientRect();
+                        const darkHeader = getComputedStyle(head).backgroundColor;
+                        const lightBody = getComputedStyle(body).backgroundColor;
+                        if (getComputedStyle(panel).position !== 'relative'
+                            || panel.getAttribute('aria-modal') !== null
+                            || panelRect.width < 340 || panelRect.width > 560
+                            || railRect.width < 60 || railRect.width > 76
+                            || Math.abs(liveRect.right - panelRect.left) > 2
+                            || Math.abs(panelRect.right - innerWidth) > 2
+                            || darkHeader === lightBody
+                            || !backdrop.hidden
+                            || getComputedStyle(backdrop).display !== 'none') return 0;
+                        return liveRect.width;
+                    }"""
+                ),
+                stage="responsive_accessibility",
+                code="desktop_inspector_geometry_unreadable",
+            )
+            _require(
+                float(open_width or 0) > 0,
+                stage="responsive_accessibility",
+                code="desktop_inspector_geometry_failed",
+            )
+            _perform(
+                lambda: page.locator("#inspectorToggle").click(),
+                stage="responsive_accessibility",
+                code="desktop_inspector_collapse_failed",
+            )
+            _wait_for_js(
+                page,
+                """(openWidth) => {
+                    const panel = document.querySelector('#statePanel');
+                    const live = document.querySelector('#liveLoop');
+                    const backdrop = document.querySelector('#drawerBackdrop');
+                    if (!panel || !live || !backdrop) return false;
+                    return getComputedStyle(panel).visibility === 'hidden'
+                        && live.getBoundingClientRect().width > openWidth + 300
+                        && backdrop.hidden
+                        && getComputedStyle(backdrop).display === 'none'
+                        && document.activeElement?.id === 'inspectorToggle';
+                }""",
+                arg=open_width,
+                stage="responsive_accessibility",
+                code="desktop_inspector_collapse_contract_failed",
+                timeout_ms=timeout_ms,
+            )
+            checks[f"responsive_docked_inspector_{width}"] = True
+            checks[f"responsive_desktop_inspector_collapses_{width}"] = True
 
         learning_ok = _perform(
             lambda: _page_has_no_horizontal_overflow(page),

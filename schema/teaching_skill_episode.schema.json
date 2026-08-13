@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:teaching-skill-miner:schema:teaching-skill-episode:1",
+  "title": "Provenance-bound episode Teaching Skill artifact",
+  "type": "object",
+  "required": [
+    "schema", "artifact_kind", "video_id", "course_id", "episode_id",
+    "start", "end", "segment_indices", "event_ids", "skill",
+    "skill_sha256", "parent_transcript_sha256", "partition_provenance",
+    "claim_boundary"
+  ],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.episode_skill.v1"},
+    "artifact_kind": {"const": "episode_teaching_skill"},
+    "video_id": {"type": "string", "minLength": 1},
+    "course_id": {"type": "string", "minLength": 1},
+    "episode_id": {"type": "string", "pattern": "^[a-zA-Z0-9_.-]+$"},
+    "start": {"type": "number", "minimum": 0},
+    "end": {"type": "number", "exclusiveMinimum": 0},
+    "segment_indices": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 0}
+    },
+    "event_ids": {
+      "type": "array", "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^mme_[0-9]{4,}$"}
+    },
+    "skill": {
+      "type": "object",
+      "required": [
+        "skill_id", "name", "version", "source", "learning_objective",
+        "trigger", "preconditions", "goal", "strategies", "procedure",
+        "teacher_actions", "student_signals", "success_criteria",
+        "failure_modes", "verification"
+      ],
+      "properties": {
+        "skill_id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "source": {"type": "object"},
+        "learning_objective": {"type": "object"},
+        "trigger": {"type": "array", "minItems": 1},
+        "preconditions": {"type": "array", "minItems": 1},
+        "goal": {"type": "string", "minLength": 1},
+        "strategies": {"type": "array", "minItems": 1},
+        "procedure": {"type": "array", "minItems": 4},
+        "teacher_actions": {"type": "array", "minItems": 1},
+        "student_signals": {"type": "array", "minItems": 1},
+        "success_criteria": {"type": "array", "minItems": 1},
+        "failure_modes": {"type": "array", "minItems": 1},
+        "verification": {"type": "array", "minItems": 2}
+      },
+      "additionalProperties": true
+    },
+    "skill_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "parent_transcript_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "partition_provenance": {
+      "type": "object",
+      "required": ["partition_version", "candidate_partition_only"],
+      "properties": {
+        "partition_version": {"const": "episode_partition_v1"},
+        "candidate_partition_only": {"const": true},
+        "boundary_rationale": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "claim_boundary": {
+      "type": "object",
+      "required": [
+        "candidate_partition_only", "episode_gold_established",
+        "expert_skill_quality_established", "recognition_accuracy_established",
+        "teaching_effectiveness_established"
+      ],
+      "properties": {
+        "candidate_partition_only": {"const": true},
+        "episode_gold_established": {"const": false},
+        "expert_skill_quality_established": {"const": false},
+        "recognition_accuracy_established": {"const": false},
+        "teaching_effectiveness_established": {"const": false}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {"if": {"required": ["start", "end"]}, "then": {"properties": {"end": {"exclusiveMinimum": 0}}}}
+  ],
+  "additionalProperties": false
+}

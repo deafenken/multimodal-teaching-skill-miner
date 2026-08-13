@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teacher_agent_background_task.schema.json",
+  "title": "Content-free public Teaching Agent background task",
+  "type": "object",
+  "required": [
+    "schema",
+    "task_id",
+    "run_id",
+    "turn_id",
+    "operation",
+    "status",
+    "version",
+    "created_at_utc",
+    "updated_at_utc",
+    "last_sequence",
+    "terminal_type",
+    "error_code",
+    "restart_policy",
+    "cancelable",
+    "resumable",
+    "cancel_command_pending",
+    "resume_command_pending",
+    "content_included"
+  ],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.background_task.v1"},
+    "task_id": {"$ref": "#/$defs/taskId"},
+    "run_id": {"type": "string", "pattern": "^stream_[0-9a-f]{40}$"},
+    "turn_id": {"type": "string", "pattern": "^turn_[0-9a-f]{40}$"},
+    "operation": {"enum": ["chat", "start", "step"]},
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "cancel_requested",
+        "suspended",
+        "completed",
+        "cancelled",
+        "failed",
+        "handoff"
+      ]
+    },
+    "version": {"type": "integer", "minimum": 0},
+    "created_at_utc": {"$ref": "#/$defs/timestamp"},
+    "updated_at_utc": {"$ref": "#/$defs/timestamp"},
+    "last_sequence": {"type": "integer", "minimum": 0},
+    "terminal_type": {
+      "oneOf": [
+        {"enum": ["run.completed", "run.cancelled", "run.failed", "run.handoff"]},
+        {"type": "null"}
+      ]
+    },
+    "error_code": {
+      "oneOf": [
+        {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,79}$"},
+        {"type": "null"}
+      ]
+    },
+    "restart_policy": {
+      "enum": ["safe_checkpoint_only", "unsafe_external_effect_handoff"]
+    },
+    "cancelable": {"type": "boolean"},
+    "resumable": {"type": "boolean"},
+    "cancel_command_pending": {"type": "boolean"},
+    "resume_command_pending": {"type": "boolean"},
+    "content_included": {"const": false}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "taskId": {"type": "string", "pattern": "^task_[0-9a-f]{40}$"},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "Z$"}
+  }
+}

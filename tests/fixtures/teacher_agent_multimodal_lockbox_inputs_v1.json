@@ -1,0 +1,69 @@
+{
+  "schema": "teaching_skill_miner.multimodal_lockbox_inputs.v1",
+  "dataset_id": "teacher_agent_multimodal_maturity_offline_v1",
+  "cases": [
+    {
+      "case_id": "scanned_pdf_01",
+      "mime_type": "application/pdf",
+      "task_context": "分层报告扫描页的转写候选与未核验视觉内容。",
+      "media_base64": "JVBERi0xLjcKTE9DS0JPWDpzY2FubmVkX3BkZg==",
+      "media_sha256": "5b3d8bfce8f539c3860c5b703270e62a2d474335fdfc2645b41e7f690e2d5ead"
+    },
+    {
+      "case_id": "table_01",
+      "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "task_context": "只报告表格单元格中可定位的文字和值。",
+      "media_base64": "TE9DS0JPWDp0YWJsZQ==",
+      "media_sha256": "4395e3997ca19a86b665e256e2c4329425c9df987f02c488d6f20150715718bd"
+    },
+    {
+      "case_id": "chart_01",
+      "mime_type": "image/png",
+      "task_context": "报告柱状图可见标签；轴单位缺失时弃权。",
+      "media_base64": "TE9DS0JPWDpjaGFydA==",
+      "media_sha256": "405405d075af59093c33de1ecd0874433693b52aa920b7d4e66ad0668e472fa6"
+    },
+    {
+      "case_id": "geometry_01",
+      "mime_type": "image/png",
+      "task_context": "报告几何图中的直角标记，归属不清时请求确认。",
+      "media_base64": "TE9DS0JPWDpnZW9tZXRyeQ==",
+      "media_sha256": "f6484bd66b39099f4c729b53ac627ca9c79d4ba2610bec4b60f44228ca615844"
+    },
+    {
+      "case_id": "handwriting_01",
+      "mime_type": "image/png",
+      "task_context": "转写手写字符；不清晰字符必须标记不确定。",
+      "media_base64": "TE9DS0JPWDpoYW5kd3JpdGluZw==",
+      "media_sha256": "37ae12bec035c4a50039fbbc4ece85cdf7692a199b37ca33235e8d67e5f173a6"
+    },
+    {
+      "case_id": "formula_01",
+      "mime_type": "image/png",
+      "task_context": "区分公式转写和公式正确性，二维结构不清时请求确认。",
+      "media_base64": "TE9DS0JPWDpmb3JtdWxh",
+      "media_sha256": "d6067cbe434235cf605c60f9b7b639fd67b4ed819aacb4c6bad122500e447f04"
+    },
+    {
+      "case_id": "slide_notes_conflict_01",
+      "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "task_context": "分别报告幻灯片正文和讲者备注，冲突时不合并。",
+      "media_base64": "TE9DS0JPWDpzbGlkZV9ub3Rlc19jb25mbGljdA==",
+      "media_sha256": "b545068eea7d7b041f5b78395132d9aee99360f8f7108a93ea1de3ae1927173d"
+    },
+    {
+      "case_id": "audio_01",
+      "mime_type": "audio/wav",
+      "task_context": "本地转写音频并保留每段开始和结束时间。",
+      "media_base64": "UklGRjAwMDBXQVZFTE9DS0JPWDphdWRpbw==",
+      "media_sha256": "72161095d33dc7b5e75ef3d2d2f9b2994ded5d206ad096e1b35b44f0d1f8c1e3"
+    },
+    {
+      "case_id": "video_01",
+      "mime_type": "video/mp4",
+      "task_context": "本地转写视频音轨并保留时间戳；不推断画面语义。",
+      "media_base64": "MDAwMGZ0eXBMT0NLQk9YOnZpZGVv",
+      "media_sha256": "5dbc859c05b3fbaee6fa26c79bed568e20a2677d8ec21b001c65c46dbb83c423"
+    }
+  ]
+}

@@ -47,7 +47,10 @@ def _score_block(value: Any, *, name: str) -> dict[str, float]:
 def evaluate_learning_observation(observation: Mapping[str, Any]) -> dict[str, Any]:
     """Return transparent paired-score diagnostics for one teaching session."""
 
-    if not isinstance(observation, Mapping) or observation.get("schema") != INPUT_SCHEMA:
+    if (
+        not isinstance(observation, Mapping)
+        or observation.get("schema") != INPUT_SCHEMA
+    ):
         raise LearningOutcomeError(f"observation schema must be {INPUT_SCHEMA}")
     case_id = str(observation.get("case_id", "")).strip()
     if not case_id:
@@ -104,8 +107,11 @@ def evaluate_learning_observation(observation: Mapping[str, Any]) -> dict[str, A
         "claim_boundary": {
             "scores_are_user_or_fixture_supplied": True,
             "grading_correctness_independently_validated": False,
+            "assessment_independent_from_agent_predictions_verified": False,
+            "prediction_can_self_certify_learning": False,
             "single_record_establishes_causal_learning_effect": False,
             "real_learner_effectiveness_established": False,
+            "external_validation_status": "external_validation_pending",
             "record_declares_real_learner_data": provenance
             == "authorized_real_learner_observation",
         },

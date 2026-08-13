@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import tempfile
 import threading
 from typing import Any, Mapping, Sequence
 
@@ -28,6 +29,7 @@ EVENT_SCHEMA = "teaching_skill_miner.teacher_agent_rollout_event.v1"
 ALLOWED_EVENT_TYPES = frozenset(
     {
         "session_started",
+        "session_archived",
         "turn_started",
         "turn_committed",
         "turn_aborted",
@@ -42,6 +44,10 @@ class TeacherAgentStoreError(RuntimeError):
     """Raised when durable Teaching Agent state cannot be trusted or flushed."""
 
 
+class TeacherAgentStorePurgeCommittedError(TeacherAgentStoreError):
+    """Raised after a purge file replacement whose directory fsync was uncertain."""
+
+
 @dataclass(frozen=True, slots=True)
 class TeacherAgentStoreRecovery:
     """Validated state reconstructed from the latest per-session checkpoints."""
@@ -50,6 +56,7 @@ class TeacherAgentStoreRecovery:
     start_idempotency_cache: dict[str, dict[str, Any]]
     dangling_turns: tuple[dict[str, Any], ...]
     last_touched_session_id: str | None
+    session_activity_order: tuple[str, ...]
 
 
 def _canonical_bytes(value: Mapping[str, Any]) -> bytes:
@@ -255,7 +262,7 @@ class TeacherAgentStore:
                     "teacher Agent rollout event precedes session_started"
                 )
 
-            # A replacement/eviction is final.  The sole permitted trailing
+            # An explicit replacement/removal is final.  The sole permitted trailing
             # event is an abort of a turn which began *before* replacement;
             # this is how an in-flight remote model call is safely receipted.
             if state["retired"]:
@@ -301,7 +308,33 @@ class TeacherAgentStore:
                 state["active_turn_ids"].remove(turn_id)
                 continue
 
+            if event_type == "session_archived":
+                if state["active_turn_ids"]:
+                    raise TeacherAgentStoreError(
+                        "teacher Agent rollout archives a session with an active turn"
+                    )
+                if not isinstance(event.get("data", {}).get("record"), Mapping):
+                    raise TeacherAgentStoreError(
+                        "teacher Agent rollout session archive lacks a record"
+                    )
+                # Archiving is a memory-management event, not a lifecycle stop.
+                # A later lazy load may therefore append normal turn events.
+                continue
+
             if event_type == "session_stopped":
+                if (
+                    event.get("data", {}).get("remove_session") is True
+                    and event.get("data", {}).get("reason")
+                    == "active_session_capacity_eviction"
+                ):
+                    # Releases before durable archives represented a capacity
+                    # eviction as removal.  It was never an explicit user
+                    # deletion, so replay it as a resumable archive marker.
+                    if state["active_turn_ids"]:
+                        raise TeacherAgentStoreError(
+                            "teacher Agent rollout archives a session with an active turn"
+                        )
+                    continue
                 state["terminal"] = True
                 if event.get("data", {}).get("remove_session") is True:
                     state["retired"] = True
@@ -521,6 +554,105 @@ class TeacherAgentStore:
                 "teacher Agent rollout flush failed after one reopen retry"
             ) from last_error
 
+    def purge_sessions(self, session_ids: Sequence[str]) -> dict[str, int]:
+        """Atomically compact all events belonging to the selected sessions.
+
+        This is a narrow data-subject-rights operation, not a lifecycle event:
+        an ordinary stop/removal receipt intentionally retains history, while a
+        verified permanent deletion must remove it.  Remaining events are
+        re-sequenced and re-hashed as one new authoritative chain.
+        """
+
+        selected = {
+            _required_string(value, field_name="session_id") for value in session_ids
+        }
+        if not selected:
+            return {"sessions": 0, "events": 0}
+        with self._lock:
+            if self._poisoned:
+                raise TeacherAgentStoreError(
+                    "teacher Agent rollout store is unavailable after a failed barrier"
+                )
+            known = {str(event["session_id"]) for event in self._events}
+            selected_present = selected.intersection(known)
+            if not selected_present:
+                return {"sessions": 0, "events": 0}
+            retained_source = [
+                deepcopy(event)
+                for event in self._events
+                if event["session_id"] not in selected_present
+            ]
+            rebuilt: list[dict[str, Any]] = []
+            previous_hash: str | None = None
+            for sequence, original in enumerate(retained_source, start=1):
+                event = deepcopy(original)
+                event["seq"] = sequence
+                event["previous_hash"] = previous_hash
+                event.pop("hash", None)
+                event["hash"] = _event_hash(event)
+                previous_hash = event["hash"]
+                rebuilt.append(event)
+            self._validate_event_lifecycle(rebuilt)
+            payload = b"".join(_canonical_bytes(event) + b"\n" for event in rebuilt)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+            temporary_name = ""
+            published = False
+            try:
+                with os.fdopen(descriptor, "r+b") as stream:
+                    self._lock_stream(stream)
+                    try:
+                        stream.seek(0, os.SEEK_END)
+                        if stream.tell() != self._file_size:
+                            raise TeacherAgentStoreError(
+                                "teacher Agent rollout store has another active writer"
+                            )
+                        temporary_descriptor, temporary_name = tempfile.mkstemp(
+                            prefix=f".{self.path.name}.purge-",
+                            suffix=".tmp",
+                            dir=self.path.parent,
+                        )
+                        with os.fdopen(temporary_descriptor, "wb") as temporary:
+                            os.fchmod(temporary.fileno(), 0o600)
+                            temporary.write(payload)
+                            temporary.flush()
+                            os.fsync(temporary.fileno())
+                        os.replace(temporary_name, self.path)
+                        temporary_name = ""
+                        published = True
+                        directory_descriptor = os.open(self.path.parent, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_descriptor)
+                        finally:
+                            os.close(directory_descriptor)
+                    finally:
+                        self._unlock_stream(stream)
+            except OSError as exc:
+                if published:
+                    self._events = rebuilt
+                    self._last_hash = previous_hash
+                    self._next_seq = len(rebuilt) + 1
+                    self._file_size = len(payload)
+                    raise TeacherAgentStorePurgeCommittedError(
+                        "teacher Agent session purge was published but its directory "
+                        "durability is uncertain"
+                    ) from exc
+                raise TeacherAgentStoreError(
+                    "teacher Agent session purge could not be committed"
+                ) from exc
+            finally:
+                if temporary_name:
+                    try:
+                        os.unlink(temporary_name)
+                    except FileNotFoundError:
+                        pass
+            removed_events = len(self._events) - len(rebuilt)
+            self._events = rebuilt
+            self._last_hash = previous_hash
+            self._next_seq = len(rebuilt) + 1
+            self._file_size = len(payload)
+            return {"sessions": len(selected_present), "events": removed_events}
+
     def recover(self) -> TeacherAgentStoreRecovery:
         """Recover each session from its latest checkpoint and replay its tail."""
 
@@ -546,9 +678,18 @@ class TeacherAgentStore:
                     pending_turns[turn_key] = deepcopy(event)
                 elif event["event_type"] in {"turn_committed", "turn_aborted"}:
                     pending_turns.pop(turn_key, None)
-            if event["event_type"] != "session_stopped" or not event["data"].get(
-                "remove_session"
-            ):
+            is_archive = event["event_type"] == "session_archived" or (
+                event["event_type"] == "session_stopped"
+                and event["data"].get("remove_session") is True
+                and event["data"].get("reason")
+                == "active_session_capacity_eviction"
+            )
+            is_explicit_removal = (
+                event["event_type"] == "session_stopped"
+                and event["data"].get("remove_session") is True
+                and not is_archive
+            )
+            if not is_archive and not is_explicit_removal:
                 last_active_order[session_id] = index
 
         recovered: dict[str, dict[str, Any]] = {}
@@ -571,12 +712,17 @@ class TeacherAgentStore:
                 event_record = event["data"].get("record")
                 if event_type in {
                     "session_started",
+                    "session_archived",
                     "turn_committed",
                     "context_checkpoint",
                 } and isinstance(event_record, Mapping):
                     record = deepcopy(dict(event_record))
                 elif event_type == "session_stopped":
-                    if event["data"].get("remove_session") is True:
+                    if (
+                        event["data"].get("remove_session") is True
+                        and event["data"].get("reason")
+                        != "active_session_capacity_eviction"
+                    ):
                         record = None
                     elif isinstance(event_record, Mapping):
                         record = deepcopy(dict(event_record))
@@ -589,6 +735,15 @@ class TeacherAgentStore:
                 recovered,
                 key=lambda session_id: last_active_order.get(session_id, -1),
             )
+        activity_order = tuple(
+            sorted(
+                recovered,
+                key=lambda session_id: (
+                    last_active_order.get(session_id, -1),
+                    session_id,
+                ),
+            )
+        )
         return TeacherAgentStoreRecovery(
             session_records=recovered,
             start_idempotency_cache=start_cache,
@@ -599,4 +754,17 @@ class TeacherAgentStore:
                 )
             ),
             last_touched_session_id=last_touched_session_id,
+            session_activity_order=activity_order,
         )
+
+    def recover_session(self, session_id: str) -> dict[str, Any] | None:
+        """Return one current authoritative record for lazy dashboard loading.
+
+        Recovery replays a stable event snapshot and therefore cannot expose a
+        partial append or resurrect a session that was explicitly removed.
+        """
+
+        normalized = _required_string(session_id, field_name="session_id")
+        recovery = self.recover()
+        record = recovery.session_records.get(normalized)
+        return deepcopy(record) if record is not None else None

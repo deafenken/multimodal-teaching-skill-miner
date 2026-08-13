@@ -186,6 +186,8 @@ class TeacherAgentTests(unittest.TestCase):
         spec = session["goal"]["knowledge_spec"]
         self.assertEqual(spec["status"], "teacher_provided")
         self.assertTrue(spec["claim_boundary"]["authoritative_for_runtime_grading"])
+        self.assertEqual(spec["authority"]["status"], "teacher_asserted")
+        self.assertTrue(spec["authority"]["authoritative_for_runtime_grading"])
         self.assertFalse(spec["claim_boundary"]["independently_verified_by_system"])
         self.assertEqual(
             spec["rubric_criteria"][0]["knowledge_component"], "状态转移"
@@ -201,6 +203,7 @@ class TeacherAgentTests(unittest.TestCase):
         )
         spec = session["goal"]["knowledge_spec"]
         self.assertEqual(spec["status"], "not_provided")
+        self.assertEqual(spec["authority"]["status"], "not_provided")
         self.assertFalse(spec["claim_boundary"]["authoritative_for_runtime_grading"])
         self.assertFalse(
             spec["claim_boundary"]["model_memory_is_authoritative_when_absent"]

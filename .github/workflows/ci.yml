@@ -8,6 +8,175 @@ permissions:
   contents: read
 
 jobs:
+  console:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/console
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/console/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm test
+      - run: npm run typecheck
+      - run: node ../../scripts/start_teacher_agent_console.mjs --lifecycle-self-test
+      - run: node ../../scripts/build_teacher_agent_console_runtime.mjs --self-test
+      - run: node ../../scripts/package_teacher_agent_macos.mjs --embedded-runtime-self-test
+      - run: npm run build:runtime
+
+  console-browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/console/package-lock.json
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install locked Console dependencies
+        working-directory: apps/console
+        run: npm ci
+      - name: Install Playwright runner and browser engines
+        run: |
+          python -m pip install --require-hashes -r deploy/production/playwright-requirements.lock
+          python -m playwright install --with-deps chromium firefox webkit
+      - name: Build isolated sealed production runtime
+        working-directory: apps/console
+        run: npm run build:runtime
+      - name: Smoke production runtime in Chromium, Firefox, and WebKit
+        run: python scripts/run_teacher_agent_console_cross_browser_smoke.py
+
+  api-contract:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: teachlab_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d teachlab_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      POSTGRES_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/teachlab_test
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/api/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+
+  production-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Build the release wheel used by the API image
+        run: |
+          python -m pip install -e ".[recognition,dev]"
+          mkdir -p dist-ci
+          sh scripts/build_release_wheel.sh dist-ci
+      - name: Build digest-pinned production images
+        run: |
+          wheel=$(find dist-ci -maxdepth 1 -type f -name '*.whl' -print)
+          test -n "$wheel" && test "$(printf '%s\n' "$wheel" | wc -l)" -eq 1
+          wheel_sha=$(sha256sum "$wheel" | awk '{print $1}')
+          docker build --pull \
+            --file docker/teachlab_api.Dockerfile \
+            --build-arg NODE_BUILD_IMAGE=node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 \
+            --build-arg PYTHON_RUNTIME_IMAGE=python:3.11-slim-bookworm@sha256:d29f48a31a8b408ed19272ca1e7b10ebae13b240a27e862d3d4217c528e2e0c3 \
+            --build-arg PROJECT_WHEEL="$wheel" \
+            --build-arg PROJECT_WHEEL_SHA256="$wheel_sha" \
+            --build-arg TEACHLAB_RELEASE_VERSION=1.2.0 \
+            --build-arg TEACHLAB_RELEASE_ID="$GITHUB_SHA" \
+            --tag teachlab-api:ci .
+          docker build --pull \
+            --file docker/teachlab_console.Dockerfile \
+            --build-arg NODE_BUILD_IMAGE=node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 \
+            --build-arg NODE_RUNTIME_IMAGE=node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 \
+            --build-arg TEACHLAB_RELEASE_VERSION=1.2.0 \
+            --build-arg TEACHLAB_RELEASE_ID="$GITHUB_SHA" \
+            --tag teachlab-console:ci .
+      - name: Run production artifact self-checks
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/python teachlab-api:ci \
+            -m teaching_skill_miner.teacher_agent_gateway_worker --self-check
+          docker run --rm --entrypoint /usr/local/bin/python teachlab-api:ci \
+            -m teaching_skill_miner.teacher_agent_safeguarding_supervisor --self-check
+          console_id=$(docker run --detach \
+            teachlab-console:ci)
+          trap 'docker rm --force "$console_id" >/dev/null 2>&1 || true' EXIT
+          for attempt in $(seq 1 30); do
+            if docker exec "$console_id" node -e \
+              "fetch('http://127.0.0.1:3000/health').then(async r=>{const b=await r.json();if(!r.ok||b.version!=='1.2.0'||b.release_id!=='${GITHUB_SHA}')process.exit(1)})"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$console_id"
+          exit 1
+      - name: Render and verify the exact production topology
+        env:
+          TEACHLAB_CADDY_IMAGE: caddy@sha256:1111111111111111111111111111111111111111111111111111111111111111
+          TEACHLAB_CONSOLE_IMAGE: teachlab-console@sha256:2222222222222222222222222222222222222222222222222222222222222222
+          TEACHLAB_API_IMAGE: teachlab-api@sha256:3333333333333333333333333333333333333333333333333333333333333333
+          TEACHLAB_ACME_EMAIL: ops@example.invalid
+          TEACHLAB_PUBLIC_HOST: console.example.invalid
+          TEACHLAB_OIDC_ISSUER: https://identity.example.invalid
+          TEACHLAB_OIDC_AUDIENCE: teachlab-api
+          TEACHLAB_OIDC_CLIENT_ID: teachlab-console
+          TEACHLAB_ACCOUNT_AAL2_ACR_VALUES: urn:example:aal2
+          TEACHLAB_TEACHER_ENTITLEMENT_DIRECTORY_URL: https://entitlements.example.invalid/v1/teacher/snapshot
+          TEACHLAB_TEACHER_ENTITLEMENT_POLICY_ID: teacher-mutations
+          TEACHLAB_TEACHER_ENTITLEMENT_POLICY_VERSION: v1
+          TEACHLAB_REMOTE_SUBJECT_POLICY_ID: school-policy
+          TEACHLAB_REMOTE_SUBJECT_POLICY_VERSION: v1
+          TEACHLAB_PROVIDER_POLICY_ID: approved-provider
+          TEACHLAB_PROVIDER_POLICY_VERSION: v1
+          TEACHLAB_PROVIDER_PROCESSING_REGION: configured-region
+          TEACHLAB_PROVIDER_RETENTION_DAYS: "7"
+          TEACHLAB_PROVIDER_DELETION_STATUS: outside_service_control_subject_to_provider_policy
+          TEACHLAB_PROVIDER_DOCUMENTATION_URL: https://provider.example.invalid/privacy
+          TEACHLAB_SAFEGUARDING_LOCALE: zh-CN
+          TEACHLAB_SAFEGUARDING_DISPATCH_URL: https://safeguarding.example.invalid/v1/cases
+          TEACHLAB_SAFEGUARDING_DISPATCH_POLICY_VERSION: school-routing-v1
+          TEACHLAB_SAFEGUARDING_RETENTION_POLICY_VERSION: closed-case-retention-v1
+          TEACHLAB_SAFEGUARDING_RETENTION_MINIMUM_CLOSED_AGE_SECONDS: "7776000"
+          TEACHLAB_SAFEGUARDING_RETENTION_MAXIMUM_CASES_PER_RUN: "128"
+          TEACHLAB_SAFEGUARDING_RETENTION_DEPLOYMENT_CONTEXT_SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          TEACHLAB_SECRETS_DIR: /private/teachlab/secrets
+        run: |
+          docker compose -f deploy/production/compose.yaml config > /tmp/teachlab-rendered-compose.yaml
+          python scripts/verify_teacher_agent_deployment.py \
+            --compose /tmp/teachlab-rendered-compose.yaml \
+            --caddyfile deploy/production/Caddyfile
+
   tests:
     runs-on: ubuntu-latest
     strategy:
@@ -15,12 +184,11 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[recognition,dev]"
       - run: python -m pytest
       - run: python scripts/run_teacher_agent_multiturn_benchmark.py --validate-only
@@ -30,21 +198,44 @@ jobs:
 
   package-and-privacy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
           cache: pip
-      - run: python -m pip install --upgrade pip
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            apps/api/package-lock.json
+            apps/console/package-lock.json
       - run: python -m pip install -e ".[recognition,dev]"
       - run: python scripts/audit_repository_privacy.py
       - run: sudo apt-get update && sudo apt-get install --yes ffmpeg
       - run: sh scripts/build_release_acceptance.sh
-      - uses: actions/upload-artifact@v4
+      - name: Generate Python environment SBOM
+        run: python scripts/generate_python_environment_sbom.py --output artifacts/python-environment.cdx.json
+      - name: Generate Console dependency SBOM
+        working-directory: apps/console
+        run: npm sbom --package-lock-only --sbom-format cyclonedx > ../../artifacts/console.cdx.json
+      - name: Generate API dependency SBOM
+        working-directory: apps/api
+        run: npm sbom --package-lock-only --sbom-format cyclonedx > ../../artifacts/api.cdx.json
+      - name: Attest release wheel provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/*.whl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: teaching-skill-miner-release-candidate
           path: |
             dist/*.whl
             artifacts/release_acceptance_*.json
+            artifacts/*.cdx.json
           if-no-files-found: error

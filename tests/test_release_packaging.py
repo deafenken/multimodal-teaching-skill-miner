@@ -234,6 +234,9 @@ class ReleasePackagingTests(unittest.TestCase):
         build_script = (project_root / "scripts/build_release_wheel.sh").read_text(
             encoding="utf-8"
         )
+        verify_script = (project_root / "scripts/verify_release_wheel.sh").read_text(
+            encoding="utf-8"
+        )
         dashboard_script = (project_root / "scripts/run_dashboard.sh").read_text(
             encoding="utf-8"
         )
@@ -241,6 +244,20 @@ class ReleasePackagingTests(unittest.TestCase):
             project_root / "scripts/verify_wheel_allowlist.py"
         ).read_text(encoding="utf-8")
         self.assertIn("include-package-data = false", pyproject)
+        core_dependencies = pyproject.split("dependencies = [", 1)[1].split(
+            "]\n", 1
+        )[0]
+        recognition_dependencies = pyproject.split("recognition = [", 1)[1].split(
+            "]\n", 1
+        )[0]
+        self.assertIn('"cryptography>=42,<47"', core_dependencies)
+        self.assertNotIn("cryptography", recognition_dependencies)
+        core_install = next(
+            line
+            for line in verify_script.splitlines()
+            if 'core-venv/bin/python" -m pip install' in line
+        )
+        self.assertNotIn("--no-deps", core_install)
         dev_dependencies = pyproject.split("dev = [", 1)[1].split("]\n", 1)[0]
         self.assertIn('"Pillow>=10,<13"', dev_dependencies)
         self.assertNotIn('"data/transcripts/*.json"', pyproject)
@@ -248,6 +265,15 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertNotIn('"schema/*.json"', pyproject)
         self.assertNotIn('"configs/*.json"', pyproject)
         self.assertNotIn('find "$repo_root/$public_directory"', build_script)
+        self.assertIn(
+            "LC_ALL=C find \"$repo_root/teaching_skill_miner\"",
+            build_script,
+        )
+        self.assertIn("LC_ALL=C sort |", build_script)
+        self.assertIn(
+            'LC_ALL=C sort "$repo_root/release/public_json_resources.txt"',
+            build_script,
+        )
         self.assertIn('"private_demo.html"', pyproject)
         self.assertIn('"private_skill_demo.css"', pyproject)
         self.assertIn('"private_skill_demo.js"', pyproject)
@@ -260,6 +286,14 @@ class ReleasePackagingTests(unittest.TestCase):
         for filename in PUBLIC_DATA_FILES:
             self.assertIn(f"data/{filename}", pyproject)
             self.assertIn(f"data/{filename}", build_script)
+        self.assertIn(
+            "teacher_agent_dialogue_quality_benchmark_v1.json",
+            PUBLIC_DATA_FILES,
+        )
+        self.assertIn(
+            "teacher_agent_dialogue_quality_predictions_fixture_v1.json",
+            PUBLIC_DATA_FILES,
+        )
         self.assertIn("python_command=${PYTHON:-python3}", dashboard_script)
         self.assertIn(
             '"$python_command" -m teaching_skill_miner dashboard', dashboard_script
@@ -331,6 +365,8 @@ class ReleasePackagingTests(unittest.TestCase):
             "teacher-agent-outcome-evaluate",
             "teacher-agent-demo",
             "teacher-agent-dashboard",
+            "teacher-agent-backup",
+            "teacher-agent-restore-drill",
         ):
             with (
                 self.subTest(command=command),

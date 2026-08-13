@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import csv
 from hashlib import sha256
+import importlib
 import io
 import json
+import hmac
+import os
+import re
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -65,8 +72,17 @@ from .human_eval import skill_review_fingerprint, summarize_human_review
 from .llm_backend import refine_skill_with_api
 from .miner import mine_skill
 from .models import validate_skill, validate_transcript
-from .multimodal import VIDEO_EXTENSIONS, analyze_video, enrich_transcript_with_multimodal
+from .multimodal import (
+    VIDEO_EXTENSIONS,
+    analyze_video,
+    enrich_transcript_with_multimodal,
+)
 from .longform_multimodal import process_longform_dataset
+from .episode_skill import (
+    mine_episode_dataset,
+    validate_episode_artifact,
+)
+from .episode_distillation import write_episode_libraries_from_manifest
 from .learner_effect_study import (
     analyze_learner_effect_study,
     generate_learner_effect_study_package,
@@ -158,6 +174,10 @@ from .teacher_agent_dashboard import (
     serve_teacher_agent_dashboard,
     teacher_agent_dashboard_self_check,
 )
+from .teacher_agent_data_rights import (
+    restore_encrypted_local_backup,
+    write_encrypted_local_backup,
+)
 from .teacher_agent_live import LiveAgentOptions
 from .teacher_agent_benchmark import (
     benchmark_exit_code,
@@ -170,11 +190,14 @@ from .teacher_agent_benchmark_v2 import (
     validate_benchmark_inputs,
 )
 from .teacher_agent_outcomes import evaluate_learning_observation
+from .teacher_agent_curriculum_signing import CurriculumSigningKeyring
 
 
 def _mine(transcript: dict[str, Any], backend: str) -> dict[str, Any]:
     baseline = mine_skill(transcript)
-    skill = refine_skill_with_api(transcript, baseline) if backend == "api" else baseline
+    skill = (
+        refine_skill_with_api(transcript, baseline) if backend == "api" else baseline
+    )
     skill.setdefault("mining_metadata", {})["backend"] = backend
     return skill
 
@@ -203,6 +226,41 @@ def command_mine(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_mine_episode_skills(args: argparse.Namespace) -> int:
+    result = mine_episode_dataset(
+        args.manifest,
+        args.output,
+        min_episode_seconds=args.min_episode_seconds,
+        max_episode_seconds=args.max_episode_seconds,
+        target_episode_seconds=args.target_episode_seconds,
+        lexical_window=args.lexical_window,
+    )
+    manifest = result["manifest"]
+    receipt = result["receipt"]
+    summary = {
+        "manifest": str(Path(result["manifest_path"]).resolve()),
+        "receipt": str(Path(result["receipt_path"]).resolve()),
+        "video_count": manifest["video_count"],
+        "episode_count": manifest["episode_count"],
+        "evaluation_passed_count": receipt["evaluation_passed_count"],
+        "internal_evaluation_is_accuracy": False,
+        "episode_gold_established": False,
+        "expert_skill_quality_established": False,
+        "recognition_accuracy_established": False,
+        "teaching_effectiveness_established": False,
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0 if manifest["episode_count"] > 0 else 2
+
+
+def command_validate_episode(args: argparse.Namespace) -> int:
+    artifact = read_json(args.path)
+    transcript = read_json(args.transcript) if args.transcript else None
+    report = validate_episode_artifact(artifact, transcript=transcript)
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["valid"] else 2
+
+
 def command_distill_general_skill(args: argparse.Namespace) -> int:
     skill_root = Path(args.skill_root).expanduser().resolve()
     if not skill_root.is_dir():
@@ -211,9 +269,7 @@ def command_distill_general_skill(args: argparse.Namespace) -> int:
     pattern_path = Path(pattern)
     if pattern_path.is_absolute() or ".." in pattern_path.parts:
         raise ValueError("--pattern must stay inside --skill-root")
-    skill_paths = sorted(
-        path for path in skill_root.glob(pattern) if path.is_file()
-    )
+    skill_paths = sorted(path for path in skill_root.glob(pattern) if path.is_file())
     if not skill_paths:
         raise FileNotFoundError(
             f"no Skill files matched {pattern!r} beneath {skill_root}"
@@ -253,9 +309,7 @@ def command_distill_general_skill(args: argparse.Namespace) -> int:
     )
     distillation = general_skill.get("distillation", {})
     receipt = build_general_skill_receipt(general_skill, evaluation)
-    receipt_path = write_json(
-        output_dir / "general_skill_receipt.json", receipt
-    )
+    receipt_path = write_json(output_dir / "general_skill_receipt.json", receipt)
     summary = {
         "general_skill": str(skill_path.resolve()),
         "evaluation": str(evaluation_path.resolve()),
@@ -314,7 +368,9 @@ def command_teach(args: argparse.Namespace) -> int:
     validation = validate_skill(skill)
     if not validation.valid:
         raise ValueError("invalid skill: " + "; ".join(validation.errors))
-    lesson = execute_skill(skill, concept=args.concept, learner_level=args.learner_level)
+    lesson = execute_skill(
+        skill, concept=args.concept, learner_level=args.learner_level
+    )
     if args.output:
         target = write_text(args.output, lesson)
         print(f"teaching process: {target}")
@@ -339,6 +395,10 @@ def command_validate(args: argparse.Namespace) -> int:
         result = validate_transcript(value)
     elif args.kind == "skill":
         result = validate_skill(value)
+    elif args.kind == "episode":
+        report = validate_episode_artifact(value)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["valid"] else 2
     else:
         result = validate_general_skill(value)
     print(json.dumps(result.as_dict(), ensure_ascii=False, indent=2))
@@ -347,9 +407,14 @@ def command_validate(args: argparse.Namespace) -> int:
 
 def _script_for_complete_session(skill: dict[str, Any]) -> list[dict[str, str]]:
     total = len(skill.get("procedure", [])) + len(skill.get("verification", []))
-    responses = [{"response": "我还不确定，可能需要一个更简单的例子。", "signal": "not_achieved"}]
+    responses = [
+        {"response": "我还不确定，可能需要一个更简单的例子。", "signal": "not_achieved"}
+    ]
     responses.extend(
-        {"response": f"第 {index + 1} 次作答：我能说明关键条件、理由和一个例子。", "signal": "achieved"}
+        {
+            "response": f"第 {index + 1} 次作答：我能说明关键条件、理由和一个例子。",
+            "signal": "achieved",
+        }
         for index in range(total)
     )
     return responses
@@ -362,7 +427,9 @@ def command_interact(args: argparse.Namespace) -> int:
         raise ValueError("invalid skill: " + "; ".join(validation.errors))
     if args.script:
         script = read_json(args.script)
-        responses = script.get("responses", script) if isinstance(script, dict) else script
+        responses = (
+            script.get("responses", script) if isinstance(script, dict) else script
+        )
         result = run_scripted_session(
             skill,
             concept=args.concept,
@@ -374,14 +441,18 @@ def command_interact(args: argparse.Namespace) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["completed"] else 2
 
-    runtime = SkillRuntime(skill, concept=args.concept, learner_level=args.learner_level)
+    runtime = SkillRuntime(
+        skill, concept=args.concept, learner_level=args.learner_level
+    )
     while not runtime.completed:
         turn = runtime.current_turn()
         print(f"\n教师[{turn['teacher_action']}]：{turn['teacher_message']}")
         print(f"观察标准：{turn['expected_signal']}")
         response = input("学生：").strip()
         judgement = input("是否达到观察标准？[y/n] ").strip().lower()
-        outcome = runtime.observe(response, "achieved" if judgement in {"y", "yes", "是"} else "not_achieved")
+        outcome = runtime.observe(
+            response, "achieved" if judgement in {"y", "yes", "是"} else "not_achieved"
+        )
         if outcome["event"].get("fallback_message"):
             print("教师回退：" + outcome["event"]["fallback_message"])
     result = runtime.snapshot()
@@ -599,8 +670,7 @@ def command_teacher_agent_demo(args: argparse.Namespace) -> int:
         "rounds_completed": session["round"],
         "skill_switch_count": session["control"]["skill_switch_count"],
         "selected_skill_ids": [
-            item["action"]["primary_skill"]["skill_id"]
-            for item in session["history"]
+            item["action"]["primary_skill"]["skill_id"] for item in session["history"]
         ],
         "explicit_student_state": session["student_state"],
         "evaluation_passed": evaluation["passed"],
@@ -635,6 +705,19 @@ def command_teacher_agent_dashboard(args: argparse.Namespace) -> int:
             model=args.model,
         )
         client = DeepSeekClient(config)
+    learner_key_secret = (
+        _read_learner_key_secret(args.learner_key_secret_file)
+        if args.learner_key_secret_file
+        else None
+    )
+    consent_key = (
+        _read_learner_key_secret(args.consent_signing_secret_file)
+        if args.consent_signing_secret_file
+        else None
+    )
+    temporal_provider = _load_temporal_transcription_provider(
+        args.temporal_transcription_provider_factory
+    )
     return serve_teacher_agent_dashboard(
         library,
         demo_input,
@@ -656,7 +739,321 @@ def command_teacher_agent_dashboard(args: argparse.Namespace) -> int:
             args.free_text_benchmark_receipt
         ),
         store_path=args.session_store,
+        syllabus_store_path=args.syllabus_store,
+        project_store_path=args.project_store,
+        resource_index_store_path=args.resource_index_store,
+        resource_review_store_path=args.resource_review_store,
+        learning_record_store_path=args.learning_record_store,
+        metacognition_store_path=args.metacognition_store,
+        adjudication_store_path=args.adjudication_store,
+        consent_store_path=args.consent_store,
+        consent_signing_secret=consent_key,
+        remote_processing_region=args.remote_processing_region,
+        remote_provider_retention_days=args.remote_provider_retention_days,
+        temporal_transcription_provider=temporal_provider,
+        learner_key_secret=learner_key_secret,
+        learner_tenant_id=args.learner_tenant_id,
     )
+
+
+def _load_temporal_transcription_provider(factory_reference: str | None) -> Any:
+    """Load one explicitly configured local adapter without putting secrets in CLI."""
+
+    if factory_reference is None:
+        return None
+    reference = str(factory_reference).strip()
+    if reference != factory_reference or reference.count(":") != 1:
+        raise ValueError(
+            "temporal transcription provider factory must be module.path:callable"
+        )
+    module_name, attribute_name = reference.split(":", 1)
+    identifier = r"[A-Za-z_]\w*"
+    if (
+        not module_name
+        or any(
+            re.fullmatch(identifier, part) is None for part in module_name.split(".")
+        )
+        or re.fullmatch(identifier, attribute_name) is None
+    ):
+        raise ValueError(
+            "temporal transcription provider factory must be module.path:callable"
+        )
+    try:
+        module = importlib.import_module(module_name)
+        factory = getattr(module, attribute_name)
+    except (ImportError, AttributeError) as exc:
+        raise ValueError(
+            "temporal transcription provider factory cannot be imported"
+        ) from exc
+    if not callable(factory):
+        raise ValueError("temporal transcription provider factory is not callable")
+    try:
+        provider = factory()
+    except Exception as exc:  # noqa: BLE001 - deployment plugins fail closed.
+        raise ValueError("temporal transcription provider factory failed") from exc
+    if provider is None or not callable(getattr(provider, "analyze", None)):
+        raise ValueError(
+            "temporal transcription provider factory returned an invalid adapter"
+        )
+    return provider
+
+
+_MAX_BACKUP_PASSPHRASE_FILE_BYTES = 4096
+_MAX_BACKUP_PASSPHRASE_CHARS = 1024
+_MAX_LEARNER_KEY_SECRET_BYTES = 4096
+
+
+def _read_learner_key_secret(path: str | Path) -> bytes:
+    """Read raw key material from a bounded mode-0600 non-symlink file."""
+
+    source = Path(path).expanduser()
+    try:
+        before = source.lstat()
+    except OSError as exc:
+        raise ValueError("learner-key secret file cannot be read") from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or stat.S_IMODE(before.st_mode) & 0o077
+        or not 32 <= before.st_size <= _MAX_LEARNER_KEY_SECRET_BYTES
+    ):
+        raise ValueError(
+            "learner-key secret file must be a bounded private regular file"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(source, flags)
+        try:
+            after = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(after.st_mode)
+                or stat.S_IMODE(after.st_mode) & 0o077
+                or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                raise ValueError(
+                    "learner-key secret file must be a private regular file"
+                )
+            material = os.read(descriptor, _MAX_LEARNER_KEY_SECRET_BYTES + 1)
+        finally:
+            os.close(descriptor)
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError("learner-key secret file cannot be read") from exc
+    if not 32 <= len(material) <= _MAX_LEARNER_KEY_SECRET_BYTES:
+        raise ValueError("learner-key secret must contain 32 to 4096 bytes")
+    return material
+
+
+def _read_backup_passphrase(path: str | Path) -> str:
+    """Read a bounded passphrase from a private, non-symlink regular file."""
+
+    source = Path(path).expanduser()
+    try:
+        before = source.lstat()
+    except OSError as exc:
+        raise ValueError("backup passphrase file cannot be read") from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or stat.S_IMODE(before.st_mode) & 0o077
+        or before.st_size > _MAX_BACKUP_PASSPHRASE_FILE_BYTES
+    ):
+        raise ValueError(
+            "backup passphrase file must be a bounded private regular file"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(source, flags)
+        try:
+            after = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(after.st_mode)
+                or stat.S_IMODE(after.st_mode) & 0o077
+                or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                raise ValueError(
+                    "backup passphrase file must be a private regular file"
+                )
+            material = os.read(descriptor, _MAX_BACKUP_PASSPHRASE_FILE_BYTES + 1)
+        finally:
+            os.close(descriptor)
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError("backup passphrase file cannot be read") from exc
+    if len(material) > _MAX_BACKUP_PASSPHRASE_FILE_BYTES:
+        raise ValueError("backup passphrase file is too large")
+    try:
+        value = material.decode("utf-8").rstrip("\r\n")
+    except UnicodeDecodeError as exc:
+        raise ValueError("backup passphrase file must be UTF-8") from exc
+    if "\r" in value or "\n" in value or len(value) > _MAX_BACKUP_PASSPHRASE_CHARS:
+        raise ValueError("backup passphrase must be one bounded line")
+    if len(value) < 12:
+        raise ValueError("backup passphrase must contain at least 12 characters")
+    return value
+
+
+def command_teacher_agent_backup(args: argparse.Namespace) -> int:
+    if bool(args.learning_record_store) != bool(args.learner_key_secret_file):
+        raise ValueError(
+            "learning-record store and learner-key secret file must be backed up "
+            "together"
+        )
+    if args.metacognition_store and not args.learning_record_store:
+        raise ValueError(
+            "metacognition store must be backed up with its learning-record store"
+        )
+    if bool(args.consent_store) != bool(args.consent_signing_secret_file):
+        raise ValueError(
+            "remote-consent store and signing secret file must be backed up together"
+        )
+    stores = {
+        "projects": args.project_store,
+        "syllabi": args.syllabus_store,
+        "resources": args.resource_index_store,
+        "resource_reviews": args.resource_review_store,
+    }
+    if args.session_store:
+        session_path = Path(args.session_store).expanduser().resolve(strict=False)
+        stores["sessions"] = session_path
+        stores["harness_streams"] = session_path.with_name(
+            session_path.name + ".harness_streams"
+        )
+    if args.learning_record_store:
+        learning_path = (
+            Path(args.learning_record_store).expanduser().resolve(strict=False)
+        )
+        stores["learning_records"] = learning_path
+        stores["learning_erasure_tombstones"] = learning_path.with_name(
+            f".{learning_path.name}.erasure_tombstones.json"
+        )
+        stores["learning_process_lock"] = learning_path.with_name(
+            f".{learning_path.name}.lock"
+        )
+    if args.metacognition_store:
+        metacognition_path = (
+            Path(args.metacognition_store).expanduser().resolve(strict=False)
+        )
+        stores["learner_metacognition"] = metacognition_path
+        stores["learner_metacognition_erasure"] = metacognition_path.with_name(
+            f".{metacognition_path.name}.erased.json"
+        )
+        stores["learner_metacognition_process_lock"] = metacognition_path.with_name(
+            f".{metacognition_path.name}.lock"
+        )
+    if args.adjudication_store:
+        stores["assessment_adjudication"] = (
+            Path(args.adjudication_store).expanduser().resolve(strict=False)
+        )
+    if args.consent_store:
+        stores["remote_consent"] = (
+            Path(args.consent_store).expanduser().resolve(strict=False)
+        )
+    if args.consent_signing_secret_file:
+        _read_learner_key_secret(args.consent_signing_secret_file)
+        stores["remote_consent_signing_secret"] = args.consent_signing_secret_file
+    if args.learner_key_secret_file:
+        # Validate the file before allowing the encrypted backup primitive to
+        # read it.  The raw HMAC secret is recoverability-critical and appears
+        # only inside the AES-GCM ciphertext, never in a receipt or bootstrap.
+        _read_learner_key_secret(args.learner_key_secret_file)
+        stores["learner_key_secret"] = args.learner_key_secret_file
+    receipt = write_encrypted_local_backup(
+        args.output,
+        stores,
+        passphrase=_read_backup_passphrase(args.passphrase_file),
+    )
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _read_curriculum_scope_key(path: str | Path) -> bytes:
+    source = Path(path).expanduser()
+    try:
+        before = source.lstat()
+    except OSError as exc:
+        raise ValueError("curriculum scope-key file cannot be read") from exc
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or stat.S_IMODE(before.st_mode) & 0o077
+        or before.st_size > 256
+    ):
+        raise ValueError("curriculum scope-key file must be a private regular file")
+    descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        after = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(after.st_mode)
+            or stat.S_IMODE(after.st_mode) & 0o077
+            or (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise ValueError(
+                "curriculum scope-key file must be a private regular file"
+            )
+        material = os.read(descriptor, 257)
+    finally:
+        os.close(descriptor)
+    if len(material) > 256:
+        raise ValueError("curriculum scope-key file is too large")
+    stripped = material.strip()
+    if len(stripped) == 32:
+        return stripped
+    try:
+        decoded = base64.b64decode(stripped, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError("curriculum scope-key file must contain 32 raw bytes or base64") from exc
+    if len(decoded) != 32:
+        raise ValueError("curriculum scope-key must contain exactly 32 bytes")
+    return decoded
+
+
+def command_teacher_agent_curriculum_key(args: argparse.Namespace) -> int:
+    """Offline server-operator key lifecycle; never exposed through browser APIs."""
+
+    private_root = Path(args.private_root).expanduser()
+    try:
+        metadata = private_root.lstat()
+    except OSError as exc:
+        raise ValueError("worker private root cannot be read") from exc
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ValueError("worker private root must be a non-symlink directory")
+    root = private_root.resolve()
+    scope_key = _read_curriculum_scope_key(args.scope_key_file)
+    keyring = CurriculumSigningKeyring(
+        root / "syllabi" / ".curriculum_signing_keyring.json",
+        integrity_key=hmac.new(
+            scope_key,
+            b"teachlab-gateway-worker-v1\0curriculum-signing-keyring-v1",
+            sha256,
+        ).digest(),
+    )
+    if args.action == "rotate":
+        keyring.rotate()
+    elif args.action == "revoke":
+        if not args.key_id:
+            raise ValueError("--key-id is required for revoke")
+        keyring.revoke(args.key_id)
+    elif args.key_id:
+        raise ValueError("--key-id is accepted only for revoke")
+    print(json.dumps(keyring.public_status(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def command_teacher_agent_restore_drill(args: argparse.Namespace) -> int:
+    try:
+        payload = Path(args.backup).expanduser().resolve().read_bytes()
+    except OSError as exc:
+        raise ValueError("encrypted backup cannot be read") from exc
+    receipt = restore_encrypted_local_backup(
+        payload,
+        passphrase=_read_backup_passphrase(args.passphrase_file),
+        destination=args.destination,
+    )
+    print(json.dumps(receipt, ensure_ascii=False, indent=2))
+    return 0
 
 
 def command_audit(args: argparse.Namespace) -> int:
@@ -740,9 +1137,7 @@ def command_fetch_full_videos(args: argparse.Namespace) -> int:
         "raw_media_publicly_exported": False,
         "publisher_media_hashes_pinned": False,
         "public_receipt": (
-            str(Path(args.public_receipt).resolve())
-            if args.public_receipt
-            else None
+            str(Path(args.public_receipt).resolve()) if args.public_receipt else None
         ),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -761,7 +1156,11 @@ def _load_skills(directory: str | Path) -> list[dict[str, Any]]:
 def command_benchmark(args: argparse.Namespace) -> int:
     skills = _load_skills(args.skills)
     cases_payload = read_json(resolve_resource_path(args.cases))
-    cases = cases_payload.get("cases", cases_payload) if isinstance(cases_payload, dict) else cases_payload
+    cases = (
+        cases_payload.get("cases", cases_payload)
+        if isinstance(cases_payload, dict)
+        else cases_payload
+    )
     report = benchmark_transfer(skills, cases)
     if args.output:
         write_json(args.output, report)
@@ -775,7 +1174,9 @@ def command_pipeline(args: argparse.Namespace) -> int:
     is_video_input = input_path.suffix.lower() in VIDEO_EXTENSIONS
     if input_path.suffix.lower() == ".json":
         if args.transcript:
-            raise ValueError("--transcript is only valid when the primary input is a video")
+            raise ValueError(
+                "--transcript is only valid when the primary input is a video"
+            )
         transcript = read_json(input_path)
         validation = validate_transcript(transcript)
         if not validation.valid:
@@ -785,7 +1186,10 @@ def command_pipeline(args: argparse.Namespace) -> int:
         provided_transcript_path = Path(args.transcript) if args.transcript else None
         if provided_transcript_path is not None and not is_video_input:
             raise ValueError("--transcript requires a video as the primary input")
-        if provided_transcript_path is not None and provided_transcript_path.suffix.lower() == ".json":
+        if (
+            provided_transcript_path is not None
+            and provided_transcript_path.suffix.lower() == ".json"
+        ):
             transcript = read_json(provided_transcript_path)
             validation = validate_transcript(transcript)
             if not validation.valid:
@@ -829,7 +1233,11 @@ def command_pipeline(args: argparse.Namespace) -> int:
             observations = None
             if args.observations:
                 observation_payload = read_json(args.observations)
-                observations = observation_payload.get("observations", observation_payload) if isinstance(observation_payload, dict) else observation_payload
+                observations = (
+                    observation_payload.get("observations", observation_payload)
+                    if isinstance(observation_payload, dict)
+                    else observation_payload
+                )
             analysis = analyze_video(
                 input_path,
                 transcript,
@@ -842,7 +1250,9 @@ def command_pipeline(args: argparse.Namespace) -> int:
             transcript = enrich_transcript_with_multimodal(transcript, analysis)
     skill = _mine(transcript, args.backend)
     evaluation = evaluate_skill(skill, transcript)
-    lesson = execute_skill(skill, concept=args.concept, learner_level=args.learner_level)
+    lesson = execute_skill(
+        skill, concept=args.concept, learner_level=args.learner_level
+    )
     session = run_scripted_session(
         skill,
         concept=args.concept,
@@ -855,15 +1265,15 @@ def command_pipeline(args: argparse.Namespace) -> int:
     write_text(output / "teaching_process.md", lesson)
     write_json(output / "interactive_session.json", session)
     multimodal = transcript.get("multimodal", {})
-    language_evidence = multimodal.get("language", {}) if isinstance(multimodal, dict) else {}
+    language_evidence = (
+        multimodal.get("language", {}) if isinstance(multimodal, dict) else {}
+    )
     summary = {
         "video_id": transcript["video_id"],
         "skill_id": skill["skill_id"],
         "transcript_source_mode": transcript_source_mode,
         "multimodal_analysis_performed": bool(multimodal),
-        "language_evidence_status": language_evidence.get(
-            "status", "transcript_only"
-        ),
+        "language_evidence_status": language_evidence.get("status", "transcript_only"),
         "audio_content_verified": bool(
             language_evidence.get("audio_content_verified", False)
         ),
@@ -876,7 +1286,13 @@ def command_pipeline(args: argparse.Namespace) -> int:
             "learning_effectiveness_established"
         ],
         "fallback_count": session["fallback_count"],
-        "artifacts": ["transcript.json", "skill.json", "evaluation.json", "teaching_process.md", "interactive_session.json"],
+        "artifacts": [
+            "transcript.json",
+            "skill.json",
+            "evaluation.json",
+            "teaching_process.md",
+            "interactive_session.json",
+        ],
     }
     write_json(output / "pipeline_summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
@@ -891,7 +1307,11 @@ def command_multimodal(args: argparse.Namespace) -> int:
     observations = None
     if args.observations:
         payload = read_json(args.observations)
-        observations = payload.get("observations", payload) if isinstance(payload, dict) else payload
+        observations = (
+            payload.get("observations", payload)
+            if isinstance(payload, dict)
+            else payload
+        )
     analysis = analyze_video(
         args.video,
         transcript,
@@ -1138,9 +1558,7 @@ def command_import_teachobs_asr_results(args: argparse.Namespace) -> int:
         json.dumps(
             {
                 "private_audit": str(outputs["audit"].resolve()),
-                "private_coverage_matrix": str(
-                    outputs["coverage_matrix"].resolve()
-                ),
+                "private_coverage_matrix": str(outputs["coverage_matrix"].resolve()),
                 "asr_job_count": audit["job_count"],
                 "valid_asr_result_count": audit["valid_result_count"],
                 "pending_asr_result_count": audit["pending_result_count"],
@@ -1238,9 +1656,7 @@ def command_prepare_teachobs_double_annotation(args: argparse.Namespace) -> int:
         "selected_lesson_count": manifest["selection"]["lesson_count"],
         "assigned_scene_count": manifest["selection"]["scene_item_count"],
         "code_count": len(manifest["codes"]),
-        "assignment_orders_differ": manifest["blindness"][
-            "assignment_orders_differ"
-        ],
+        "assignment_orders_differ": manifest["blindness"]["assignment_orders_differ"],
         "operational_definitions_complete": manifest["operational_codebook"][
             "operational_definitions_complete"
         ],
@@ -1275,13 +1691,9 @@ def command_analyze_teachobs_double_annotation(args: argparse.Namespace) -> int:
     overall = report["overall"]
     summary = {
         "private_output": str(Path(args.output).resolve()),
-        "validated_annotator_count": report["annotation_validation"][
-            "annotator_count"
-        ],
+        "validated_annotator_count": report["annotation_validation"]["annotator_count"],
         "human_completion": report["annotation_validation"]["human_completion"],
-        "completion_basis": report["annotation_validation"][
-            "human_completion_basis"
-        ],
+        "completion_basis": report["annotation_validation"]["human_completion_basis"],
         "human_identity_independently_verified": report["annotation_validation"][
             "human_identity_independently_verified"
         ],
@@ -1307,9 +1719,7 @@ def command_prepare_teachobs_media(args: argparse.Namespace) -> int:
         lesson_ids=args.lesson_id,
         source_override_manifest_path=args.source_override_manifest,
         acknowledge_source_terms=args.acknowledge_source_terms,
-        acknowledge_override_source_terms=(
-            args.acknowledge_override_source_terms
-        ),
+        acknowledge_override_source_terms=(args.acknowledge_override_source_terms),
         dry_run=args.dry_run,
         include_audio_statistics=not args.no_audio_statistics,
         include_visual_evidence=not args.no_visual_evidence,
@@ -1346,9 +1756,7 @@ def command_prepare_teachobs_media(args: argparse.Namespace) -> int:
     if result["mode"] != "dry_run":
         summary.update(
             {
-                "media_complete": result["media"]["manifest"][
-                    "selected_complete"
-                ],
+                "media_complete": result["media"]["manifest"]["selected_complete"],
                 "feature_complete": result["features"]["manifest"]["complete"],
             }
         )
@@ -1380,9 +1788,7 @@ def command_teachobs_multimodal_benchmark(args: argparse.Namespace) -> int:
         "visual_feature_layout": result["private_feature_audit"][
             "visual_feature_layout"
         ],
-        "arm_metrics": {
-            name: arm["metrics"] for name, arm in result["arms"].items()
-        },
+        "arm_metrics": {name: arm["metrics"] for name, arm in result["arms"].items()},
         "paired_cluster_bootstrap": result["paired_cluster_bootstrap"],
         "valid_claim": result["evidence_scope"]["valid_claim"],
         "frozen_model_export": result.get("frozen_model_export"),
@@ -1398,11 +1804,7 @@ def _teachobs_lockbox_arm_models(values: list[str]) -> dict[str, str]:
     models: dict[str, str] = {}
     for value in values:
         arm, separator, path = value.partition("=")
-        if (
-            not separator
-            or arm not in TEACHOBS_LOCKBOX_ARM_ORDER
-            or not path.strip()
-        ):
+        if not separator or arm not in TEACHOBS_LOCKBOX_ARM_ORDER or not path.strip():
             raise ValueError(
                 "--arm-model must use one of "
                 f"{','.join(TEACHOBS_LOCKBOX_ARM_ORDER)}=PATH"
@@ -1444,15 +1846,11 @@ def command_prepare_teachobs_lockbox_preregistration(
     summary = {
         "output": str(output.resolve()),
         "expected_development_profile": args.expected_development_profile,
-        "preregistration_fingerprint": validation[
-            "preregistration_fingerprint"
+        "preregistration_fingerprint": validation["preregistration_fingerprint"],
+        "frozen_artifact_set_complete": validation["frozen_artifact_set_complete"],
+        "per_arm_label_thresholds_bound": validation["gates"][
+            "per_arm_label_thresholds_bound"
         ],
-        "frozen_artifact_set_complete": validation[
-            "frozen_artifact_set_complete"
-        ],
-        "per_arm_label_thresholds_bound": validation[
-            "gates"
-        ]["per_arm_label_thresholds_bound"],
         "preregistration_execution_ready": False,
         "external_registration_signature_verified": False,
         "target_execution_evidence_complete": False,
@@ -1489,12 +1887,33 @@ def command_longform_multimodal_dataset(args: argparse.Namespace) -> int:
         report["video_count"]
         and report["aggregate"]["full_timeline_sampling_passed_count"]
         == report["video_count"]
-        and report["aggregate"][
-            "caption_timeline_media_binding_verified_count"
-        ]
+        and report["aggregate"]["caption_timeline_media_binding_verified_count"]
         == report["video_count"]
     )
     return 0 if passed else 2
+
+
+def command_distill_episodes(args: argparse.Namespace) -> int:
+    results = write_episode_libraries_from_manifest(
+        args.manifest,
+        args.output_dir,
+        min_seconds=args.min_seconds,
+        target_seconds=args.target_seconds,
+        max_seconds=args.max_seconds,
+    )
+    payload = {
+        "output_dir": str(Path(args.output_dir).resolve()),
+        "video_count": len(results),
+        "episode_count": sum(int(item["episode_count"]) for item in results),
+        "libraries": results,
+        "episode_boundaries_heuristic": True,
+        "semantic_clustering_established": False,
+        "expert_skill_gold_established": False,
+        "recognition_accuracy_established": False,
+        "teaching_effectiveness_established": False,
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
 
 
 def command_multimodal_ablation(args: argparse.Namespace) -> int:
@@ -1519,9 +1938,7 @@ def command_multimodal_ablation(args: argparse.Namespace) -> int:
     for video_id, arms in payloads.items():
         for arm in ARM_ORDER:
             skill, evaluation = arms[arm]
-            skill_path = write_json(
-                skill_dir / f"{video_id}.{arm}.skill.json", skill
-            )
+            skill_path = write_json(skill_dir / f"{video_id}.{arm}.skill.json", skill)
             evaluation_path = write_json(
                 evaluation_dir / f"{video_id}.{arm}.evaluation.json", evaluation
             )
@@ -1537,9 +1954,7 @@ def command_multimodal_ablation(args: argparse.Namespace) -> int:
             {
                 "report": str(target.resolve()),
                 "paired_lecture_count": report["paired_lecture_count"],
-                "aggregate_internal_metrics": report[
-                    "aggregate_internal_metrics"
-                ],
+                "aggregate_internal_metrics": report["aggregate_internal_metrics"],
                 "recognition_accuracy_established": False,
                 "causal_multimodal_gain_established": False,
             },
@@ -1580,7 +1995,9 @@ def command_real_data_audit(args: argparse.Namespace) -> int:
     if args.output:
         write_json(args.output, manifest)
     print(json.dumps(audit, ensure_ascii=False, indent=2))
-    return 0 if audit["invalid_video_count"] == 0 and audit["provenance_verified"] else 2
+    return (
+        0 if audit["invalid_video_count"] == 0 and audit["provenance_verified"] else 2
+    )
 
 
 def command_real_recognition_benchmark(args: argparse.Namespace) -> int:
@@ -1597,12 +2014,16 @@ def command_real_recognition_benchmark(args: argparse.Namespace) -> int:
         "usable_unique_sample_count": report["usable_unique_sample_count"],
         "surrogate_group_count": report["surrogate_group_count"],
         "majority_macro_f1": report["majority_baseline"]["macro_f1"],
-        "encoding_metadata_macro_f1": report["encoding_metadata_nuisance_baseline"]["macro_f1"],
+        "encoding_metadata_macro_f1": report["encoding_metadata_nuisance_baseline"][
+            "macro_f1"
+        ],
         "visual_macro_f1": report["modality_results"]["visual"]["macro_f1"],
         "audio_macro_f1": report["modality_results"]["audio"]["macro_f1"],
         "fusion_macro_f1": report["modality_results"]["fusion"]["macro_f1"],
         "fusion_accuracy": report["modality_results"]["fusion"]["accuracy"],
-        "multimodal_gain_established_on_pilot": report["multimodal_gain_established_on_pilot"],
+        "multimodal_gain_established_on_pilot": report[
+            "multimodal_gain_established_on_pilot"
+        ],
         "multimodal_audio_coverage_valid": report["audio_availability_audit"][
             "eligible_for_multimodal_accuracy_claim"
         ],
@@ -1660,14 +2081,14 @@ def command_dipser_credible_benchmark(args: argparse.Namespace) -> int:
     session = report["session_disjoint"]
     session_metrics = session.get("metrics") or {}
     fusion_metrics = session_metrics.get("fusion") or {}
-    fusion_intervals = (
-        session.get("cluster_bootstrap_95_intervals", {}).get("fusion", {})
+    fusion_intervals = session.get("cluster_bootstrap_95_intervals", {}).get(
+        "fusion", {}
     )
     gain = session.get("fusion_vs_best_unimodal_nested", {}).get("macro_f1", {})
     blocked_summary = {}
-    for name, evaluation in report.get("blocked_descriptive", {}).get(
-        "evaluations", {}
-    ).items():
+    for name, evaluation in (
+        report.get("blocked_descriptive", {}).get("evaluations", {}).items()
+    ):
         fusion = evaluation.get("modalities", {}).get("fusion", {})
         blocked_summary[name] = {
             "evaluated_fold_count": evaluation.get("evaluated_fold_count"),
@@ -1676,9 +2097,7 @@ def command_dipser_credible_benchmark(args: argparse.Namespace) -> int:
             "fusion_cell_equal_weighted": fusion.get(
                 "test_cell_session_equal_weighted"
             ),
-            "descriptive_fusion_deltas": evaluation.get(
-                "descriptive_fusion_deltas"
-            ),
+            "descriptive_fusion_deltas": evaluation.get("descriptive_fusion_deltas"),
         }
     summary = {
         "protocol": report["protocol"],
@@ -1689,9 +2108,13 @@ def command_dipser_credible_benchmark(args: argparse.Namespace) -> int:
         "valid_session_count": report["valid_session_count"],
         "valid_participant_count": report["valid_participant_count"],
         "session_disjoint_fusion_accuracy": fusion_metrics.get("accuracy"),
-        "session_disjoint_fusion_accuracy_95_ci": fusion_intervals.get("accuracy_95_ci"),
+        "session_disjoint_fusion_accuracy_95_ci": fusion_intervals.get(
+            "accuracy_95_ci"
+        ),
         "session_disjoint_fusion_macro_f1": fusion_metrics.get("macro_f1"),
-        "session_disjoint_fusion_macro_f1_95_ci": fusion_intervals.get("macro_f1_95_ci"),
+        "session_disjoint_fusion_macro_f1_95_ci": fusion_intervals.get(
+            "macro_f1_95_ci"
+        ),
         "fusion_vs_nested_best_unimodal_macro_f1_delta": gain.get("observed_delta"),
         "gain_delta_95_ci": gain.get("paired_group_bootstrap_95_ci"),
         "gain_one_sided_group_permutation_p": gain.get(
@@ -1727,8 +2150,7 @@ def command_human_evaluate(args: argparse.Namespace) -> int:
         skills = _load_skills(args.skills)
         expected_skill_ids = sorted(str(skill["skill_id"]) for skill in skills)
         expected_skill_fingerprints = {
-            str(skill["skill_id"]): skill_review_fingerprint(skill)
-            for skill in skills
+            str(skill["skill_id"]): skill_review_fingerprint(skill) for skill in skills
         }
     report = summarize_human_review(
         args.input,
@@ -1803,9 +2225,7 @@ def _summary_markdown(summary: dict[str, Any], reports: list[dict[str, Any]]) ->
 
 
 def command_demo(args: argparse.Namespace) -> int:
-    manifest_path = resolve_resource_path(
-        args.manifest or "data/dataset_manifest.json"
-    )
+    manifest_path = resolve_resource_path(args.manifest or "data/dataset_manifest.json")
     manifest = read_json(manifest_path)
     root = resolve_manifest_root(manifest_path, manifest)
     output = Path(args.output)
@@ -1818,7 +2238,9 @@ def command_demo(args: argparse.Namespace) -> int:
         skill = _mine(transcript, args.backend)
         report = evaluate_skill(skill, transcript)
         write_json(output / "skills" / f"{item['video_id']}.skill.json", skill)
-        write_json(output / "evaluations" / f"{item['video_id']}.evaluation.json", report)
+        write_json(
+            output / "evaluations" / f"{item['video_id']}.evaluation.json", report
+        )
         skills.append(skill)
         reports.append(report)
     summary = evaluate_collection(skills, reports, manifest)
@@ -1836,15 +2258,16 @@ def command_demo(args: argparse.Namespace) -> int:
     summary["transfer_mean_delta"] = benchmark["mean_delta"]
     summary["dataset_structure_passed"] = audit["dataset_structure_passed"]
     summary["formal_empirical_ready"] = audit["formal_empirical_ready"]
-    summary["passed"] = core_passed and benchmark["passed"] and audit["dataset_structure_passed"]
+    summary["passed"] = (
+        core_passed and benchmark["passed"] and audit["dataset_structure_passed"]
+    )
     review_path = output / "human_review.csv"
     review_template_created = _write_human_review(review_path, skills)
     human_report = summarize_human_review(
         review_path,
         expected_skill_ids=sorted(str(skill["skill_id"]) for skill in skills),
         expected_skill_fingerprints={
-            str(skill["skill_id"]): skill_review_fingerprint(skill)
-            for skill in skills
+            str(skill["skill_id"]): skill_review_fingerprint(skill) for skill in skills
         },
     )
     summary["human_validation_completed"] = human_report["passed"]
@@ -1856,9 +2279,7 @@ def command_demo(args: argparse.Namespace) -> int:
     summary["research_validation_complete"] = False
     research_validation_pending = []
     if not audit["formal_empirical_ready"]:
-        research_validation_pending.append(
-            "formal_full_transcripts_or_audited_asr"
-        )
+        research_validation_pending.append("formal_full_transcripts_or_audited_asr")
     if not human_report["passed"]:
         research_validation_pending.append("independent_human_review")
     research_validation_pending.extend(
@@ -1878,12 +2299,18 @@ def command_demo(args: argparse.Namespace) -> int:
     write_json(output / "human_review_status.json", human_report)
     write_text(output / "summary.md", _summary_markdown(summary, reports))
     demo_skill = next(
-        (skill for skill in skills if skill.get("source", {}).get("video_id") == args.demo_video_id),
+        (
+            skill
+            for skill in skills
+            if skill.get("source", {}).get("video_id") == args.demo_video_id
+        ),
         skills[0],
     )
     write_text(
         output / "teaching_demo.md",
-        execute_skill(demo_skill, concept=args.concept, learner_level=args.learner_level),
+        execute_skill(
+            demo_skill, concept=args.concept, learner_level=args.learner_level
+        ),
     )
     write_json(
         output / "interactive_demo.json",
@@ -2035,14 +2462,20 @@ def _load_strict_feature_bundle(
     if audit.get("dataset_fingerprint") != expected_dataset_fingerprint:
         raise ValueError("manifest dataset_fingerprint does not match its records")
     if payload.get("dataset_fingerprint") != expected_dataset_fingerprint:
-        raise ValueError("feature bundle dataset_fingerprint does not match the manifest")
+        raise ValueError(
+            "feature bundle dataset_fingerprint does not match the manifest"
+        )
     sample_ids = payload.get("sample_ids")
     matrices = payload.get("matrices")
     names = payload.get("feature_names_by_modality")
     provenance = payload.get("feature_provenance")
     if not isinstance(sample_ids, list):
         raise ValueError("feature bundle requires sample_ids")
-    if not isinstance(matrices, dict) or not isinstance(names, dict) or not isinstance(provenance, dict):
+    if (
+        not isinstance(matrices, dict)
+        or not isinstance(names, dict)
+        or not isinstance(provenance, dict)
+    ):
         raise ValueError(
             "feature bundle requires matrices, feature_names_by_modality, and feature_provenance objects"
         )
@@ -2056,7 +2489,9 @@ def _load_strict_feature_bundle(
         raise ValueError("manifest records must be JSON objects")
     record_ids = [record.get("sample_id") for record in records]
     if record_ids != sample_ids:
-        raise ValueError("manifest records and feature bundle rows are not in exact order")
+        raise ValueError(
+            "manifest records and feature bundle rows are not in exact order"
+        )
     if any(not isinstance(name, str) or not name for name in names):
         raise ValueError("feature modality names must be non-empty strings")
     normalized_names: dict[str, list[str]] = {}
@@ -2067,11 +2502,16 @@ def _load_strict_feature_bundle(
             or any(not isinstance(value, str) or not value for value in values)
             or len(set(values)) != len(values)
         ):
-            raise ValueError(f"feature names for {name} must be unique non-empty strings")
+            raise ValueError(
+                f"feature names for {name} must be unique non-empty strings"
+            )
         normalized_names[name] = list(values)
     matrix_modalities = set(matrices)
     provenance_modalities = set(provenance)
-    if set(normalized_names) != matrix_modalities or matrix_modalities != provenance_modalities:
+    if (
+        set(normalized_names) != matrix_modalities
+        or matrix_modalities != provenance_modalities
+    ):
         raise ValueError("feature bundle modality schemas are inconsistent")
     algorithm = payload.get("fingerprint_algorithm")
     if algorithm is None:
@@ -2086,7 +2526,9 @@ def _load_strict_feature_bundle(
             == payload.get("feature_bundle_fingerprint")
         )
         if not legacy_dipser:
-            raise ValueError("feature bundle requires an explicit fingerprint_algorithm")
+            raise ValueError(
+                "feature bundle requires an explicit fingerprint_algorithm"
+            )
         algorithm = "dipser_feature_bundle_v1"
     strict_fingerprint = strict_feature_bundle_fingerprint(
         records, normalized_names, matrices, provenance
@@ -2101,16 +2543,25 @@ def _load_strict_feature_bundle(
             or not isinstance(archive_fingerprint, str)
             or len(archive_fingerprint) != 64
         ):
-            raise ValueError("legacy DIPSER fingerprint is only valid for DIPSER visual/sensor bundles")
+            raise ValueError(
+                "legacy DIPSER fingerprint is only valid for DIPSER visual/sensor bundles"
+            )
         expected_bundle_fingerprint = dipser_feature_bundle_fingerprint(
             records, normalized_names, matrices
         )
     else:
-        raise ValueError(f"unsupported feature bundle fingerprint_algorithm: {algorithm}")
+        raise ValueError(
+            f"unsupported feature bundle fingerprint_algorithm: {algorithm}"
+        )
     if payload.get("feature_bundle_fingerprint") != expected_bundle_fingerprint:
-        raise ValueError("feature_bundle_fingerprint does not match exact bundle contents")
+        raise ValueError(
+            "feature_bundle_fingerprint does not match exact bundle contents"
+        )
     manifest_bundle_fingerprint = audit.get("feature_bundle_fingerprint")
-    if manifest_bundle_fingerprint is not None and manifest_bundle_fingerprint != expected_bundle_fingerprint:
+    if (
+        manifest_bundle_fingerprint is not None
+        and manifest_bundle_fingerprint != expected_bundle_fingerprint
+    ):
         raise ValueError("manifest and feature bundle fingerprints disagree")
     raw_binding = payload.get("raw_source_binding")
     raw_binding_summary: dict[str, Any] | None = None
@@ -2126,24 +2577,30 @@ def _load_strict_feature_bundle(
         raise ValueError(
             "raw-generated bundles require both raw_source_binding and extractor_suite"
         )
-    return matrices, normalized_names, provenance, {
-        "input_fingerprint_algorithm": algorithm,
-        "input_feature_bundle_fingerprint": expected_bundle_fingerprint,
-        "strict_feature_bundle_fingerprint": strict_fingerprint,
-        "legacy_input_upgraded_to_strict_binding": algorithm != "strict_feature_bundle_v1",
-        "raw_source_binding_verified": raw_binding_summary is not None,
-        "raw_source_binding_fingerprint": (
-            raw_binding_summary["binding_fingerprint"]
-            if raw_binding_summary is not None
-            else None
-        ),
-        "extractor_suite_binding_verified": extractor_suite_summary is not None,
-        "extractor_configuration_fingerprint": (
-            extractor_suite_summary["configuration_fingerprint"]
-            if extractor_suite_summary is not None
-            else None
-        ),
-    }
+    return (
+        matrices,
+        normalized_names,
+        provenance,
+        {
+            "input_fingerprint_algorithm": algorithm,
+            "input_feature_bundle_fingerprint": expected_bundle_fingerprint,
+            "strict_feature_bundle_fingerprint": strict_fingerprint,
+            "legacy_input_upgraded_to_strict_binding": algorithm
+            != "strict_feature_bundle_v1",
+            "raw_source_binding_verified": raw_binding_summary is not None,
+            "raw_source_binding_fingerprint": (
+                raw_binding_summary["binding_fingerprint"]
+                if raw_binding_summary is not None
+                else None
+            ),
+            "extractor_suite_binding_verified": extractor_suite_summary is not None,
+            "extractor_configuration_fingerprint": (
+                extractor_suite_summary["configuration_fingerprint"]
+                if extractor_suite_summary is not None
+                else None
+            ),
+        },
+    )
 
 
 def command_extract_strict_features(args: argparse.Namespace) -> int:
@@ -2315,9 +2772,7 @@ def command_create_freeze_registration(args: argparse.Namespace) -> int:
         model_fingerprint=model.model_fingerprint,
         claim_contract_fingerprint=artifact["claim_contract_fingerprint"],
         training_dataset_fingerprint=model.training_dataset_fingerprint,
-        training_feature_bundle_fingerprint=(
-            model.training_feature_bundle_fingerprint
-        ),
+        training_feature_bundle_fingerprint=(model.training_feature_bundle_fingerprint),
         external_dataset_fingerprint=manifest_summary["dataset_fingerprint"],
         external_feature_bundle_fingerprint=str(
             feature_binding["strict_feature_bundle_fingerprint"]
@@ -2458,9 +2913,7 @@ def command_prepare_learner_effect_study(args: argparse.Namespace) -> int:
         comparator_description=args.comparator_description,
         data_origin=args.data_origin,
         ethics_approval_id=args.ethics_approval_id,
-        informed_consent_or_approved_waiver=(
-            args.informed_consent_or_approved_waiver
-        ),
+        informed_consent_or_approved_waiver=(args.informed_consent_or_approved_waiver),
         preregistration_frozen_before_allocation=(
             args.preregistration_frozen_before_allocation
         ),
@@ -2502,15 +2955,15 @@ def command_analyze_learner_effect_study(args: argparse.Namespace) -> int:
                 "randomized_participant_count": result["design"][
                     "randomized_participant_count"
                 ],
-                "primary_outcome_coverage_fraction": result[
-                    "coverage_and_attrition"
-                ]["primary_outcome_coverage_fraction"],
+                "primary_outcome_coverage_fraction": result["coverage_and_attrition"][
+                    "primary_outcome_coverage_fraction"
+                ],
                 "adjusted_standardized_effect": result["primary_analysis"][
                     "adjusted_standardized_effect"
                 ],
-                "percentile_95_ci": result["primary_analysis"][
-                    "cluster_bootstrap"
-                ]["percentile_95_ci"],
+                "percentile_95_ci": result["primary_analysis"]["cluster_bootstrap"][
+                    "percentile_95_ci"
+                ],
                 "eligible_for_external_governance_review": result[
                     "eligible_for_external_governance_review"
                 ],
@@ -2615,9 +3068,7 @@ def command_evaluate_frozen_recognition(args: argparse.Namespace) -> int:
         "claim_gate_results": report["claim_gate_results"],
         "all_frozen_claim_gates_passed": report["all_frozen_claim_gates_passed"],
         "freeze_registration": report["freeze_registration"],
-        "one_time_consumption_receipt": report[
-            "one_time_consumption_receipt"
-        ],
+        "one_time_consumption_receipt": report["one_time_consumption_receipt"],
         "deployment_accuracy_established": report["deployment_accuracy_established"],
         "predictions_written_to_private_artifact": True,
     }
@@ -2626,11 +3077,17 @@ def command_evaluate_frozen_recognition(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="tsm", description="Teaching Skill Mining and Evaluation System")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser = argparse.ArgumentParser(
+        prog="tsm", description="Teaching Skill Mining and Evaluation System"
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"%(prog)s {__version__}"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    preprocess_parser = subparsers.add_parser("preprocess", help="convert media/subtitle/text to transcript JSON")
+    preprocess_parser = subparsers.add_parser(
+        "preprocess", help="convert media/subtitle/text to transcript JSON"
+    )
     preprocess_parser.add_argument("input")
     preprocess_parser.add_argument("--video-id", required=True)
     preprocess_parser.add_argument("--course-id", required=True)
@@ -2642,9 +3099,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     mine_parser = subparsers.add_parser("mine", help="extract one Teaching Skill")
     mine_parser.add_argument("--transcript", required=True)
-    mine_parser.add_argument("--backend", choices=("heuristic", "api"), default="heuristic")
+    mine_parser.add_argument(
+        "--backend", choices=("heuristic", "api"), default="heuristic"
+    )
     mine_parser.add_argument("--output", required=True)
     mine_parser.set_defaults(func=command_mine)
+
+    episode_mine_parser = subparsers.add_parser(
+        "mine-episode-skills",
+        help="partition long-form transcripts and mine one provenance-bound Skill per episode",
+    )
+    episode_mine_parser.add_argument(
+        "--manifest", required=True, help="long-form dataset_manifest.json"
+    )
+    episode_mine_parser.add_argument("--output", required=True)
+    episode_mine_parser.add_argument("--min-episode-seconds", type=float, default=180.0)
+    episode_mine_parser.add_argument("--max-episode-seconds", type=float, default=900.0)
+    episode_mine_parser.add_argument("--target-episode-seconds", type=float, default=480.0)
+    episode_mine_parser.add_argument("--lexical-window", type=int, default=4)
+    episode_mine_parser.set_defaults(func=command_mine_episode_skills)
 
     distill_general_parser = subparsers.add_parser(
         "distill-general-skill",
@@ -2665,9 +3138,7 @@ def build_parser() -> argparse.ArgumentParser:
     distill_general_parser.add_argument(
         "--per-course-support-threshold", type=float, default=0.6
     )
-    distill_general_parser.add_argument(
-        "--minimum-course-count", type=int, default=2
-    )
+    distill_general_parser.add_argument("--minimum-course-count", type=int, default=2)
     distill_general_parser.add_argument(
         "--minimum-skills-per-course", type=int, default=5
     )
@@ -2691,7 +3162,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_general_parser.add_argument("--output")
     evaluate_general_parser.set_defaults(func=command_evaluate_general_skill)
 
-    teach_parser = subparsers.add_parser("teach", help="execute a Teaching Skill for a new concept")
+    teach_parser = subparsers.add_parser(
+        "teach", help="execute a Teaching Skill for a new concept"
+    )
     teach_parser.add_argument("--skill", required=True)
     teach_parser.add_argument("--concept", required=True)
     teach_parser.add_argument("--learner-level", default="beginner")
@@ -2704,18 +3177,31 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--output")
     evaluate_parser.set_defaults(func=command_evaluate)
 
-    validate_parser = subparsers.add_parser("validate", help="validate a transcript or skill")
+    validate_parser = subparsers.add_parser(
+        "validate", help="validate a transcript, skill, or episode artifact"
+    )
     validate_parser.add_argument(
-        "kind", choices=("transcript", "skill", "general-skill")
+        "kind", choices=("transcript", "skill", "episode", "general-skill")
     )
     validate_parser.add_argument("path")
     validate_parser.set_defaults(func=command_validate)
 
-    interact_parser = subparsers.add_parser("interact", help="run an executable Skill as a state machine")
+    validate_episode_parser = subparsers.add_parser(
+        "validate-episode-skill", help="validate an episode Skill artifact and provenance"
+    )
+    validate_episode_parser.add_argument("path")
+    validate_episode_parser.add_argument("--transcript")
+    validate_episode_parser.set_defaults(func=command_validate_episode)
+
+    interact_parser = subparsers.add_parser(
+        "interact", help="run an executable Skill as a state machine"
+    )
     interact_parser.add_argument("--skill", required=True)
     interact_parser.add_argument("--concept", required=True)
     interact_parser.add_argument("--learner-level", default="beginner")
-    interact_parser.add_argument("--script", help="JSON response script; omit for terminal interaction")
+    interact_parser.add_argument(
+        "--script", help="JSON response script; omit for terminal interaction"
+    )
     interact_parser.add_argument("--output")
     interact_parser.set_defaults(func=command_interact)
 
@@ -2819,7 +3305,9 @@ def build_parser() -> argparse.ArgumentParser:
     teacher_benchmark_v2_parser.add_argument("--predictions-output")
     teacher_benchmark_v2_parser.add_argument("--output")
     teacher_benchmark_v2_parser.add_argument(
-        "--validate-only", action="store_true", help="only validate input/gold separation"
+        "--validate-only",
+        action="store_true",
+        help="only validate input/gold separation",
     )
     teacher_benchmark_v2_parser.add_argument(
         "--online", action="store_true", help="run the real DeepSeek executor"
@@ -2918,10 +3406,183 @@ def build_parser() -> argparse.ArgumentParser:
             "this append-only JSONL file"
         ),
     )
+    teacher_dashboard_parser.add_argument(
+        "--syllabus-store",
+        default=".private/teaching_syllabi",
+        help=(
+            "directory for private per-syllabus JSON files; each validated "
+            "syllabus is replaced atomically"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--project-store",
+        default=".private/learning_projects",
+        help=(
+            "directory for private learning-project JSON files, durable Chat "
+            "threads, references, notes, and recoverable trash"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--resource-index-store",
+        default=".private/teaching_resource_index",
+        help=(
+            "private content-hash index for bounded page/slide/paragraph "
+            "retrieval; original media is never persisted"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--resource-review-store",
+        default=".private/teaching_resource_reviews",
+        help=(
+            "private authenticated reviewed projections over immutable teaching "
+            "resource descriptors"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--learning-record-store",
+        help=(
+            "private append-only learning schedule store; requires --session-store, "
+            "--learner-key-secret-file, and --learner-tenant-id"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--metacognition-store",
+        help=(
+            "private append-only pre-answer JOL and KC calibration store; "
+            "requires --learning-record-store and the same learner identity settings"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--adjudication-store",
+        help=(
+            "private append-only assessment adjudication store; requires "
+            "--session-store"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--consent-store",
+        help="private atomic server-minted remote-consent receipt store",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--consent-signing-secret-file",
+        help=(
+            "private mode-0600 file containing at least 32 bytes used only to "
+            "sign and bind remote-consent receipts"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--remote-processing-region",
+        default="provider_managed",
+        help="server-declared provider processing region shown before consent",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--remote-provider-retention-days",
+        type=int,
+        default=30,
+        help="server-declared provider retention period shown before consent",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--temporal-transcription-provider-factory",
+        metavar="MODULE:CALLABLE",
+        help=(
+            "zero-argument Python factory for an explicitly configured local "
+            "audio/video timestamped-transcription adapter; when omitted, "
+            "audio/video resource uploads are rejected rather than guessed"
+        ),
+    )
+    teacher_dashboard_parser.add_argument(
+        "--learner-key-secret-file",
+        help="private mode-0600 file containing at least 32 bytes of HMAC key material",
+    )
+    teacher_dashboard_parser.add_argument(
+        "--learner-tenant-id",
+        help="server-side tenant namespace used only as HMAC input",
+    )
     teacher_dashboard_parser.add_argument("--check", action="store_true")
     teacher_dashboard_parser.set_defaults(func=command_teacher_agent_dashboard)
 
-    audit_parser = subparsers.add_parser("audit", help="audit dataset completeness and research readiness")
+    teacher_backup_parser = subparsers.add_parser(
+        "teacher-agent-backup",
+        help="create an encrypted, integrity-checked local Teaching Agent backup",
+    )
+    teacher_backup_parser.add_argument("--output", required=True)
+    teacher_backup_parser.add_argument("--passphrase-file", required=True)
+    teacher_backup_parser.add_argument(
+        "--session-store", default=".private/teacher_agent_console_sessions.jsonl"
+    )
+    teacher_backup_parser.add_argument(
+        "--syllabus-store", default=".private/teaching_syllabi"
+    )
+    teacher_backup_parser.add_argument(
+        "--project-store", default=".private/learning_projects"
+    )
+    teacher_backup_parser.add_argument(
+        "--resource-index-store", default=".private/teaching_resource_index"
+    )
+    teacher_backup_parser.add_argument(
+        "--resource-review-store", default=".private/teaching_resource_reviews"
+    )
+    teacher_backup_parser.add_argument(
+        "--learning-record-store",
+        help=(
+            "configured learning-record JSONL store; requires --learner-key-secret-file"
+        ),
+    )
+    teacher_backup_parser.add_argument(
+        "--metacognition-store",
+        help="configured learner JOL and KC calibration JSONL store",
+    )
+    teacher_backup_parser.add_argument(
+        "--adjudication-store",
+        help="configured append-only assessment adjudication JSONL store",
+    )
+    teacher_backup_parser.add_argument(
+        "--consent-store",
+        help="configured server-minted remote-consent receipt store",
+    )
+    teacher_backup_parser.add_argument(
+        "--consent-signing-secret-file",
+        help="configured private remote-consent signing secret",
+    )
+    teacher_backup_parser.add_argument(
+        "--learner-key-secret-file",
+        help=(
+            "configured private learner-key HMAC secret; requires "
+            "--learning-record-store"
+        ),
+    )
+    teacher_backup_parser.set_defaults(func=command_teacher_agent_backup)
+
+    curriculum_key_parser = subparsers.add_parser(
+        "teacher-agent-curriculum-key",
+        help=(
+            "inspect, rotate, or revoke the server-only curriculum signing keyring"
+        ),
+    )
+    curriculum_key_parser.add_argument(
+        "action", choices=("status", "rotate", "revoke")
+    )
+    curriculum_key_parser.add_argument("--private-root", required=True)
+    curriculum_key_parser.add_argument(
+        "--scope-key-file",
+        required=True,
+        help="mode-0600 file with the worker's stable 32-byte scope data key",
+    )
+    curriculum_key_parser.add_argument("--key-id")
+    curriculum_key_parser.set_defaults(func=command_teacher_agent_curriculum_key)
+
+    teacher_restore_parser = subparsers.add_parser(
+        "teacher-agent-restore-drill",
+        help="decrypt and verify a backup into a new/empty drill directory",
+    )
+    teacher_restore_parser.add_argument("--backup", required=True)
+    teacher_restore_parser.add_argument("--passphrase-file", required=True)
+    teacher_restore_parser.add_argument("--destination", required=True)
+    teacher_restore_parser.set_defaults(func=command_teacher_agent_restore_drill)
+
+    audit_parser = subparsers.add_parser(
+        "audit", help="audit dataset completeness and research readiness"
+    )
     audit_parser.add_argument("--manifest", default="data/dataset_manifest.json")
     audit_parser.add_argument("--output")
     audit_parser.add_argument(
@@ -2969,18 +3630,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--formal-caption-manifest",
         default="artifacts/private/formal_captions/dataset_manifest.json",
     )
-    full_video_parser.add_argument(
-        "--output", default="artifacts/private/full_videos"
-    )
+    full_video_parser.add_argument("--output", default="artifacts/private/full_videos")
     full_video_parser.add_argument("--public-receipt")
     full_video_parser.add_argument("--curl", default="curl")
     full_video_parser.add_argument("--ffprobe", default="ffprobe")
     full_video_parser.add_argument("--connect-timeout", type=int, default=30)
     full_video_parser.add_argument("--download-timeout", type=int, default=14_400)
     full_video_parser.add_argument("--ffprobe-timeout", type=int, default=180)
-    full_video_parser.add_argument(
-        "--acknowledge-source-terms", action="store_true"
-    )
+    full_video_parser.add_argument("--acknowledge-source-terms", action="store_true")
     full_video_parser.set_defaults(func=command_fetch_full_videos)
 
     teachobs_parser = subparsers.add_parser(
@@ -3023,8 +3680,7 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_benchmark_parser.add_argument(
         "--output",
         default=(
-            "artifacts/private/external_datasets/teachobs/"
-            "text_benchmark_result.json"
+            "artifacts/private/external_datasets/teachobs/text_benchmark_result.json"
         ),
     )
     teachobs_benchmark_parser.add_argument(
@@ -3057,8 +3713,7 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_caption_parser.add_argument(
         "--acquisition-receipt",
         default=(
-            "artifacts/private/external_datasets/teachobs/"
-            "acquisition_receipt.json"
+            "artifacts/private/external_datasets/teachobs/acquisition_receipt.json"
         ),
     )
     teachobs_caption_parser.add_argument(
@@ -3128,8 +3783,7 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_asr_prepare_parser.add_argument(
         "--media-manifest",
         default=(
-            "artifacts/private/external_datasets/teachobs/media/"
-            "media_manifest.json"
+            "artifacts/private/external_datasets/teachobs/media/media_manifest.json"
         ),
     )
     teachobs_asr_prepare_parser.add_argument(
@@ -3139,16 +3793,12 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_asr_prepare_parser.add_argument(
         "--caption-audit",
         default=(
-            "artifacts/private/external_datasets/teachobs/captions/"
-            "caption_audit.json"
+            "artifacts/private/external_datasets/teachobs/captions/caption_audit.json"
         ),
     )
     teachobs_asr_prepare_parser.add_argument(
         "--output",
-        default=(
-            "artifacts/private/external_datasets/teachobs/asr/"
-            "job_manifest.json"
-        ),
+        default=("artifacts/private/external_datasets/teachobs/asr/job_manifest.json"),
     )
     teachobs_asr_prepare_parser.add_argument(
         "--public-receipt",
@@ -3197,9 +3847,7 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_asr_prepare_parser.add_argument(
         "--require-all-selected-media", action="store_true"
     )
-    teachobs_asr_prepare_parser.set_defaults(
-        func=command_prepare_teachobs_asr_handoff
-    )
+    teachobs_asr_prepare_parser.set_defaults(func=command_prepare_teachobs_asr_handoff)
 
     teachobs_asr_import_parser = subparsers.add_parser(
         "import-teachobs-asr-results",
@@ -3212,8 +3860,7 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_asr_import_parser.add_argument(
         "--media-manifest",
         default=(
-            "artifacts/private/external_datasets/teachobs/media/"
-            "media_manifest.json"
+            "artifacts/private/external_datasets/teachobs/media/media_manifest.json"
         ),
     )
     teachobs_asr_import_parser.add_argument(
@@ -3223,17 +3870,13 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_asr_import_parser.add_argument(
         "--caption-audit",
         default=(
-            "artifacts/private/external_datasets/teachobs/captions/"
-            "caption_audit.json"
+            "artifacts/private/external_datasets/teachobs/captions/caption_audit.json"
         ),
     )
     teachobs_asr_import_parser.add_argument("--results", required=True)
     teachobs_asr_import_parser.add_argument(
         "--output",
-        default=(
-            "artifacts/private/external_datasets/teachobs/asr/"
-            "import_audit.json"
-        ),
+        default=("artifacts/private/external_datasets/teachobs/asr/import_audit.json"),
     )
     teachobs_asr_import_parser.add_argument(
         "--coverage-matrix",
@@ -3246,9 +3889,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--public-receipt",
         default="artifacts/public/teachobs_asr_receipt.json",
     )
-    teachobs_asr_import_parser.set_defaults(
-        func=command_import_teachobs_asr_results
-    )
+    teachobs_asr_import_parser.set_defaults(func=command_import_teachobs_asr_results)
 
     teachobs_materialize_parser = subparsers.add_parser(
         "materialize-teachobs-transcripts",
@@ -3261,15 +3902,9 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_materialize_parser.add_argument("--media-plan", required=True)
     teachobs_materialize_parser.add_argument("--media-manifest", required=True)
     teachobs_materialize_parser.add_argument("--caption-audit", required=True)
-    teachobs_materialize_parser.add_argument(
-        "--asr-import-audit", required=True
-    )
-    teachobs_materialize_parser.add_argument(
-        "--coverage-matrix", required=True
-    )
-    teachobs_materialize_parser.add_argument(
-        "--asr-job-manifest", required=True
-    )
+    teachobs_materialize_parser.add_argument("--asr-import-audit", required=True)
+    teachobs_materialize_parser.add_argument("--coverage-matrix", required=True)
+    teachobs_materialize_parser.add_argument("--asr-job-manifest", required=True)
     teachobs_materialize_parser.add_argument("--asr-results", required=True)
     teachobs_materialize_parser.add_argument("--output", required=True)
     teachobs_materialize_parser.add_argument("--public-receipt", required=True)
@@ -3285,9 +3920,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     teachobs_asr_hash_parser.add_argument("--model-directory", required=True)
-    teachobs_asr_hash_parser.set_defaults(
-        func=command_hash_teachobs_asr_model
-    )
+    teachobs_asr_hash_parser.set_defaults(func=command_hash_teachobs_asr_model)
 
     teachobs_asr_run_parser = subparsers.add_parser(
         "run-teachobs-asr-gpu",
@@ -3373,12 +4006,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     teachobs_annotation_analyze_parser.add_argument("--manifest", required=True)
-    teachobs_annotation_analyze_parser.add_argument(
-        "--assignment-a", required=True
-    )
-    teachobs_annotation_analyze_parser.add_argument(
-        "--assignment-b", required=True
-    )
+    teachobs_annotation_analyze_parser.add_argument("--assignment-a", required=True)
+    teachobs_annotation_analyze_parser.add_argument("--assignment-b", required=True)
     teachobs_annotation_analyze_parser.add_argument("--output", required=True)
     teachobs_annotation_analyze_parser.add_argument("--public-receipt")
     teachobs_annotation_analyze_parser.set_defaults(
@@ -3413,7 +4042,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="parallel lesson feature workers (1-8; nested worker product capped at 8)",
     )
     teachobs_media_parser.add_argument(
-        "--visual-jobs", type=int, default=1, help="image-metric workers per lesson (1-8)"
+        "--visual-jobs",
+        type=int,
+        default=1,
+        help="image-metric workers per lesson (1-8)",
     )
     teachobs_media_parser.add_argument(
         "--ocr-jobs", type=int, default=1, help="OCR workers per lesson (1-8)"
@@ -3495,8 +4127,7 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_multimodal_parser.add_argument(
         "--feature-manifest",
         default=(
-            "artifacts/private/external_datasets/teachobs/media/"
-            "feature_manifest.json"
+            "artifacts/private/external_datasets/teachobs/media/feature_manifest.json"
         ),
     )
     teachobs_multimodal_parser.add_argument(
@@ -3526,9 +4157,7 @@ def build_parser() -> argparse.ArgumentParser:
             "model artifacts; export does not establish deployment evidence"
         ),
     )
-    teachobs_multimodal_parser.set_defaults(
-        func=command_teachobs_multimodal_benchmark
-    )
+    teachobs_multimodal_parser.set_defaults(func=command_teachobs_multimodal_benchmark)
 
     teachobs_lockbox_parser = subparsers.add_parser(
         "prepare-teachobs-lockbox-preregistration",
@@ -3542,8 +4171,7 @@ def build_parser() -> argparse.ArgumentParser:
     teachobs_lockbox_parser.add_argument(
         "--system-artifact",
         help=(
-            "serialized frozen four-arm system bundle; omit only for a pending "
-            "draft"
+            "serialized frozen four-arm system bundle; omit only for a pending draft"
         ),
     )
     teachobs_lockbox_parser.add_argument(
@@ -3583,13 +4211,17 @@ def build_parser() -> argparse.ArgumentParser:
         func=command_prepare_teachobs_lockbox_preregistration
     )
 
-    benchmark_parser = subparsers.add_parser("benchmark", help="run held-out cross-domain capability tests")
+    benchmark_parser = subparsers.add_parser(
+        "benchmark", help="run held-out cross-domain capability tests"
+    )
     benchmark_parser.add_argument("--skills", default="artifacts/skills")
     benchmark_parser.add_argument("--cases", default="data/evaluation_cases.json")
     benchmark_parser.add_argument("--output")
     benchmark_parser.set_defaults(func=command_benchmark)
 
-    human_parser = subparsers.add_parser("human-evaluate", help="aggregate two-reviewer human validation CSV")
+    human_parser = subparsers.add_parser(
+        "human-evaluate", help="aggregate two-reviewer human validation CSV"
+    )
     human_parser.add_argument("--input", required=True)
     human_parser.add_argument(
         "--skills",
@@ -3599,7 +4231,8 @@ def build_parser() -> argparse.ArgumentParser:
     human_parser.set_defaults(func=command_human_evaluate)
 
     doctor_parser = subparsers.add_parser(
-        "doctor", help="check packaged resources, dependencies, tools, API safety, and readiness"
+        "doctor",
+        help="check packaged resources, dependencies, tools, API safety, and readiness",
     )
     doctor_parser.add_argument("--output")
     doctor_parser.set_defaults(func=command_doctor)
@@ -3658,8 +4291,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--initial-skill",
         default=DEFAULT_PRIVATE_SKILL,
         help=(
-            "initial distilled Skill shown in the browser "
-            "(default: linear_algebra_l03)"
+            "initial distilled Skill shown in the browser (default: linear_algebra_l03)"
         ),
     )
     private_dashboard_parser.add_argument(
@@ -3730,7 +4362,8 @@ def build_parser() -> argparse.ArgumentParser:
     delivery_parser.set_defaults(func=command_verify_delivery)
 
     release_parser = subparsers.add_parser(
-        "release-audit", help="fail closed when a public wheel/zip/directory contains media, secrets, or row-level identities"
+        "release-audit",
+        help="fail closed when a public wheel/zip/directory contains media, secrets, or row-level identities",
     )
     release_parser.add_argument("path")
     release_parser.add_argument("--output")
@@ -3836,19 +4469,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--cluster-unit", choices=("teacher", "classroom"), default="classroom"
     )
     learner_study_parser.add_argument("--cluster-count", type=int, default=6)
-    learner_study_parser.add_argument(
-        "--participants-per-cluster", type=int, default=5
-    )
+    learner_study_parser.add_argument("--participants-per-cluster", type=int, default=5)
     learner_study_parser.add_argument(
         "--randomization-seed", type=int, default=20260723
     )
     learner_study_parser.add_argument("--bootstrap-seed", type=int, default=20260724)
-    learner_study_parser.add_argument(
-        "--bootstrap-replicates", type=int, default=2000
-    )
-    learner_study_parser.add_argument(
-        "--minimum-cluster-count", type=int, default=6
-    )
+    learner_study_parser.add_argument("--bootstrap-replicates", type=int, default=2000)
+    learner_study_parser.add_argument("--minimum-cluster-count", type=int, default=6)
     learner_study_parser.add_argument(
         "--minimum-primary-coverage", type=float, default=0.8
     )
@@ -3925,9 +4552,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_external_evidence_parser.add_argument("--evidence", required=True)
     verify_external_evidence_parser.add_argument("--attestation", required=True)
-    verify_external_evidence_parser.add_argument(
-        "--trusted-public-key", required=True
-    )
+    verify_external_evidence_parser.add_argument("--trusted-public-key", required=True)
     verify_external_evidence_parser.add_argument(
         "--expected-system-artifact",
         required=True,
@@ -3959,11 +4584,16 @@ def build_parser() -> argparse.ArgumentParser:
     frozen_eval_parser.add_argument("--output", required=True)
     frozen_eval_parser.set_defaults(func=command_evaluate_frozen_recognition)
 
-    multimodal_parser = subparsers.add_parser("multimodal", help="align transcript with audio pauses, keyframes, OCR, and classroom observations")
+    multimodal_parser = subparsers.add_parser(
+        "multimodal",
+        help="align transcript with audio pauses, keyframes, OCR, and classroom observations",
+    )
     multimodal_parser.add_argument("--video", required=True)
     multimodal_parser.add_argument("--transcript", required=True)
     multimodal_parser.add_argument("--artifacts-dir", required=True)
-    multimodal_parser.add_argument("--observations", help="optional anonymized classroom observation JSON")
+    multimodal_parser.add_argument(
+        "--observations", help="optional anonymized classroom observation JSON"
+    )
     multimodal_parser.add_argument("--no-ocr", action="store_true")
     multimodal_parser.add_argument("--frame-interval", type=float, default=30.0)
     multimodal_parser.add_argument("--max-frames", type=int, default=48)
@@ -3984,13 +4614,29 @@ def build_parser() -> argparse.ArgumentParser:
     longform_parser.add_argument("--overlap-seconds", type=float, default=2.0)
     longform_parser.add_argument("--frame-interval", type=float, default=15.0)
     longform_parser.add_argument("--scene-threshold", type=float, default=0.32)
-    longform_parser.add_argument(
-        "--max-scenes-per-chunk", type=int, default=12
-    )
+    longform_parser.add_argument("--max-scenes-per-chunk", type=int, default=12)
     longform_parser.add_argument("--ocr-workers", type=int, default=4)
     longform_parser.add_argument("--no-ocr", action="store_true")
     longform_parser.add_argument("--no-resume", action="store_true")
     longform_parser.set_defaults(func=command_longform_multimodal_dataset)
+
+    episode_parser = subparsers.add_parser(
+        "distill-episodes",
+        help=(
+            "partition transcript timelines into deterministic long-video episodes "
+            "and mine one private Skill per episode"
+        ),
+    )
+    episode_parser.add_argument(
+        "--manifest",
+        required=True,
+        help="dataset manifest containing transcript_path entries",
+    )
+    episode_parser.add_argument("--output-dir", required=True)
+    episode_parser.add_argument("--min-seconds", type=float, default=240.0)
+    episode_parser.add_argument("--target-seconds", type=float, default=600.0)
+    episode_parser.add_argument("--max-seconds", type=float, default=900.0)
+    episode_parser.set_defaults(func=command_distill_episodes)
 
     ablation_parser = subparsers.add_parser(
         "multimodal-ablation",
@@ -4043,12 +4689,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="attach hash-matched visual-semantic results to a longform dataset",
     )
     visual_apply_parser.add_argument("--manifest", type=Path, required=True)
-    visual_apply_parser.add_argument(
-        "--semantic-results-dir", type=Path, required=True
-    )
-    visual_apply_parser.add_argument(
-        "--output-manifest", type=Path, required=True
-    )
+    visual_apply_parser.add_argument("--semantic-results-dir", type=Path, required=True)
+    visual_apply_parser.add_argument("--output-manifest", type=Path, required=True)
     visual_apply_parser.set_defaults(func=command_visual_semantic_apply)
 
     multimodal_benchmark_parser = subparsers.add_parser(
@@ -4100,8 +4742,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dipser_parser.add_argument("--interval-seconds", type=float, default=15.0)
     dipser_parser.add_argument("--alignment-tolerance-seconds", type=float, default=0.6)
-    dipser_parser.add_argument("--watch-filename-tolerance-seconds", type=float, default=1.0)
-    dipser_parser.add_argument("--watch-internal-tolerance-seconds", type=float, default=1.0)
+    dipser_parser.add_argument(
+        "--watch-filename-tolerance-seconds", type=float, default=1.0
+    )
+    dipser_parser.add_argument(
+        "--watch-internal-tolerance-seconds", type=float, default=1.0
+    )
     dipser_parser.add_argument("--workers", type=int, default=1)
     dipser_parser.add_argument("--range-timeout-seconds", type=float, default=120.0)
     dipser_parser.add_argument(
@@ -4116,7 +4762,9 @@ def build_parser() -> argparse.ArgumentParser:
     dipser_parser.add_argument("--seed", type=int, default=2026)
     dipser_parser.set_defaults(func=command_dipser_credible_benchmark)
 
-    pipeline_parser = subparsers.add_parser("pipeline", help="one command: input -> skill -> teaching -> evaluation")
+    pipeline_parser = subparsers.add_parser(
+        "pipeline", help="one command: input -> skill -> teaching -> evaluation"
+    )
     pipeline_parser.add_argument("input")
     pipeline_parser.add_argument("--video-id")
     pipeline_parser.add_argument("--course-id")
@@ -4127,21 +4775,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--transcript",
         help="optional JSON/SRT/VTT/TXT transcript for a video input; bypasses ASR while retaining real FFmpeg/OCR analysis",
     )
-    pipeline_parser.add_argument("--backend", choices=("heuristic", "api"), default="heuristic")
+    pipeline_parser.add_argument(
+        "--backend", choices=("heuristic", "api"), default="heuristic"
+    )
     pipeline_parser.add_argument("--concept", required=True)
     pipeline_parser.add_argument("--learner-level", default="beginner")
-    pipeline_parser.add_argument("--observations", help="optional anonymized classroom observation JSON")
-    pipeline_parser.add_argument("--no-multimodal", action="store_true", help="disable audio/visual analysis for video inputs")
+    pipeline_parser.add_argument(
+        "--observations", help="optional anonymized classroom observation JSON"
+    )
+    pipeline_parser.add_argument(
+        "--no-multimodal",
+        action="store_true",
+        help="disable audio/visual analysis for video inputs",
+    )
     pipeline_parser.add_argument("--no-ocr", action="store_true")
     pipeline_parser.add_argument("--frame-interval", type=float, default=30.0)
     pipeline_parser.add_argument("--max-frames", type=int, default=48)
     pipeline_parser.add_argument("--output", required=True)
     pipeline_parser.set_defaults(func=command_pipeline)
 
-    demo_parser = subparsers.add_parser("demo", help="run the 10-video offline demonstration")
+    demo_parser = subparsers.add_parser(
+        "demo", help="run the 10-video offline demonstration"
+    )
     demo_parser.add_argument("--manifest")
     demo_parser.add_argument("--output", default="artifacts")
-    demo_parser.add_argument("--backend", choices=("heuristic", "api"), default="heuristic")
+    demo_parser.add_argument(
+        "--backend", choices=("heuristic", "api"), default="heuristic"
+    )
     demo_parser.add_argument("--demo-video-id", default="python_l03")
     demo_parser.add_argument("--concept", default="二分查找")
     demo_parser.add_argument("--learner-level", default="beginner")

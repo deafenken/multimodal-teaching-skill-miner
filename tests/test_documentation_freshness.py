@@ -11,6 +11,7 @@ from teaching_skill_miner.teacher_agent import (
     ADAPTIVE_OBSERVATION_LIMIT,
     ADAPTIVE_OBSERVATION_STATUS,
 )
+from teaching_skill_miner.teacher_agent_harness import _tool_specs
 from teaching_skill_miner.teacher_agent_live import LIVE_PROMPT_VERSION
 
 
@@ -212,7 +213,7 @@ class DocumentationFreshnessTests(unittest.TestCase):
         self.assertIn("默认最多 10 个相关回合", acceptance)
         self.assertNotIn("公式样或低于共享数值阈值的 OCR 固定要求", task_two)
 
-    def test_task_two_docs_match_v14_routing_continuity_accounting_and_stop_edges(
+    def test_task_two_docs_match_v18_routing_continuity_accounting_and_stop_edges(
         self,
     ) -> None:
         readme = self._read("README.md")
@@ -231,11 +232,11 @@ class DocumentationFreshnessTests(unittest.TestCase):
         }
         self.assertEqual(
             LIVE_PROMPT_VERSION,
-            "teaching_agent_assess_route_act_v15_correction_chain_taxonomy_contract",
+            "teaching_agent_assess_route_act_v18_direct_teaching_cache_stable_prefix",
         )
         for relative, text in documents.items():
             with self.subTest(document=relative):
-                self.assertIn("V15", text)
+                self.assertIn("V18", text)
                 self.assertNotIn("V12", text)
                 self.assertNotIn("v12", text)
                 self.assertIn("state-first", text)
@@ -246,7 +247,108 @@ class DocumentationFreshnessTests(unittest.TestCase):
                 self.assertIn("transport_cancellation_supported", text)
         for text in (readme, task_two, acceptance, defense):
             self.assertIn("确认不等于答案正确", text)
+            self.assertIn("DeepSeek-Reasonix", text)
+            self.assertIn("prompt_cache_hit_tokens", text)
+            self.assertIn("prompt_cache_miss_tokens", text)
+        self.assertNotIn("teacher-led orientation", changelog)
         self.assertIn(LIVE_PROMPT_VERSION, acceptance)
+
+    def test_modern_console_harness_project_and_recovery_docs_match_current_tree(
+        self,
+    ) -> None:
+        package = json.loads(self._read("apps/console/package.json"))
+        self.assertEqual(package["dependencies"]["next"], "15.5.23")
+        self.assertNotIn("monaco-editor", package["dependencies"])
+        self.assertNotIn("@xterm/xterm", package["dependencies"])
+
+        console_documents = {
+            relative: self._read(relative)
+            for relative in (
+                "README.md",
+                "CHANGELOG.md",
+                "apps/console/README.md",
+                "docs/project_status.md",
+                "docs/requirements_traceability.md",
+                "docs/teacher_agent_acceptance_matrix.md",
+                "docs/teacher_agent_task2.md",
+            )
+        }
+        for relative, text in console_documents.items():
+            with self.subTest(document=relative):
+                self.assertIn("15.5.23", text)
+                self.assertIn("Monaco/xterm", text)
+                self.assertTrue(
+                    "移除" in text or "removed" in text,
+                    relative,
+                )
+
+        expected_tools = {
+            "inspect_student_state",
+            "inspect_recent_history",
+            "search_skills",
+            "select_skills",
+            "set_next_focus",
+            "evaluate_termination",
+            "retrieve_resources",
+        }
+        self.assertEqual({spec.name for spec in _tool_specs()}, expected_tools)
+        for relative in (
+            "README.md",
+            "docs/agent_harness_architecture.md",
+            "docs/requirements_traceability.md",
+            "docs/teacher_agent_acceptance_matrix.md",
+            "docs/teacher_agent_task2.md",
+        ):
+            text = self._read(relative)
+            with self.subTest(tool_document=relative):
+                for tool_name in expected_tools:
+                    self.assertIn(tool_name, text)
+                self.assertIn("retrieve_resources", text)
+
+        recovery_documents = {
+            relative: self._read(relative)
+            for relative in (
+                "docs/agent_harness_architecture.md",
+                "docs/project_status.md",
+                "docs/requirements_traceability.md",
+                "docs/teacher_agent_acceptance_matrix.md",
+                "docs/teacher_agent_task2.md",
+            )
+        }
+        for relative, text in recovery_documents.items():
+            with self.subTest(recovery_document=relative):
+                self.assertTrue(
+                    "pre-provider" in text or "start_pre_provider_only" in text,
+                    relative,
+                )
+                self.assertIn("handoff", text)
+                self.assertIn("domain commit", text)
+                self.assertIn("Chat 非终态", text)
+                self.assertIn("不重放", text)
+
+        for marker in (
+            "学习项目",
+            "400 条",
+            "scoring gold",
+            "Web Search 默认关闭",
+            "consent",
+        ):
+            self.assertIn(marker, self._read("docs/teacher_agent_task2.md"))
+
+        for relative in (
+            "README.md",
+            "docs/project_status.md",
+            "docs/requirements_traceability.md",
+            "docs/teacher_agent_acceptance_matrix.md",
+            "docs/teacher_agent_task2.md",
+        ):
+            text = self._read(relative)
+            with self.subTest(acceptance_freshness_document=relative):
+                self.assertIn("artifacts/release_acceptance_1.2.0.json", text)
+                self.assertIn("verification scope", text)
+                self.assertIn("build_release_acceptance.sh", text)
+                self.assertNotIn("1,119", text)
+                self.assertNotIn("1,474", text)
 
 
 if __name__ == "__main__":

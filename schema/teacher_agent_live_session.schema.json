@@ -16,6 +16,40 @@
     "policy": {"const": "adaptive_skill_library"},
     "fixed_skill_id": {"type": "null"},
     "goal": {"type": "object"},
+    "teaching_resources": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "schema", "resource_id", "display_name", "resource_type", "mime_type",
+          "byte_size", "content_sha256", "extracted_text", "extracted_char_count",
+          "original_extracted_char_count", "truncated", "page_count",
+          "extraction_engine", "needs_review", "raw_media_retained",
+          "remote_media_sent", "remote_representation"
+        ],
+        "properties": {
+          "schema": {"const": "teaching_skill_miner.teaching_resource.v1"},
+          "resource_id": {"type": "string", "pattern": "^res_[0-9a-f]{20}$"},
+          "display_name": {"type": "string", "minLength": 1, "maxLength": 160},
+          "resource_type": {"type": "string", "minLength": 1},
+          "mime_type": {"type": "string", "minLength": 1},
+          "byte_size": {"type": "integer", "minimum": 1, "maximum": 12582912},
+          "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "extracted_text": {"type": "string", "minLength": 1, "maxLength": 12000},
+          "extracted_char_count": {"type": "integer", "minimum": 1, "maximum": 12000},
+          "original_extracted_char_count": {"type": "integer", "minimum": 1},
+          "truncated": {"type": "boolean"},
+          "page_count": {"type": ["integer", "null"], "minimum": 1},
+          "extraction_engine": {"type": "string", "minLength": 1},
+          "needs_review": {"type": "boolean"},
+          "raw_media_retained": {"const": false},
+          "remote_media_sent": {"const": false},
+          "remote_representation": {"const": "bounded_redacted_text_only"}
+        },
+        "additionalProperties": false
+      }
+    },
     "student_profile": {
       "type": "object",
       "required": ["adaptive_observations", "adaptive_summary"],
@@ -27,6 +61,7 @@
     "skill_library": {"type": "object"},
     "skill_library_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "round": {"type": "integer", "minimum": 0},
+    "lesson_state": {"$ref": "#/$defs/lessonState"},
     "student_state": {
       "type": "object",
       "required": ["knowledge_mastery", "misconceptions", "understanding_signal", "next_focus", "assessment_basis", "interaction_statistics", "assessment_confidence", "assessment_evidence"],
@@ -156,6 +191,7 @@
             {"$ref": "#/$defs/agentLoopTrace"}
           ]
         },
+        "last_harness_trace": {"$ref": "#/$defs/harnessTrace"},
         "last_model_trace": {"type": ["object", "null"]},
         "last_error": {"type": ["string", "null"]},
         "remote_student_data_opt_in": {"const": true},
@@ -196,13 +232,80 @@
     }
   },
   "$defs": {
+    "lessonState": {
+      "type": "object",
+      "required": ["schema", "intent", "intent_source", "lesson_phase", "phase_iteration", "last_transition", "knowledge_exposure", "claim_boundary"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.teacher_agent_lesson_state.v1"},
+        "intent": {"enum": ["teach_first", "diagnostic_first", "task_first", "legacy_diagnostic_first"]},
+        "intent_source": {"enum": ["explicit_product_request", "legacy_compatibility_default"]},
+        "lesson_phase": {"enum": ["orientation", "explanation", "worked_example", "guided_practice", "verification", "transfer"]},
+        "phase_iteration": {"type": "integer", "minimum": 1},
+        "summary_required": {"type": "boolean"},
+        "summary_completed": {"type": "boolean"},
+        "summary_closure_round_limit": {"const": 3},
+        "summary_closure_rounds_used": {"type": "integer", "minimum": 0, "maximum": 3},
+        "last_transition": {
+          "type": "object",
+          "required": ["from", "to", "round", "reason", "source"],
+          "properties": {
+            "from": {"enum": [null, "orientation", "explanation", "worked_example", "guided_practice", "verification", "transfer"]},
+            "to": {"enum": ["orientation", "explanation", "worked_example", "guided_practice", "verification", "transfer"]},
+            "round": {"type": "integer", "minimum": 0},
+            "reason": {"type": "string", "minLength": 1},
+            "source": {"const": "deterministic_lesson_policy"},
+            "navigation_only": {"type": "boolean"},
+            "learner_evidence_applied": {"type": "boolean"}
+          },
+          "additionalProperties": false
+        },
+        "knowledge_exposure": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 12,
+          "additionalProperties": {"$ref": "#/$defs/lessonExposure"}
+        },
+        "claim_boundary": {
+          "type": "object",
+          "required": ["exposure_is_mastery", "teacher_action_is_learner_evidence", "phase_progress_is_learning_effect", "phase_may_regress", "benchmark_gold_used"],
+          "properties": {
+            "exposure_is_mastery": {"const": false},
+            "teacher_action_is_learner_evidence": {"const": false},
+            "phase_progress_is_learning_effect": {"const": false},
+            "phase_may_regress": {"const": true},
+            "benchmark_gold_used": {"const": false}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "lessonExposure": {
+      "type": "object",
+      "required": ["status", "stage_index", "source", "last_round", "evidence_refs"],
+      "properties": {
+        "status": {"enum": ["unseen", "explained", "example_seen", "guided_practice_completed", "learner_verified"]},
+        "stage_index": {"type": "integer", "minimum": 0, "maximum": 4},
+        "source": {"type": "string", "minLength": 1},
+        "last_round": {"type": ["integer", "null"], "minimum": 0},
+        "evidence_refs": {"type": "array", "maxItems": 8, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
     "studentModel": {
       "type": "object",
-      "required": ["schema", "version", "prior_strength", "dimensions", "overall", "last_update", "recommended_focus", "claim_boundary"],
+      "required": ["schema", "version", "prior_strength", "knowledge_components", "dimensions", "overall", "last_update", "recommended_focus", "migration", "compatibility", "claim_boundary"],
       "properties": {
-        "schema": {"const": "teaching_skill_miner.student_state_estimate.v1"},
-        "version": {"const": 1},
+        "schema": {"const": "teaching_skill_miner.student_state_estimate.v2"},
+        "version": {"const": 2},
         "prior_strength": {"type": "number", "minimum": 2},
+        "knowledge_components": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 24,
+          "propertyNames": {"pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"},
+          "additionalProperties": {"$ref": "#/$defs/studentModelKnowledgeComponent"}
+        },
         "dimensions": {
           "type": "object",
           "required": ["prerequisite", "conceptual", "procedural", "transfer"],
@@ -224,42 +327,236 @@
           },
           "additionalProperties": false
         },
+        "adjudication_revisions": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {"$ref": "#/$defs/studentModelAdjudicationRevision"}
+        },
         "last_update": {
           "type": "object",
-          "required": ["round", "signal", "focus_dimension", "evidence_id", "source", "update_applied", "needs_human_review"],
+          "required": ["round", "signal", "focus_dimension", "knowledge_component_ids", "evidence_id", "item_id", "rubric_id", "source", "update_applied", "needs_human_review", "reason"],
           "properties": {
             "round": {"type": "integer", "minimum": 0},
             "signal": {"enum": ["not_observed", "correct", "partial", "misconception", "confused", "no_response"]},
             "focus_dimension": {"type": ["string", "null"]},
+            "knowledge_component_ids": {"type": "array", "maxItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"}},
             "evidence_id": {"type": ["string", "null"]},
+            "item_id": {"type": ["string", "null"]},
+            "rubric_id": {"type": ["string", "null"]},
             "source": {"type": "string", "minLength": 1},
             "update_applied": {"type": "boolean"},
-            "needs_human_review": {"type": "boolean"}
+            "needs_human_review": {"type": "boolean"},
+            "reason": {"type": "string", "minLength": 1}
           },
           "additionalProperties": false
         },
         "recommended_focus": {
           "type": "object",
-          "required": ["dimension", "reason", "confidence", "evidence_refs"],
+          "required": ["dimension", "knowledge_component_id", "knowledge_component_label", "reason", "confidence", "evidence_refs"],
           "properties": {
             "dimension": {"enum": ["prerequisite", "conceptual", "procedural", "transfer"]},
+            "knowledge_component_id": {"type": "string", "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"},
+            "knowledge_component_label": {"type": "string", "minLength": 1},
             "reason": {"type": "string", "minLength": 1},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "evidence_refs": {"type": "array", "maxItems": 8, "items": {"type": "string", "minLength": 1}}
           },
           "additionalProperties": false
         },
+        "migration": {
+          "type": "object",
+          "required": ["source_schema", "unattributed_legacy_evidence_count", "legacy_evidence_attributed_to_components"],
+          "properties": {
+            "source_schema": {"type": ["string", "null"]},
+            "unattributed_legacy_evidence_count": {"type": "integer", "minimum": 0},
+            "legacy_evidence_attributed_to_components": {"const": false}
+          },
+          "additionalProperties": false
+        },
+        "compatibility": {
+          "type": "object",
+          "required": ["legacy_decision_state_path", "legacy_success_gate_uses_kc_model", "legacy_runtime_state_synchronized_from_kc_model", "legacy_projection_snapshot", "kc_projection_snapshot", "absolute_divergence"],
+          "properties": {
+            "legacy_decision_state_path": {"const": "student_state.knowledge_mastery"},
+            "legacy_success_gate_uses_kc_model": {"type": "boolean"},
+            "legacy_runtime_state_synchronized_from_kc_model": {"type": "boolean"},
+            "legacy_projection_snapshot": {"$ref": "#/$defs/studentModelCompatibilityProjection"},
+            "kc_projection_snapshot": {"$ref": "#/$defs/studentModelCompatibilityProjection"},
+            "absolute_divergence": {"$ref": "#/$defs/studentModelCompatibilityProjection"}
+          },
+          "additionalProperties": false
+        },
         "claim_boundary": {
           "type": "object",
-          "required": ["is_ground_truth", "teacher_prior_overwritten", "free_text_accuracy_established", "uncertainty_is_calibrated_on_external_lockbox"],
+          "required": ["is_ground_truth", "teacher_prior_overwritten", "free_text_accuracy_established", "uncertainty_is_calibrated_on_external_lockbox", "single_evidence_updates_multiple_components", "unrubriced_observation_updates_mastery"],
           "properties": {
             "is_ground_truth": {"const": false},
             "teacher_prior_overwritten": {"const": false},
             "free_text_accuracy_established": {"const": false},
-            "uncertainty_is_calibrated_on_external_lockbox": {"const": false}
+            "uncertainty_is_calibrated_on_external_lockbox": {"const": false},
+            "single_evidence_updates_multiple_components": {"const": false},
+            "unrubriced_observation_updates_mastery": {"const": false}
           },
           "additionalProperties": false
         }
+      },
+      "additionalProperties": false
+    },
+    "studentModelKnowledgeComponent": {
+      "type": "object",
+      "required": ["kc_id", "label", "source", "source_ref", "teacher_grading_authority_available", "p_mastery", "uncertainty", "evidence_count", "positive_evidence", "negative_evidence", "last_signal", "last_round", "last_observed_at", "last_time_basis", "last_evidence_id", "bkt", "calibration", "dimensions", "evidence_ledger"],
+      "properties": {
+        "kc_id": {"type": "string", "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 160},
+        "source": {"type": "string", "minLength": 1, "maxLength": 300},
+        "source_ref": {"type": "string", "minLength": 1, "maxLength": 300},
+        "teacher_grading_authority_available": {"type": "boolean"},
+        "p_mastery": {"type": "number", "minimum": 0, "maximum": 1},
+        "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_count": {"type": "integer", "minimum": 0},
+        "positive_evidence": {"type": "integer", "minimum": 0},
+        "negative_evidence": {"type": "integer", "minimum": 0},
+        "last_signal": {"enum": ["not_observed", "correct", "partial", "misconception", "confused", "no_response"]},
+        "last_round": {"type": "integer", "minimum": 0},
+        "last_observed_at": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"},
+        "last_time_basis": {"enum": [null, "wall_clock_utc", "session_logical"]},
+        "last_evidence_id": {"type": ["string", "null"]},
+        "bkt": {
+          "type": "object",
+          "required": ["p_learn", "p_slip", "p_guess", "forgetting_rate_per_day"],
+          "properties": {
+            "p_learn": {"type": "number", "minimum": 0, "maximum": 1},
+            "p_slip": {"type": "number", "minimum": 0, "maximum": 1},
+            "p_guess": {"type": "number", "minimum": 0, "maximum": 1},
+            "forgetting_rate_per_day": {"type": "number", "minimum": 0, "maximum": 1}
+          },
+          "additionalProperties": false
+        },
+        "calibration": {
+          "type": "object",
+          "required": ["status", "sample_count", "brier_score", "brier_sum"],
+          "properties": {
+            "status": {"const": "descriptive_only_external_calibration_required"},
+            "sample_count": {"type": "integer", "minimum": 0},
+            "brier_score": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+            "brier_sum": {"type": "number", "minimum": 0}
+          },
+          "additionalProperties": false
+        },
+        "dimensions": {
+          "type": "object",
+          "required": ["prerequisite", "conceptual", "procedural", "transfer"],
+          "properties": {
+            "prerequisite": {"$ref": "#/$defs/studentModelFacet"},
+            "conceptual": {"$ref": "#/$defs/studentModelFacet"},
+            "procedural": {"$ref": "#/$defs/studentModelFacet"},
+            "transfer": {"$ref": "#/$defs/studentModelFacet"}
+          },
+          "additionalProperties": false
+        },
+        "evidence_ledger": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/studentModelEvidence"}},
+        "evidence_ledger_state": {"$ref": "#/$defs/studentModelEvidenceLedgerState"}
+      },
+      "additionalProperties": false
+    },
+    "studentModelEvidenceLedgerState": {
+      "type": "object",
+      "required": ["capacity", "total_recorded_evidence", "retained_evidence", "active_evidence", "superseded_evidence", "complete_from_initial_prior"],
+      "properties": {
+        "capacity": {"const": 64},
+        "total_recorded_evidence": {"type": "integer", "minimum": 0},
+        "retained_evidence": {"type": "integer", "minimum": 0, "maximum": 64},
+        "active_evidence": {"type": "integer", "minimum": 0, "maximum": 64},
+        "superseded_evidence": {"type": "integer", "minimum": 0, "maximum": 64},
+        "complete_from_initial_prior": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "studentModelFacet": {
+      "type": "object",
+      "required": ["p_mastery", "prior_p_mastery", "uncertainty", "evidence_count", "positive_evidence", "negative_evidence", "last_signal", "last_round", "last_evidence_id", "last_observed_at", "last_time_basis"],
+      "properties": {
+        "p_mastery": {"type": "number", "minimum": 0, "maximum": 1},
+        "prior_p_mastery": {"type": "number", "minimum": 0, "maximum": 1},
+        "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_count": {"type": "integer", "minimum": 0},
+        "positive_evidence": {"type": "integer", "minimum": 0},
+        "negative_evidence": {"type": "integer", "minimum": 0},
+        "last_signal": {"enum": ["not_observed", "correct", "partial", "misconception", "confused", "no_response"]},
+        "last_round": {"type": "integer", "minimum": 0},
+        "last_evidence_id": {"type": ["string", "null"]},
+        "last_observed_at": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"},
+        "last_time_basis": {"enum": [null, "wall_clock_utc", "session_logical"]}
+      },
+      "additionalProperties": false
+    },
+    "studentModelEvidence": {
+      "type": "object",
+      "required": ["evidence_id", "item_id", "question_id", "rubric_id", "knowledge_component_id", "focus_dimension", "signal", "confidence", "answer_alignment", "difficulty", "discrimination", "observed_at", "time_basis", "source", "assessment_eligible", "authoritative", "p_mastery_before", "p_mastery_after", "elapsed_days", "forgetting_applied", "effective_slip", "effective_guess", "evidence_fingerprint"],
+      "properties": {
+        "evidence_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "item_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "question_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "rubric_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "knowledge_component_id": {"type": "string", "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"},
+        "focus_dimension": {"enum": ["prerequisite", "conceptual", "procedural", "transfer"]},
+        "signal": {"enum": ["correct", "partial", "misconception"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "answer_alignment": {"enum": ["aligned", "partially_aligned", "contradicted"]},
+        "difficulty": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "discrimination": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "observed_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"},
+        "time_basis": {"enum": ["wall_clock_utc", "session_logical"]},
+        "source": {"type": "string", "minLength": 1, "maxLength": 160},
+        "assessment_eligible": {"const": true},
+        "authoritative": {"const": true},
+        "round_number": {"type": "integer", "minimum": 0},
+        "authority_evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "p_mastery_before": {"type": "number", "minimum": 0, "maximum": 1},
+        "p_mastery_after": {"type": "number", "minimum": 0, "maximum": 1},
+        "elapsed_days": {"type": "number", "minimum": 0},
+        "forgetting_applied": {"type": "boolean"},
+        "effective_slip": {"type": "number", "minimum": 0, "maximum": 1},
+        "effective_guess": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "lifecycle_status": {"enum": ["active", "superseded"]},
+        "superseded_by_revision_id": {"type": ["string", "null"], "pattern": "^smrev_[0-9a-f]{24}$"}
+      },
+      "additionalProperties": false
+    },
+    "studentModelAdjudicationRevision": {
+      "type": "object",
+      "required": ["schema", "revision_number", "revision_id", "decision_kind", "operation", "target_kc_id", "source_evidence_id", "source_evidence_fingerprint", "instruction_sha256", "before_component_sha256", "after_component_sha256", "active_evidence_replayed", "superseded_evidence_count", "ledger_complete_from_initial_prior", "negative_delta_applied", "previous_revision_sha256", "revision_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.student_model_adjudication_revision.v1"},
+        "revision_number": {"type": "integer", "minimum": 1},
+        "revision_id": {"type": "string", "pattern": "^smrev_[0-9a-f]{24}$"},
+        "decision_kind": {"enum": ["abstain", "correct"]},
+        "operation": {"const": "supersede_and_replay"},
+        "target_kc_id": {"type": "string", "pattern": "^kc_[a-z0-9][a-z0-9_-]{2,80}$"},
+        "source_evidence_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "source_evidence_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "instruction_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "before_component_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "after_component_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "active_evidence_replayed": {"type": "integer", "minimum": 0},
+        "superseded_evidence_count": {"type": "integer", "minimum": 1, "maximum": 64},
+        "ledger_complete_from_initial_prior": {"const": true},
+        "negative_delta_applied": {"const": false},
+        "authority_revalidation_receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "previous_revision_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "revision_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "studentModelCompatibilityProjection": {
+      "type": "object",
+      "required": ["prerequisite", "conceptual", "procedural", "transfer"],
+      "properties": {
+        "prerequisite": {"type": "number", "minimum": 0, "maximum": 1},
+        "conceptual": {"type": "number", "minimum": 0, "maximum": 1},
+        "procedural": {"type": "number", "minimum": 0, "maximum": 1},
+        "transfer": {"type": "number", "minimum": 0, "maximum": 1}
       },
       "additionalProperties": false
     },
@@ -325,6 +622,39 @@
       },
       "additionalProperties": false
     },
+    "harnessTrace": {
+      "type": "object",
+      "required": ["schema", "run_id", "turn_id", "status", "steps", "model_call_count", "tool_call_count", "duration_ms", "events", "trace_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.agent_harness.v1"},
+        "run_id": {"type": "string", "minLength": 1},
+        "turn_id": {"type": "string", "minLength": 1},
+        "status": {"enum": ["completed", "cancelled", "deadline_exceeded", "failed", "handoff"]},
+        "steps": {"type": "integer", "minimum": 0},
+        "model_call_count": {"type": "integer", "minimum": 0},
+        "tool_call_count": {"type": "integer", "minimum": 0},
+        "duration_ms": {"type": "integer", "minimum": 0},
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["schema", "event_id", "run_id", "turn_id", "sequence", "type", "payload"],
+            "properties": {
+              "schema": {"const": "teaching_skill_miner.agent_harness_event.v1"},
+              "event_id": {"type": "string", "minLength": 1},
+              "run_id": {"type": "string", "minLength": 1},
+              "turn_id": {"type": "string", "minLength": 1},
+              "sequence": {"type": "integer", "minimum": 1},
+              "type": {"type": "string", "minLength": 1},
+              "payload": {"type": "object"}
+            },
+            "additionalProperties": false
+          }
+        },
+        "trace_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
     "teachingMemory": {
       "type": "object",
       "required": ["schema", "history_version", "compaction_generation", "fixed_context_fingerprint", "last_observed_round", "preferences", "open_questions", "commitments", "referents", "claim_boundary"],
@@ -365,7 +695,8 @@
             "unresolved_learner_question",
             "learner_future_agenda",
             "teacher_commitment",
-            "teacher_question"
+            "teacher_question",
+            "learner_difficulty_signal"
           ]
         },
         "speaker": {"enum": ["learner", "teacher", "teacher_profile"]},
@@ -402,7 +733,8 @@
             "ordinal_reference",
             "earliest_learner_instruction",
             "earlier_unresolved_question",
-            "prior_agreement_or_agenda"
+            "prior_agreement_or_agenda",
+            "recent_repetition_complaint"
           ]
         },
         "cue_excerpt": {"type": "string", "minLength": 1, "maxLength": 240},
@@ -598,7 +930,7 @@
             "properties": {
               "excerpt": {"type": "string", "maxLength": 240},
               "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-              "assessment_source": {"enum": ["deepseek_v4_flash", "deepseek_v4_flash_constrained_by_deterministic_contract", "active_question_contract_exact_match"]},
+              "assessment_source": {"enum": ["deepseek_v4_flash", "deepseek_v4_flash_constrained_by_deterministic_contract", "active_question_contract_exact_match", "teacher_knowledge_spec_exact_match", "teacher_goal_knowledge_component_bounded_match"]},
               "model_raw_signal": {"enum": ["not_observed", "correct", "partial", "misconception", "confused", "no_response"]},
               "final_signal": {"enum": ["correct", "partial", "misconception", "confused", "no_response"]},
               "normalization_reasons": {"type": "array", "maxItems": 12, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 120}},

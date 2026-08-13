@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -15,7 +16,10 @@ from teaching_skill_miner.teacher_agent_dashboard import (
     _request_fingerprint,
     build_teacher_agent_dashboard_snapshot,
 )
-from teaching_skill_miner.teacher_agent_live import LiveAgentOptions
+from teaching_skill_miner.teacher_agent_live import (
+    LIVE_PROMPT_VERSION,
+    LiveAgentOptions,
+)
 from teaching_skill_miner.teacher_agent_store import TeacherAgentStoreError
 
 
@@ -59,6 +63,7 @@ class TeacherAgentStoreTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         root = project_root()
         cls.library_path = root / "data/teacher_agent_skill_library.json"
+        cls.library_v2_path = root / "data/teacher_agent_skill_library_v2.json"
         cls.input_path = root / "data/teacher_agent_demo_input.json"
         cls.cases_path = root / "data/teacher_agent_evaluation_cases.json"
 
@@ -66,28 +71,63 @@ class TeacherAgentStoreTests(unittest.TestCase):
         self,
         store_path: Path | None = None,
         *,
+        library_path: Path | None = None,
         client: object | None = None,
         live_options: LiveAgentOptions | None = None,
     ):
-        return build_teacher_agent_dashboard_snapshot(
-            self.library_path,
+        kwargs = {}
+        if client is not None:
+            assert store_path is not None
+            kwargs = {
+                "consent_store_path": store_path.with_name(
+                    store_path.name + ".consent"
+                ),
+                "consent_signing_secret": (
+                    b"store-test-consent-signing-secret-material-32-bytes"
+                ),
+            }
+        snapshot = build_teacher_agent_dashboard_snapshot(
+            library_path or self.library_path,
             self.input_path,
             self.cases_path,
             client=client,
             live_options=live_options,
             store_path=store_path,
+            **kwargs,
         )
+        if client is not None and not any(
+            receipt["purpose"] == "remote_teaching"
+            and receipt["status"] == "active"
+            for receipt in snapshot.list_remote_consents({})["receipts"]
+        ):
+            snapshot.grant_remote_consent(
+                {
+                    "purpose": "remote_teaching",
+                    "validity_days": 1,
+                    "likely_minor": False,
+                    "guardian_or_school_policy": "not_required",
+                }
+            )
+        return snapshot
 
     @staticmethod
     def _start_body(snapshot, key: str, *, profile_ref: str | None = None):
         profile = deepcopy(snapshot.demo_input["student_profile"])
         if profile_ref is not None:
             profile["profile_ref"] = profile_ref
-        return {
+        body = {
             "goal": deepcopy(snapshot.demo_input["goal"]),
             "student_profile": profile,
             "start_idempotency_key": key,
         }
+        if snapshot.client is not None:
+            body["remote_consent_id"] = next(
+                receipt["consent_id"]
+                for receipt in snapshot.list_remote_consents({})["receipts"]
+                if receipt["purpose"] == "remote_teaching"
+                and receipt["status"] == "active"
+            )
+        return body
 
     @staticmethod
     def _step_body(session: dict, key: str, *, answer: str = "我还需要一个例子"):
@@ -311,6 +351,131 @@ class TeacherAgentStoreTests(unittest.TestCase):
                 restarted.resume({"session_id": first["session_id"]}), first_stepped
             )
 
+    def test_capacity_archives_101_sessions_and_project_reference_lazy_loads(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            store_path = root / "teacher-agent.jsonl"
+            project_path = root / "projects"
+            snapshot = build_teacher_agent_dashboard_snapshot(
+                self.library_path,
+                self.input_path,
+                self.cases_path,
+                store_path=store_path,
+                project_store_path=project_path,
+            )
+            contract = snapshot.bootstrap()["interaction_contract"]
+            self.assertEqual(
+                contract["session_capacity_policy"], "durable_archive_lazy_load"
+            )
+            self.assertTrue(
+                contract["capacity_archive_never_removes_authoritative_session"]
+            )
+            project = snapshot.create_project({"title": "容量归档课程"})["project"]
+            first = snapshot.start(
+                self._start_body(snapshot, "archive-start-000", profile_ref="student-000")
+            )
+            snapshot.add_project_reference(
+                project["project_id"],
+                {"kind": "teaching_session", "reference_id": first["session_id"]},
+            )
+            for index in range(1, 101):
+                snapshot.start(
+                    self._start_body(
+                        snapshot,
+                        f"archive-start-{index:03d}",
+                        profile_ref=f"student-{index:03d}",
+                    )
+                )
+
+            self.assertEqual(len(snapshot.sessions), 16)
+            self.assertEqual(len(snapshot.archived_session_ids), 85)
+            self.assertNotIn(first["session_id"], snapshot.sessions)
+            self.assertTrue(
+                any(
+                    event["event_type"] == "session_archived"
+                    for event in snapshot.store.events
+                )
+            )
+
+            restarted = build_teacher_agent_dashboard_snapshot(
+                self.library_path,
+                self.input_path,
+                self.cases_path,
+                store_path=store_path,
+                project_store_path=project_path,
+            )
+            self.assertEqual(len(restarted.sessions), 16)
+            self.assertIn(first["session_id"], restarted.archived_session_ids)
+            self.assertIn(
+                first["session_id"],
+                restarted.read_project(project["project_id"])["project"][
+                    "teaching_session_ids"
+                ],
+            )
+
+            with patch.object(
+                restarted.store,
+                "recover_session",
+                wraps=restarted.store.recover_session,
+            ) as recover_session:
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    responses = list(
+                        executor.map(
+                            lambda _index: restarted.resume(
+                                {"session_id": first["session_id"]}
+                            ),
+                            range(8),
+                        )
+                    )
+                self.assertEqual(recover_session.call_count, 1)
+            self.assertTrue(all(response == first for response in responses))
+            self.assertEqual(len(restarted.sessions), 16)
+            self.assertIn(first["session_id"], restarted.sessions)
+            self.assertNotIn(first["session_id"], restarted.archived_session_ids)
+
+            restarted_again = build_teacher_agent_dashboard_snapshot(
+                self.library_path,
+                self.input_path,
+                self.cases_path,
+                store_path=store_path,
+                project_store_path=project_path,
+            )
+            self.assertEqual(
+                restarted_again.resume({"session_id": first["session_id"]}), first
+            )
+
+    def test_legacy_capacity_remove_event_migrates_but_explicit_remove_does_not(self) -> None:
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent.jsonl"
+            snapshot = self._snapshot(store_path)
+            started = snapshot.start(
+                self._start_body(snapshot, "legacy-capacity-start-001")
+            )
+            record = snapshot.sessions[started["session_id"]]
+            snapshot.store.append_batch(
+                [
+                    snapshot._event_specification(
+                        "session_stopped",
+                        started["session_id"],
+                        record,
+                        idempotency_key=None,
+                        request_fingerprint=None,
+                        data={
+                            "reason": "active_session_capacity_eviction",
+                            "remove_session": True,
+                        },
+                    )
+                ]
+            )
+
+            restarted = self._snapshot(store_path)
+            resumed = restarted.resume({"session_id": started["session_id"]})
+            self.assertEqual(resumed, started)
+            stepped = restarted.step(
+                self._step_body(resumed, "legacy-capacity-turn-001")
+            )
+            self.assertEqual(stepped["rounds_completed"], 1)
+
     def test_replacement_persists_session_stopped_and_removal(self) -> None:
         with TemporaryDirectory() as directory:
             store_path = Path(directory) / "teacher-agent.jsonl"
@@ -380,7 +545,6 @@ class TeacherAgentStoreTests(unittest.TestCase):
             start_body = {
                 **self._start_body(snapshot, "live-subset-start-001"),
                 "allowed_skill_ids": primary_ids,
-                "remote_processing_acknowledged": True,
             }
             started = snapshot.start(start_body)
 
@@ -404,13 +568,94 @@ class TeacherAgentStoreTests(unittest.TestCase):
             )
 
             advanced = restarted.step(
-                self._step_body(
+                {
+                    **self._step_body(
                     resumed,
                     "live-subset-turn-001",
                     answer="我仍然需要一个更具体的例子",
-                )
+                    ),
+                    "remote_consent_id": next(
+                        receipt["consent_id"]
+                        for receipt in restarted.list_remote_consents({})["receipts"]
+                        if receipt["purpose"] == "remote_teaching"
+                        and receipt["status"] == "active"
+                    ),
+                }
             )
             self.assertEqual(advanced["rounds_completed"], 1)
+
+    def test_live_teach_first_session_cold_resumes_with_derived_skill_contract(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent.jsonl"
+            options = LiveAgentOptions(maximum_context_chars=8_000)
+            snapshot = self._snapshot(
+                store_path,
+                library_path=self.library_v2_path,
+                client=_OfflineLiveClient(),
+                live_options=options,
+            )
+            start_body = self._start_body(snapshot, "teach-first-resume-start-001")
+            start_body["goal"]["learning_intent"] = "teach_first"
+            started = snapshot.start(start_body)
+
+            stored_skills = {
+                skill["skill_id"]: skill
+                for skill in snapshot.sessions[started["session_id"]]
+                .session["skill_library"]["skills"]
+            }
+            self.assertIn(
+                "not_observed",
+                stored_skills["skill_contextual_problem_setup"][
+                    "applicable_signals"
+                ],
+            )
+            self.assertIn(
+                "correct",
+                stored_skills["skill_concrete_example_bridge"][
+                    "applicable_signals"
+                ],
+            )
+
+            restarted = self._snapshot(
+                store_path,
+                library_path=self.library_v2_path,
+                client=_OfflineLiveClient(),
+                live_options=options,
+            )
+            self.assertEqual(
+                restarted.resume({"session_id": started["session_id"]}),
+                started,
+            )
+
+            record = restarted.sessions[started["session_id"]]
+            record.session["skill_library"]["skills"][0]["name"] += "（已篡改）"
+            record.session["skill_library_fingerprint"] = canonical_sha256(
+                record.session["skill_library"]
+            )
+            _refresh_integrity(record.session)
+            restarted.store.append_batch(
+                [
+                    restarted._checkpoint_specification(
+                        started["session_id"],
+                        record,
+                        idempotency_key=None,
+                        request_fingerprint=None,
+                        reason="test_teach_first_skill_mutation",
+                    )
+                ]
+            )
+
+            with self.assertRaisesRegex(
+                TeacherAgentDashboardError, "Skill definitions differ"
+            ):
+                self._snapshot(
+                    store_path,
+                    library_path=self.library_v2_path,
+                    client=_OfflineLiveClient(),
+                    live_options=options,
+                )
 
     def test_live_recovery_rejects_runtime_policy_drift(self) -> None:
         with TemporaryDirectory() as directory:
@@ -428,7 +673,6 @@ class TeacherAgentStoreTests(unittest.TestCase):
             )
             start_body = {
                 **self._start_body(snapshot, "live-policy-start-001"),
-                "remote_processing_acknowledged": True,
             }
             snapshot.start(start_body)
 
@@ -464,6 +708,103 @@ class TeacherAgentStoreTests(unittest.TestCase):
                         live_options=options,
                     )
 
+    def test_live_recovery_migrates_only_the_compatible_prompt_version(
+        self,
+    ) -> None:
+        legacy_prompt_versions = (
+            "teaching_agent_assess_route_act_v15_"
+            "correction_chain_taxonomy_contract",
+            "teaching_agent_assess_route_act_v16_"
+            "grounded_clarification_contract",
+            "teaching_agent_assess_route_act_v17_"
+            "guide_learning_confusion_recovery",
+        )
+        for index, legacy_prompt_version in enumerate(legacy_prompt_versions, 1):
+            with self.subTest(legacy_prompt_version=legacy_prompt_version):
+                with TemporaryDirectory() as directory:
+                    store_path = Path(directory) / "teacher-agent.jsonl"
+                    options = LiveAgentOptions(maximum_context_chars=8_000)
+                    with patch(
+                        "teaching_skill_miner.teacher_agent_live.LIVE_PROMPT_VERSION",
+                        legacy_prompt_version,
+                    ):
+                        legacy = self._snapshot(
+                            store_path,
+                            client=_OfflineLiveClient(),
+                            live_options=options,
+                        )
+                        start_body = {
+                            **self._start_body(
+                                legacy,
+                                f"live-prompt-migration-start-{index:03d}",
+                            ),
+                        }
+                        started = legacy.start(start_body)
+
+                    restarted = self._snapshot(
+                        store_path,
+                        client=_OfflineLiveClient(),
+                        live_options=options,
+                    )
+                    session = restarted.sessions[started["session_id"]].session
+                    runtime = session["agent_runtime"]
+                    self.assertEqual(runtime["prompt_version"], LIVE_PROMPT_VERSION)
+                    trace = runtime["last_model_trace"]
+                    self.assertEqual(
+                        trace["runtime_policy_contract"]["prompt_version"],
+                        LIVE_PROMPT_VERSION,
+                    )
+                    self.assertEqual(
+                        trace["runtime_policy_migration"],
+                        {
+                            "from_prompt_version": legacy_prompt_version,
+                            "to_prompt_version": LIVE_PROMPT_VERSION,
+                            "only_prompt_version_changed": True,
+                            "historical_action_traces_preserved": True,
+                        },
+                    )
+
+                    restarted_again = self._snapshot(
+                        store_path,
+                        client=_OfflineLiveClient(),
+                        live_options=options,
+                    )
+                    self.assertEqual(
+                        restarted_again.sessions[started["session_id"]]
+                        .session["agent_runtime"]["prompt_version"],
+                        LIVE_PROMPT_VERSION,
+                    )
+
+    def test_live_recovery_rejects_an_unapproved_prompt_version_jump(self) -> None:
+        with TemporaryDirectory() as directory:
+            store_path = Path(directory) / "teacher-agent.jsonl"
+            options = LiveAgentOptions(maximum_context_chars=8_000)
+            with patch(
+                "teaching_skill_miner.teacher_agent_live.LIVE_PROMPT_VERSION",
+                "teaching_agent_assess_route_act_v14_unapproved_test_prompt",
+            ):
+                legacy = self._snapshot(
+                    store_path,
+                    client=_OfflineLiveClient(),
+                    live_options=options,
+                )
+                legacy.start(
+                    {
+                        **self._start_body(
+                            legacy, "live-prompt-reject-start-001"
+                        ),
+                    }
+                )
+
+            with self.assertRaisesRegex(
+                TeacherAgentDashboardError, "runtime policy does not match"
+            ):
+                self._snapshot(
+                    store_path,
+                    client=_OfflineLiveClient(),
+                    live_options=options,
+                )
+
     def test_live_recovery_rejects_unknown_or_modified_subset_skills(self) -> None:
         for mutation in ("unknown", "modified"):
             with self.subTest(mutation=mutation), TemporaryDirectory() as directory:
@@ -485,7 +826,6 @@ class TeacherAgentStoreTests(unittest.TestCase):
                             snapshot, f"live-skill-{mutation}-start-001"
                         ),
                         "allowed_skill_ids": primary_ids,
-                        "remote_processing_acknowledged": True,
                     }
                 )
                 record = snapshot.sessions[started["session_id"]]
@@ -548,7 +888,6 @@ class TeacherAgentStoreTests(unittest.TestCase):
                 {
                     **self._start_body(snapshot, "live-support-start-001"),
                     "allowed_skill_ids": primary_ids,
-                    "remote_processing_acknowledged": True,
                 }
             )
             record = snapshot.sessions[started["session_id"]]

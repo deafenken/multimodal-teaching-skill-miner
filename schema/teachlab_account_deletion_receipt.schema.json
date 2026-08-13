@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schema/teachlab_account_deletion_receipt.schema.json",
+  "title": "Content-free TeachLab account deletion receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "status",
+    "receipt_id",
+    "scope_sha256",
+    "operation_id_sha256",
+    "deleted_at",
+    "deleted_counts",
+    "all_devices_session_authority_deleted",
+    "scope_tombstone_retained",
+    "user_managed_export_copies_deleted",
+    "user_managed_export_copies_status",
+    "remote_provider_copies_deleted",
+    "remote_provider_copies_status",
+    "identity_provider_account_deleted",
+    "identity_provider_account_status",
+    "operator_backup_copies_deleted",
+    "operator_backup_copies_status",
+    "receipt_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "teachlab.account_deletion_receipt.v1"},
+    "status": {"const": "permanently_deleted"},
+    "receipt_id": {"type": "string", "pattern": "^adelr_[0-9a-f]{32}$"},
+    "scope_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "operation_id_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "deleted_at": {"type": "string", "format": "date-time"},
+    "deleted_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "postgres_events",
+        "postgres_tasks",
+        "postgres_artifacts",
+        "postgres_sessions",
+        "postgres_auth_sessions",
+        "worker_files",
+        "worker_bytes",
+        "worker_roots"
+      ],
+      "properties": {
+        "postgres_events": {"type": "integer", "minimum": 0},
+        "postgres_tasks": {"type": "integer", "minimum": 0},
+        "postgres_artifacts": {"type": "integer", "minimum": 0},
+        "postgres_sessions": {"type": "integer", "minimum": 0},
+        "postgres_auth_sessions": {"type": "integer", "minimum": 0},
+        "worker_files": {"type": "integer", "minimum": 0},
+        "worker_bytes": {"type": "integer", "minimum": 0},
+        "worker_roots": {"type": "integer", "minimum": 0}
+      }
+    },
+    "all_devices_session_authority_deleted": {"const": true},
+    "scope_tombstone_retained": {"const": true},
+    "user_managed_export_copies_deleted": {"const": false},
+    "user_managed_export_copies_status": {"const": "outside_service_control"},
+    "remote_provider_copies_deleted": {"const": false},
+    "remote_provider_copies_status": {
+      "const": "outside_service_control_subject_to_provider_retention"
+    },
+    "identity_provider_account_deleted": {"const": false},
+    "identity_provider_account_status": {
+      "const": "outside_service_control_contact_organization_idp"
+    },
+    "operator_backup_copies_deleted": {"const": false},
+    "operator_backup_copies_status": {
+      "const": "pending_retention_expiry_or_operator_crypto_erasure"
+    },
+    "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

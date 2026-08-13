@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/teaching-skill-miner/teaching_syllabus_version_store.schema.json",
+  "title": "Append-only immutable teaching syllabus version ledger",
+  "type": "object",
+  "required": ["schema", "version", "event_sequence", "events", "erasure_tombstones"],
+  "properties": {
+    "schema": {"const": "teaching_skill_miner.syllabus_version_store.v1"},
+    "version": {"const": 1},
+    "event_sequence": {"type": "integer", "minimum": 0, "maximum": 8192},
+    "events": {
+      "type": "array",
+      "maxItems": 8192,
+      "items": {"$ref": "#/$defs/event"}
+    },
+    "erasure_tombstones": {
+      "type": "object",
+      "maxProperties": 8192,
+      "propertyNames": {"pattern": "^[0-9a-f]{64}$"},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["purged_at_utc", "generation"],
+        "properties": {
+          "purged_at_utc": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+          "generation": {"type": "integer", "minimum": 1}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "required": ["actor_kind", "authenticated", "teacher_identity_claimed"],
+      "properties": {
+        "actor_kind": {"const": "local_operator_not_authenticated"},
+        "authenticated": {"const": false},
+        "teacher_identity_claimed": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": ["schema", "sequence", "event_id", "event_type", "occurred_at_utc", "idempotency_key", "request_sha256", "payload", "actor", "previous_event_sha256", "event_sha256"],
+      "properties": {
+        "schema": {"const": "teaching_skill_miner.syllabus_version_event.v1"},
+        "sequence": {"type": "integer", "minimum": 1, "maximum": 8192},
+        "event_id": {"type": "string", "pattern": "^syve_[0-9a-f]{24}$"},
+        "event_type": {"enum": ["family.registered", "revision.created", "revision.published", "revision.rollback"]},
+        "occurred_at_utc": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+        "idempotency_key": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$"},
+        "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "payload": {"type": "object"},
+        "actor": {"$ref": "#/$defs/actor"},
+        "previous_event_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "event_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  }
+}
