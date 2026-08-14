@@ -8,6 +8,7 @@ import pytest
 from scripts.run_teacher_agent_console_cross_browser_smoke import (
     SmokeFailure,
     _BrowserErrorGate,
+    _BROWSER_INTERACTION_STAGES,
     _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS,
 )
 
@@ -50,6 +51,29 @@ def test_other_origin_diagnostic_quarantine_keeps_external_request_gate() -> Non
     assert 'page.on("request", observe_request)' in RUNNER_SOURCE
     assert "external_requests += 1" in RUNNER_SOURCE
     assert "_require(external_requests == 0" in RUNNER_SOURCE
+
+
+def test_generic_browser_failures_emit_only_fixed_interaction_stages() -> None:
+    assert _BROWSER_INTERACTION_STAGES == {
+        "root_navigation",
+        "workspace_controls",
+        "security_contract",
+        "teach_mode_controls",
+        "workspace_axe",
+        "project_menu_focus",
+        "deletion_prompt_focus",
+        "command_dialog_focus",
+        "mobile_inspector_focus",
+        "reflow",
+        "service_worker_control",
+        "static_cache_policy",
+        "offline_snapshot_seed",
+        "offline_navigation",
+        "offline_shell_focus",
+        "offline_shell_axe",
+        "offline_final_gates",
+    }
+    assert "browser_interaction_failed_{safe_stage}" in RUNNER_SOURCE
 
 
 def test_online_errors_fail_before_the_offline_transition_without_raw_text() -> None:

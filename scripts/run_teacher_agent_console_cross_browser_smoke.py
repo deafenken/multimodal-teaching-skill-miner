@@ -46,6 +46,27 @@ _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS = 64
 _FIREFOX_OFFLINE_NETWORK_DIAGNOSTIC_SOURCES = frozenset(
     {"sealed_worker", "browser_internal"}
 )
+_BROWSER_INTERACTION_STAGES = frozenset(
+    {
+        "root_navigation",
+        "workspace_controls",
+        "security_contract",
+        "teach_mode_controls",
+        "workspace_axe",
+        "project_menu_focus",
+        "deletion_prompt_focus",
+        "command_dialog_focus",
+        "mobile_inspector_focus",
+        "reflow",
+        "service_worker_control",
+        "static_cache_policy",
+        "offline_snapshot_seed",
+        "offline_navigation",
+        "offline_shell_focus",
+        "offline_shell_axe",
+        "offline_final_gates",
+    }
+)
 
 
 class SmokeFailure(RuntimeError):
@@ -887,12 +908,14 @@ def _browser_smoke(
     page.on("console", on_console)
     page.on("request", observe_request)
     page.route("**/*", guard_route)
+    interaction_stage = "root_navigation"
     try:
         response = page.goto(base_url, wait_until="domcontentloaded", timeout=30_000)
         _require(response is not None and response.status == 200, stage="root", code="root_not_200", browser=browser_name)
         _require(page.locator("html").get_attribute("lang") == "zh-CN", stage="a11y", code="document_language_missing", browser=browser_name)
         _require(page.get_by_role("main").count() == 1, stage="a11y", code="main_landmark_missing", browser=browser_name)
 
+        interaction_stage = "workspace_controls"
         chat_log = page.get_by_role("log", name="对话记录")
         chat_log.wait_for(state="visible", timeout=20_000)
         work_modes = page.get_by_role("group", name="工作模式")
@@ -906,6 +929,7 @@ def _browser_smoke(
         while composer.is_disabled() and time.monotonic() < deadline:
             page.wait_for_timeout(100)
         _require(not composer.is_disabled(), stage="controls", code="composer_not_ready", browser=browser_name)
+        interaction_stage = "security_contract"
         security = page.evaluate(
             """async () => {
               const session = await fetch('/api/teacher-agent/security/session', {
@@ -952,6 +976,7 @@ def _browser_smoke(
             browser=browser_name,
         )
 
+        interaction_stage = "teach_mode_controls"
         teach_button.click()
         _require(teach_button.get_attribute("aria-pressed") == "true", stage="controls", code="teach_not_selected", browser=browser_name)
         page.get_by_role("log", name="教学对话记录").wait_for(state="visible", timeout=10_000)
@@ -959,10 +984,12 @@ def _browser_smoke(
         chat_button.click()
         _require(chat_button.get_attribute("aria-pressed") == "true", stage="controls", code="chat_restore_failed", browser=browser_name)
 
+        interaction_stage = "workspace_axe"
         axe_results = [_axe_audit(page, axe_source, "workspace", browser_name)]
 
         # Roving project menu: keyboard entry, movement, Escape and deterministic
         # restoration to the owning trigger.
+        interaction_stage = "project_menu_focus"
         project_trigger = page.get_by_role("button", name="选择学习项目")
         project_trigger.focus()
         page.keyboard.press("Enter")
@@ -987,6 +1014,7 @@ def _browser_smoke(
 
         # A real destructive prompt is dismissed, proving cancellation performs
         # no mutation and returns focus to the permanent-delete control.
+        interaction_stage = "deletion_prompt_focus"
         project_trigger.press("Enter")
         permanent_delete = project_menu.locator(
             '[aria-label="永久删除 Deletion focus fixture"]'
@@ -1024,6 +1052,7 @@ def _browser_smoke(
 
         # Radix command dialog: keyboard invocation, trapped initial focus,
         # surfaced error alert and focus restoration to the composer.
+        interaction_stage = "command_dialog_focus"
         composer.focus()
         page.keyboard.press("Control+K")
         command_dialog = page.get_by_role("dialog", name="命令与后台任务中心")
@@ -1054,6 +1083,7 @@ def _browser_smoke(
 
         # At 390px the Inspector is a modal dialog. It must focus its close
         # button, expose Consent by keyboard, trap Tab, and restore its trigger.
+        interaction_stage = "mobile_inspector_focus"
         page.set_viewport_size({"width": 390, "height": 844})
         # Let the Workbench and Inspector matchMedia listeners commit their
         # compact-layout state before opening the drawer. Otherwise the resize
@@ -1103,6 +1133,7 @@ def _browser_smoke(
             browser=browser_name,
         )
 
+        interaction_stage = "reflow"
         reflow_results = [
             _reflow_check(page, 390, "mobile_390px", browser_name),
             _reflow_check(page, 640, "equivalent_200_percent", browser_name),
@@ -1112,6 +1143,7 @@ def _browser_smoke(
 
         # The installed worker must contain only immutable static entries. Then
         # a true network-off hard reload renders the account-scope-bound shell.
+        interaction_stage = "service_worker_control"
         worker_deadline = time.monotonic() + 15
         while time.monotonic() < worker_deadline:
             if page.evaluate("Boolean(navigator.serviceWorker?.controller)"):
@@ -1119,6 +1151,7 @@ def _browser_smoke(
             page.wait_for_timeout(100)
         else:
             raise SmokeFailure("offline", "service_worker_not_controlling", browser_name)
+        interaction_stage = "static_cache_policy"
         cached_urls: list[str] = []
         cached_paths: list[str] = []
         cache_deadline = time.monotonic() + 5
@@ -1164,6 +1197,7 @@ def _browser_smoke(
             code="offline_shell_not_cached",
             browser=browser_name,
         )
+        interaction_stage = "offline_snapshot_seed"
         _seed_offline_snapshot(page)
         # A Playwright route shim can sit ahead of browser-native service-worker
         # navigation handling. Online requests have already been actively
@@ -1174,6 +1208,7 @@ def _browser_smoke(
         # Playwright's engine-specific offline emulation. The public listener
         # stays bound, while the worker's internal fetch receives a real
         # connection failure and falls back to the scope-bound offline document.
+        interaction_stage = "offline_navigation"
         error_gate.require_online_clean()
         error_gate.begin_intentional_offline_navigation()
         disconnect_production_origin()
@@ -1191,6 +1226,7 @@ def _browser_smoke(
             state="visible", timeout=10_000
         )
         error_gate.complete_intentional_offline_navigation()
+        interaction_stage = "offline_shell_focus"
         offline_main = page.locator("#offline-main")
         _require(
             offline_main.evaluate("element => document.activeElement === element"),
@@ -1207,7 +1243,9 @@ def _browser_smoke(
             code="offline_shell_focus_order_failed",
             browser=browser_name,
         )
+        interaction_stage = "offline_shell_axe"
         axe_results.append(_axe_audit(page, axe_source, "offline_scope_bound_shell", browser_name))
+        interaction_stage = "offline_final_gates"
         error_gate.require_offline_clean()
         _require(external_requests == 0, stage="browser", code="external_request", browser=browser_name)
         return {
@@ -1233,7 +1271,16 @@ def _browser_smoke(
     except SmokeFailure:
         raise
     except Exception as exc:
-        raise SmokeFailure("browser", "browser_interaction_failed", browser_name) from exc
+        safe_stage = (
+            interaction_stage
+            if interaction_stage in _BROWSER_INTERACTION_STAGES
+            else "unknown_stage"
+        )
+        raise SmokeFailure(
+            "browser",
+            f"browser_interaction_failed_{safe_stage}",
+            browser_name,
+        ) from exc
     finally:
         try:
             context.set_offline(False)
