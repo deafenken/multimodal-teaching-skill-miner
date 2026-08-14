@@ -175,7 +175,14 @@ services:
       # directory as one unit preserves its uid-10001/mode-0700 boundary;
       # individual file bind mounts would leave /run/teachlab root-owned and
       # make the production private-file contract impossible to satisfy.
-      - ${TEACHLAB_SECRETS_DIR:?uid-10001 mode-0700 private directory required}:/run/teachlab:ro
+      - type: bind
+        source: ${TEACHLAB_SECRETS_DIR:?uid-10001 mode-0700 private directory required}
+        target: /run/teachlab
+        read_only: true
+        bind:
+          # A missing secrets directory is a deployment error, not permission
+          # to create a root-owned replacement on the host.
+          create_host_path: false
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700
     healthcheck:

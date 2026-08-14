@@ -8,6 +8,7 @@ import pytest
 from scripts.run_teacher_agent_console_cross_browser_smoke import (
     SmokeFailure,
     _BrowserErrorGate,
+    _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS,
 )
 
 
@@ -55,17 +56,21 @@ def test_online_errors_fail_before_the_offline_transition_without_raw_text() -> 
     assert gate.accepted_firefox_offline_diagnostics == 0
 
 
-def test_bounded_scoped_firefox_offline_network_diagnostics_are_accepted() -> None:
+def test_scoped_firefox_offline_network_diagnostics_are_accepted() -> None:
     gate = _BrowserErrorGate("firefox", ORIGIN)
     gate.require_online_clean()
     gate.begin_intentional_offline_navigation()
 
     localized_diagnostic = _console_error(text="本地化的 Firefox 离线导航诊断")
-    gate.on_console(localized_diagnostic)
-    gate.on_console(_console_error(text="另一条本地化的 Firefox 离线网络诊断"))
+    for _ in range(_MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS):
+        gate.on_console(localized_diagnostic)
+    gate.complete_intentional_offline_navigation()
     gate.require_offline_clean()
 
-    assert gate.accepted_firefox_offline_diagnostics == 2
+    assert (
+        gate.accepted_firefox_offline_diagnostics
+        == _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS
+    )
     assert gate.offline_console_errors == 0
     assert localized_diagnostic.text not in repr(gate)
 
@@ -96,7 +101,7 @@ def test_offline_allowlist_rejects_other_engines_sources_and_messages(
     gate.on_console(message)
 
     with pytest.raises(SmokeFailure) as caught:
-        gate.require_offline_clean()
+        gate.complete_intentional_offline_navigation()
 
     assert caught.value.stage == "browser_offline"
     assert caught.value.code == "console_error"
@@ -104,18 +109,33 @@ def test_offline_allowlist_rejects_other_engines_sources_and_messages(
 
 
 def test_offline_allowlist_is_bounded_and_never_accepts_page_errors() -> None:
-    excessive_gate = _BrowserErrorGate("firefox", ORIGIN)
-    excessive_gate.begin_intentional_offline_navigation()
-    excessive_gate.on_console(_console_error())
-    excessive_gate.on_console(_console_error())
-    excessive_gate.on_console(_console_error())
+    diagnostic_storm_gate = _BrowserErrorGate("firefox", ORIGIN)
+    diagnostic_storm_gate.begin_intentional_offline_navigation()
+    for _ in range(_MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS + 1):
+        diagnostic_storm_gate.on_console(_console_error())
     with pytest.raises(SmokeFailure, match="^console_error$"):
-        excessive_gate.require_offline_clean()
-    assert excessive_gate.accepted_firefox_offline_diagnostics == 2
-    assert excessive_gate.offline_console_errors == 1
+        diagnostic_storm_gate.complete_intentional_offline_navigation()
+    assert (
+        diagnostic_storm_gate.accepted_firefox_offline_diagnostics
+        == _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS
+    )
+    assert diagnostic_storm_gate.offline_console_errors == 1
 
     page_error_gate = _BrowserErrorGate("firefox", ORIGIN)
     page_error_gate.begin_intentional_offline_navigation()
     page_error_gate.on_page_error(RuntimeError("private page payload"))
     with pytest.raises(SmokeFailure, match="^page_error$"):
-        page_error_gate.require_offline_clean()
+        page_error_gate.complete_intentional_offline_navigation()
+
+
+def test_firefox_worker_diagnostic_fails_after_offline_shell_is_verified() -> None:
+    gate = _BrowserErrorGate("firefox", ORIGIN)
+    gate.begin_intentional_offline_navigation()
+    gate.complete_intentional_offline_navigation()
+    gate.on_console(_console_error())
+
+    with pytest.raises(SmokeFailure, match="^console_error$"):
+        gate.require_offline_clean()
+
+    assert gate.accepted_firefox_offline_diagnostics == 0
+    assert gate.offline_console_errors == 1

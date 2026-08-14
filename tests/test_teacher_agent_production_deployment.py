@@ -107,7 +107,7 @@ def _rendered_json_contract() -> dict[str, object]:
             "source": "/private/teachlab/secrets",
             "target": "/run/teachlab",
             "read_only": True,
-            "bind": {},
+            "bind": {"create_host_path": False},
         },
     ]
     api_environment = {
@@ -209,6 +209,7 @@ def test_canonical_compose_json_contract_passes(tmp_path: Path) -> None:
         lambda model: model["services"]["api"]["deploy"].update({"replicas": 2}),
         lambda model: model["services"]["api"]["environment"].update({"TEACHLAB_SESSION_SECRET": "inline"}),
         lambda model: model["services"]["api"]["volumes"][1].update({"read_only": False}),
+        lambda model: model["services"]["api"]["volumes"][1]["bind"].update({"create_host_path": True}),
     ],
 )
 def test_unsafe_canonical_compose_json_fails_closed(tmp_path: Path, mutation) -> None:
@@ -307,7 +308,8 @@ def test_unsafe_canonical_compose_json_fails_closed(tmp_path: Path, mutation) ->
             "TEACHER_ENTITLEMENT_RECEIPT_KEY=",
         ),
         lambda text: text.replace(
-            ":/run/teachlab:ro", ":/run/teachlab/session-secret:ro"
+            "        target: /run/teachlab",
+            "        target: /run/teachlab/session-secret",
         ),
         lambda text: text.replace(
             "ACCOUNT_CACHE_SCOPE_SECRET_FILE:", "ACCOUNT_CACHE_SCOPE_SECRET="

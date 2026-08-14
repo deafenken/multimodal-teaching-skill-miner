@@ -228,15 +228,19 @@ def _verify_rendered_compose_json(model: object) -> dict[str, object]:
         if isinstance(volume.get("target"), str)
         and volume["target"].startswith("/run/teachlab")
     ]
-    if len(secret_mounts) != 1 or secret_mounts[0] != {
-        "type": "bind",
-        "source": secret_mounts[0].get("source"),
-        "target": "/run/teachlab",
-        "read_only": True,
-        "bind": {},
-    }:
+    if len(secret_mounts) != 1:
         raise ValueError("api must mount one read-only private secrets directory")
-    if not isinstance(secret_mounts[0].get("source"), str) or not secret_mounts[0]["source"].startswith("/"):
+    secret_mount = secret_mounts[0]
+    if (
+        secret_mount.get("type") != "bind"
+        or secret_mount.get("target") != "/run/teachlab"
+        or secret_mount.get("read_only") is not True
+    ):
+        raise ValueError("api must mount one read-only private secrets directory")
+    bind_options = _json_mapping(secret_mount.get("bind"), "api secrets bind options")
+    if bind_options != {"create_host_path": False}:
+        raise ValueError("api secrets bind mount must reject a missing host directory")
+    if not isinstance(secret_mount.get("source"), str) or not secret_mount["source"].startswith("/"):
         raise ValueError("api secrets directory source must be absolute")
 
     healthcheck = _json_mapping(api.get("healthcheck"), "api healthcheck")
@@ -373,9 +377,19 @@ def verify_rendered_compose(path: Path) -> dict[str, object]:
     missing = [value for value in api_required if value not in services["api"]]
     if missing:
         raise ValueError("api is missing hardened runtime contracts")
-    if ":/run/teachlab:ro" not in services["api"]:
+    private_directory_mount = re.search(
+        r"(?m)^      - type: bind\n"
+        r"        source: /[^\n]+\n"
+        r"        target: /run/teachlab\n"
+        r"        read_only: true\n"
+        r"        bind:\n"
+        r"(?:          #[^\n]*\n)*"
+        r"          create_host_path: false$",
+        services["api"],
+    )
+    if private_directory_mount is None:
         raise ValueError("api must mount one private secrets directory")
-    if len(re.findall(r":/run/teachlab(?:/[^:\s]+)?:ro", services["api"])) != 1:
+    if re.search(r"(?m)^\s+target: /run/teachlab/", services["api"]):
         raise ValueError("api must not use individual secret-file bind mounts")
     console_required = (
         "NEXT_PUBLIC_TEACHLAB_AUTH_MODE: oidc",
