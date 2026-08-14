@@ -105,8 +105,20 @@
     } catch {
       showFailure("当前离线，但浏览器拒绝读取本机快照。请恢复联网后重试。");
     } finally {
-      byId("offline-retry")?.addEventListener("click", () => location.reload());
-      byId("offline-main")?.focus();
+      const retry = byId("offline-retry");
+      const main = byId("offline-main");
+      retry?.addEventListener("click", () => location.reload());
+      main?.addEventListener("keydown", (event) => {
+        // WebKit follows the host's full-keyboard-access preference and may
+        // otherwise skip buttons after the programmatically focused main
+        // landmark. Keep the first offline action keyboard-reachable without
+        // changing the browser's focus policy for the rest of the document.
+        if (event.key === "Tab" && !event.shiftKey && document.activeElement === main) {
+          event.preventDefault();
+          retry?.focus();
+        }
+      });
+      main?.focus();
     }
   })();
 })();

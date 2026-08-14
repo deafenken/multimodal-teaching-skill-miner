@@ -350,7 +350,6 @@ export class TeacherEntitlementAuthorizationService {
           abort.abort();
           reject(new Error("teacher entitlement provider timeout"));
         }, this.policy.providerTimeoutMs);
-        timeout.unref?.();
       });
       const raw = await Promise.race([
         this.provider.readAuthoritativeSnapshot(Object.freeze({...identity}), abort.signal),

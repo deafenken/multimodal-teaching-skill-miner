@@ -3,10 +3,11 @@
 import {useEffect} from "react";
 
 const SERVICE_WORKER_URL = "/teachlab-sw-v1.js";
+const OFFLINE_SHELL_URL = "/teachlab-offline-shell-v1.js";
 
 function immutableResourcesSeenByThisPage(): string[] {
   const origin = window.location.origin;
-  return Array.from(new Set(performance.getEntriesByType("resource").flatMap((entry) => {
+  const pageResources = Array.from(new Set(performance.getEntriesByType("resource").flatMap((entry) => {
     try {
       const url = new URL(entry.name);
       return url.origin === origin && url.pathname.startsWith("/_next/static/")
@@ -15,7 +16,11 @@ function immutableResourcesSeenByThisPage(): string[] {
     } catch {
       return [];
     }
-  }))).slice(0, 64);
+  }))).slice(0, 63);
+  // Account-bound cache reconciliation may purge Cache API state without
+  // replacing an existing same-version registration. Always ask that worker
+  // to restore the immutable shell as well as assets observed by this page.
+  return [new URL(OFFLINE_SHELL_URL, origin).href, ...pageResources];
 }
 
 /** Register the production-only, static-assets-only offline shell. */

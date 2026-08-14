@@ -165,6 +165,7 @@ def test_dockerfiles_reject_mutable_base_images_and_run_as_non_root() -> None:
         assert "latest" not in source
 
     api = (ROOT / "docker/teachlab_api.Dockerfile").read_text(encoding="utf-8")
+    assert api.index("ARG PYTHON_RUNTIME_IMAGE") < api.index("FROM ")
     assert "PROJECT_WHEEL_SHA256" in api
     assert "release wheel SHA-256 mismatch" in api
     assert "teacher_agent_gateway_worker --self-check" in api
@@ -175,6 +176,7 @@ def test_dockerfiles_reject_mutable_base_images_and_run_as_non_root() -> None:
     assert "TEACHLAB_RELEASE_VERSION=${TEACHLAB_RELEASE_VERSION}" in api
     assert "TEACHLAB_RELEASE_ID=${TEACHLAB_RELEASE_ID}" in api
     console = (ROOT / "docker/teachlab_console.Dockerfile").read_text(encoding="utf-8")
+    assert console.index("ARG NODE_RUNTIME_IMAGE") < console.index("FROM ")
     assert "NEXT_PUBLIC_TEACHLAB_AUTH_MODE=oidc" in console
     assert "TEACHLAB_RELEASE_VERSION=${TEACHLAB_RELEASE_VERSION}" in console
     assert "TEACHLAB_RELEASE_ID=${TEACHLAB_RELEASE_ID}" in console

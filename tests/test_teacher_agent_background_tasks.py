@@ -7,7 +7,11 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised by the Python 3.10 CI job
+    import tomli as tomllib
 import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit

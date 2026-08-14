@@ -20,13 +20,16 @@ import json
 import os
 from pathlib import Path
 import secrets
+import select
 import signal
 import socket
+import socketserver
+import struct
 import subprocess
 import sys
 import threading
 import time
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, build_opener
@@ -136,6 +139,127 @@ def _free_loopback_port() -> int:
         if port != 3030:
             return port
     raise SmokeFailure("runtime", "ephemeral_port_unavailable")
+
+
+def _abort_socket(connection: socket.socket) -> None:
+    """Close a TCP stream with a reset so browser fetch() observes failure."""
+
+    try:
+        connection.setsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_LINGER,
+            struct.pack("ii", 1, 0),
+        )
+    except OSError:
+        pass
+    try:
+        connection.close()
+    except OSError:
+        pass
+
+
+class _OriginGateHandler(socketserver.BaseRequestHandler):
+    """Relay one browser connection until the smoke test cuts the origin."""
+
+    def handle(self) -> None:
+        gate = self.server
+        if not isinstance(gate, _OriginGateServer):
+            return
+        client = self.request
+        if not isinstance(client, socket.socket):
+            return
+        if not gate.track(client):
+            gate.reject_after_accept(client)
+            return
+        upstream: socket.socket | None = None
+        try:
+            try:
+                upstream = socket.create_connection(gate.upstream_address, timeout=2)
+                upstream.settimeout(None)
+            except OSError:
+                return
+            if not gate.track(upstream):
+                return
+            streams = (client, upstream)
+            while not gate.disconnected.is_set():
+                try:
+                    readable, _, exceptional = select.select(streams, (), streams, 0.1)
+                except (OSError, ValueError):
+                    return
+                if gate.disconnected.is_set() or exceptional:
+                    return
+                for source in readable:
+                    if gate.disconnected.is_set():
+                        return
+                    target = upstream if source is client else client
+                    try:
+                        chunk = source.recv(64 * 1024)
+                        if not chunk:
+                            return
+                        target.sendall(chunk)
+                    except OSError:
+                        return
+        finally:
+            if upstream is not None:
+                gate.untrack(upstream)
+                try:
+                    upstream.close()
+                except OSError:
+                    pass
+            gate.untrack(client)
+            if gate.disconnected.is_set():
+                _abort_socket(client)
+
+
+class _OriginGateServer(socketserver.ThreadingTCPServer):
+    """Same-origin TCP relay that can create a deterministic network cut."""
+
+    allow_reuse_address = True
+    daemon_threads = True
+    request_queue_size = 64
+
+    def __init__(self, server_address: tuple[str, int]) -> None:
+        super().__init__(server_address, _OriginGateHandler)
+        self.upstream_address = ("127.0.0.1", 0)
+        self.disconnected = threading.Event()
+        self._active_lock = threading.Lock()
+        self._active: set[socket.socket] = set()
+
+    def track(self, connection: socket.socket) -> bool:
+        with self._active_lock:
+            if self.disconnected.is_set():
+                should_abort = True
+            else:
+                self._active.add(connection)
+                should_abort = False
+        if should_abort:
+            return False
+        return True
+
+    def untrack(self, connection: socket.socket) -> None:
+        with self._active_lock:
+            self._active.discard(connection)
+
+    @staticmethod
+    def reject_after_accept(connection: socket.socket) -> None:
+        """Let connect() succeed, then fail the first offline HTTP exchange."""
+
+        try:
+            connection.settimeout(0.25)
+            connection.recv(64 * 1024)
+        except OSError:
+            pass
+        _abort_socket(connection)
+
+    def disconnect(self) -> None:
+        with self._active_lock:
+            if self.disconnected.is_set():
+                return
+            self.disconnected.set()
+            active = tuple(self._active)
+            self._active.clear()
+        for connection in active:
+            _abort_socket(connection)
 
 
 def _project() -> dict[str, Any]:
@@ -344,30 +468,63 @@ def _http_json(url: str, *, expected_status: int) -> dict[str, Any]:
 def _production_server(
     runtime: RuntimeRelease,
     capability_url: str,
-) -> Iterator[str]:
-    port = _free_loopback_port()
-    base_url = f"http://127.0.0.1:{port}"
+) -> Iterator[tuple[str, Callable[[], None]]]:
+    # The public port remains bound for the full browser run.  A separate
+    # internal Next port lets the test cut network transport while the service
+    # worker's public origin address remains bound for the navigation attempt.
+    origin_gate = _OriginGateServer(("127.0.0.1", 0))
+    public_port = int(origin_gate.server_address[1])
+    internal_port = _free_loopback_port()
+    origin_gate.upstream_address = ("127.0.0.1", internal_port)
+    gate_thread = threading.Thread(
+        target=origin_gate.serve_forever,
+        name="console-smoke-origin-gate",
+        daemon=True,
+    )
+    base_url = f"http://127.0.0.1:{public_port}"
     environment = {
         **os.environ,
         "NODE_ENV": "production",
         "HOSTNAME": "127.0.0.1",
-        "PORT": str(port),
+        "PORT": str(internal_port),
         "TEACHLAB_HARNESS_MODE": "local_python",
         "TEACHER_AGENT_CAPABILITY_URL": capability_url,
         "TEACHLAB_LOCAL_SECURITY_SECRET": secrets.token_hex(32),
         "TEACHLAB_RELEASE_ID": runtime.release_id,
         "TEACHLAB_RELEASE_VERSION": runtime.version,
     }
-    process = subprocess.Popen(
-        ["node", str(runtime.directory / "server.js")],
-        cwd=runtime.directory,
-        env=environment,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    process: subprocess.Popen[bytes] | None = None
+
+    def disconnect_origin() -> None:
+        origin_gate.disconnect()
+
+    def stop_process() -> None:
+        if process is None or process.poll() is not None:
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=5)
+
     try:
+        process = subprocess.Popen(
+            ["node", str(runtime.directory / "server.js")],
+            cwd=runtime.directory,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        gate_thread.start()
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             if process.poll() is not None:
@@ -386,21 +543,15 @@ def _production_server(
                 time.sleep(0.2)
         else:
             raise SmokeFailure("runtime", "production_server_not_ready")
-        yield base_url
+        yield base_url, disconnect_origin
     finally:
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                process.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait(timeout=5)
+        disconnect_origin()
+        if gate_thread.is_alive():
+            origin_gate.shutdown()
+        origin_gate.server_close()
+        if gate_thread.ident is not None:
+            gate_thread.join(timeout=5)
+        stop_process()
 
 
 def _axe_audit(page: Any, axe_source: str, state: str, browser_name: str) -> dict[str, Any]:
@@ -518,7 +669,12 @@ def _seed_offline_snapshot(page: Any) -> None:
     )
 
 
-def _browser_smoke(playwright: Any, browser_name: str, base_url: str) -> dict[str, Any]:
+def _browser_smoke(
+    playwright: Any,
+    browser_name: str,
+    base_url: str,
+    disconnect_production_origin: Callable[[], None],
+) -> dict[str, Any]:
     try:
         axe_source = AXE_CORE_PATH.read_text(encoding="utf-8")
     except OSError as exc:
@@ -548,16 +704,21 @@ def _browser_smoke(playwright: Any, browser_name: str, base_url: str) -> dict[st
             console_errors += 1
 
     def guard_route(route: Any) -> None:
-        nonlocal external_requests
         target = urlsplit(route.request.url)
         if target.scheme not in {"http", "https"} or target.hostname != "127.0.0.1" or target.port != urlsplit(base_url).port:
-            external_requests += 1
             route.abort()
         else:
             route.continue_()
 
+    def observe_request(request: Any) -> None:
+        nonlocal external_requests
+        target = urlsplit(request.url)
+        if target.scheme not in {"http", "https"} or target.hostname != "127.0.0.1" or target.port != urlsplit(base_url).port:
+            external_requests += 1
+
     page.on("pageerror", on_page_error)
     page.on("console", on_console)
+    page.on("request", observe_request)
     page.route("**/*", guard_route)
     try:
         response = page.goto(base_url, wait_until="domcontentloaded", timeout=30_000)
@@ -578,8 +739,6 @@ def _browser_smoke(playwright: Any, browser_name: str, base_url: str) -> dict[st
         while composer.is_disabled() and time.monotonic() < deadline:
             page.wait_for_timeout(100)
         _require(not composer.is_disabled(), stage="controls", code="composer_not_ready", browser=browser_name)
-        page.get_by_role("button", name="停止 Teaching Agent 后台服务", exact=True).wait_for(state="visible", timeout=10_000)
-
         security = page.evaluate(
             """async () => {
               const session = await fetch('/api/teacher-agent/security/session', {
@@ -681,7 +840,12 @@ def _browser_smoke(playwright: Any, browser_name: str, base_url: str) -> dict[st
         page.once("dialog", dismiss_delete_prompt)
         permanent_delete.focus()
         permanent_delete.press("Enter")
-        page.wait_for_timeout(50)
+        focus_restore_deadline = time.monotonic() + 2
+        while (
+            not permanent_delete.evaluate("element => document.activeElement === element")
+            and time.monotonic() < focus_restore_deadline
+        ):
+            page.wait_for_timeout(25)
         _require(
             prompt_seen["value"]
             and permanent_delete.evaluate("element => document.activeElement === element"),
@@ -724,6 +888,10 @@ def _browser_smoke(playwright: Any, browser_name: str, base_url: str) -> dict[st
         # At 390px the Inspector is a modal dialog. It must focus its close
         # button, expose Consent by keyboard, trap Tab, and restore its trigger.
         page.set_viewport_size({"width": 390, "height": 844})
+        # Let the Workbench and Inspector matchMedia listeners commit their
+        # compact-layout state before opening the drawer. Otherwise the resize
+        # handler can race the keyboard activation and close the drawer again.
+        page.wait_for_timeout(100)
         inspector_trigger = page.get_by_role("button", name="展开右侧检查器")
         inspector_trigger.focus()
         inspector_trigger.press("Enter")
@@ -740,7 +908,17 @@ def _browser_smoke(playwright: Any, browser_name: str, base_url: str) -> dict[st
         consent_tab.focus()
         consent_tab.press("Enter")
         inspector.get_by_role("heading", name="同意中心").wait_for(state="visible", timeout=5_000)
-        page.keyboard.press("Shift+Tab")
+        # Exercise the actual wrap boundary. WebKit may omit intermediate
+        # buttons from native tab traversal unless the host enables full
+        # keyboard access, but the modal must still intercept Shift+Tab from
+        # its first focusable control and wrap inside the drawer.
+        first_inspector_control = inspector.locator(
+            'button:not([disabled]), summary, [href], input:not([disabled]), '
+            'textarea:not([disabled]), select:not([disabled]), '
+            '[tabindex]:not([tabindex="-1"])'
+        ).first
+        first_inspector_control.focus()
+        first_inspector_control.press("Shift+Tab")
         _require(
             inspector.evaluate("element => element.contains(document.activeElement)"),
             stage="focus",
@@ -774,32 +952,66 @@ def _browser_smoke(playwright: Any, browser_name: str, base_url: str) -> dict[st
             page.wait_for_timeout(100)
         else:
             raise SmokeFailure("offline", "service_worker_not_controlling", browser_name)
-        cached_urls = page.evaluate(
-            """async () => {
-              const names = (await caches.keys()).filter((name) =>
-                name.startsWith('teachlab-console-static-'));
-              const urls = [];
-              for (const name of names) {
-                const cache = await caches.open(name);
-                for (const request of await cache.keys()) urls.push(request.url);
-              }
-              return urls;
-            }"""
-        )
+        cached_urls: list[str] = []
+        cached_paths: list[str] = []
+        cache_deadline = time.monotonic() + 5
+        while time.monotonic() < cache_deadline:
+            cached_urls = page.evaluate(
+                """async () => {
+                  const names = (await caches.keys()).filter((name) =>
+                    name.startsWith('teachlab-console-static-'));
+                  const urls = [];
+                  for (const name of names) {
+                    const cache = await caches.open(name);
+                    for (const request of await cache.keys()) urls.push(request.url);
+                  }
+                  return urls;
+                }"""
+            )
+            cached_paths = [urlsplit(item).path for item in cached_urls]
+            _require(
+                all(
+                    path.startswith("/_next/static/")
+                    or path == "/teachlab-offline-shell-v1.js"
+                    for path in cached_paths
+                ),
+                stage="offline",
+                code="cache_contains_non_immutable_surface",
+                browser=browser_name,
+            )
+            if "/teachlab-offline-shell-v1.js" in cached_paths:
+                break
+            # Firefox can expose the claimed controller one task before Cache
+            # API entries from install/prewarm become visible to the client.
+            page.wait_for_timeout(100)
         _require(
             bool(cached_urls)
-            and all(
-                urlsplit(item).path.startswith("/_next/static/")
-                or urlsplit(item).path == "/teachlab-offline-shell-v1.js"
-                for item in cached_urls
-            ),
+            and bool(cached_paths),
             stage="offline",
-            code="cache_contains_non_immutable_surface",
+            code="static_cache_empty",
+            browser=browser_name,
+        )
+        _require(
+            "/teachlab-offline-shell-v1.js" in cached_paths,
+            stage="offline",
+            code="offline_shell_not_cached",
             browser=browser_name,
         )
         _seed_offline_snapshot(page)
-        context.set_offline(True)
-        page.reload(wait_until="domcontentloaded", timeout=15_000)
+        # A Playwright route shim can sit ahead of browser-native service-worker
+        # navigation handling. Online requests have already been actively
+        # guarded; keep the passive request observer and remove only that shim
+        # before exercising the CSP-locked shell.
+        page.unroute("**/*", guard_route)
+        # Cut the transport behind a same-origin TCP gate instead of relying on
+        # Playwright's engine-specific offline emulation. The public listener
+        # stays bound, while the worker's internal fetch receives a real
+        # connection failure and falls back to the scope-bound offline document.
+        disconnect_production_origin()
+        page.evaluate(
+            "url => window.location.assign(url)",
+            f"{base_url}/?offline-smoke={secrets.token_hex(8)}",
+        )
         page.get_by_role("heading", name="TeachLab 离线只读模式").wait_for(
             state="visible", timeout=10_000
         )
@@ -826,7 +1038,6 @@ def _browser_smoke(playwright: Any, browser_name: str, base_url: str) -> dict[st
             browser=browser_name,
         )
         axe_results.append(_axe_audit(page, axe_source, "offline_scope_bound_shell", browser_name))
-        context.set_offline(False)
         _require(page_errors == 0, stage="browser", code="page_error", browser=browser_name)
         _require(console_errors == 0, stage="browser", code="console_error", browser=browser_name)
         _require(external_requests == 0, stage="browser", code="external_request", browser=browser_name)
@@ -897,9 +1108,21 @@ def main(argv: list[str] | None = None) -> int:
         except ModuleNotFoundError as exc:
             raise SmokeFailure("dependency", "python_playwright_not_installed") from exc
         with _fixture_backend() as (backend, capability_url):
-            with _production_server(runtime, capability_url) as base_url:
-                with sync_playwright() as playwright:
-                    results = [_browser_smoke(playwright, name, base_url) for name in selected]
+            with sync_playwright() as playwright:
+                results = []
+                for name in selected:
+                    with _production_server(runtime, capability_url) as (
+                        base_url,
+                        disconnect_production_origin,
+                    ):
+                        results.append(
+                            _browser_smoke(
+                                playwright,
+                                name,
+                                base_url,
+                                disconnect_production_origin,
+                            )
+                        )
             routes = tuple(backend.routes)
         _require(routes.count("api/bootstrap") >= len(selected) + 1, stage="backend", code="bootstrap_not_exercised")
         _require("api/projects" in routes, stage="backend", code="project_list_not_exercised")

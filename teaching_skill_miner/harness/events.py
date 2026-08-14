@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import re
@@ -273,7 +273,9 @@ class HarnessEventEmitter:
                 "turn_id": self.turn_id,
                 "sequence": sequence,
                 "type": clean_type,
-                "timestamp": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+                "timestamp": datetime.now(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
                 "payload": clean_payload,
             }
             if causation_id:

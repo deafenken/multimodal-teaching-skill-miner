@@ -168,7 +168,6 @@ implements TeacherEntitlementSnapshotProvider {
           controller.abort();
           reject(sanitizedFailure());
         }, this.timeoutMs);
-        timeout.unref?.();
       });
       const operation = this.fetchAndValidate(identity, now.getTime(), controller.signal);
       return await Promise.race([operation, timeoutFailure]);

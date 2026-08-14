@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import hmac
@@ -88,11 +88,11 @@ def _text_sha256(value: str) -> str:
 
 
 def _utc_timestamp(value: datetime | None) -> str:
-    current = value or datetime.now(UTC)
+    current = value or datetime.now(timezone.utc)
     if current.tzinfo is None or current.utcoffset() is None:
         raise TeachingResourceReviewError("resource review time must be timezone-aware")
     return (
-        current.astimezone(UTC)
+        current.astimezone(timezone.utc)
         .replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z")

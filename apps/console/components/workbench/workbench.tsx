@@ -1075,8 +1075,11 @@ export function Workbench() {
     }
   }, [cancelAllModeRequests, queryClient]);
 
+  const accountDeletionStatusProbeAllowed = authenticationRequired
+    || bootstrap.data?.account_data_rights?.mode === "authenticated_account_authority";
+
   useEffect(() => {
-    if (signedOut) return;
+    if (signedOut || !accountDeletionStatusProbeAllowed) return;
     let active = true;
     let timer: number | undefined;
     let observedDeletion = false;
@@ -1106,7 +1109,7 @@ export function Workbench() {
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [authenticationRequired, finishCommittedAccountDeletion, signedOut]);
+  }, [accountDeletionStatusProbeAllowed, authenticationRequired, finishCommittedAccountDeletion, signedOut]);
 
   useEffect(() => {
     const media = window.matchMedia("(max-width: 1260px)");

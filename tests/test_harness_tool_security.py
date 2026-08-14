@@ -51,6 +51,45 @@ class HarnessToolSecurityTests(unittest.TestCase):
                 execution_isolation="trusted_inline",
             )
 
+    @unittest.skipIf(
+        sys.platform == "darwin", "exercises the unsupported-platform boundary"
+    )
+    def test_isolated_tools_fail_closed_when_kernel_sandbox_is_unavailable(
+        self,
+    ) -> None:
+        calls = 0
+
+        def must_not_run(_arguments, _context):
+            nonlocal calls
+            calls += 1
+            return {"ok": True}
+
+        registry = ToolRegistry()
+        registry.register(
+            ToolSpec(
+                name="isolated_probe",
+                version="1.0.0",
+                description="Verify unsupported hosts cannot run isolated handlers.",
+                input_schema={"type": "object"},
+                permission="tool.read",
+            ),
+            must_not_run,
+        )
+
+        result = run_agent_harness(
+            _ToolThenFinalModel("isolated_probe"),
+            registry,
+            {"scope": "unsupported-isolation-test"},
+            retry_policy=RetryPolicy(max_attempts=1),
+            allowed_permissions={"tool.read"},
+        )
+
+        failure = next(
+            event for event in result["events"] if event["type"] == "tool.failed"
+        )
+        self.assertEqual(failure["payload"]["error_code"], "sandbox_unavailable")
+        self.assertEqual(calls, 0)
+
     @unittest.skipUnless(sys.platform == "darwin", "requires macOS Seatbelt")
     def test_isolated_timeout_reaps_worker_before_a_late_side_effect(self) -> None:
         with tempfile.TemporaryDirectory() as raw_root:
@@ -215,6 +254,8 @@ class HarnessToolSecurityTests(unittest.TestCase):
                     "additionalProperties": False,
                 },
                 permission="tool.read",
+                execution_isolation="trusted_inline",
+                trusted_inline_reason="exercise exception redaction without an OS sandbox",
             ),
             lambda _arguments, _context: (_ for _ in ()).throw(RuntimeError(secret)),
         )

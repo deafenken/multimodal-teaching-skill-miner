@@ -217,7 +217,8 @@ jobs:
             apps/console/package-lock.json
       - run: python -m pip install -e ".[recognition,dev]"
       - run: python scripts/audit_repository_privacy.py
-      - run: sudo apt-get update && sudo apt-get install --yes ffmpeg
+      - name: Install release acceptance system dependencies
+        run: sudo apt-get update && sudo apt-get install --yes ffmpeg zsh
       - run: sh scripts/build_release_acceptance.sh
       - name: Generate Python environment SBOM
         run: python scripts/generate_python_environment_sbom.py --output artifacts/python-environment.cdx.json

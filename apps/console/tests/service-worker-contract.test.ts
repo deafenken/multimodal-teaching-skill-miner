@@ -7,6 +7,7 @@ const worker = readFileSync(new URL("../public/teachlab-sw-v1.js", import.meta.u
 const shell = readFileSync(new URL("../public/teachlab-offline-shell-v1.js", import.meta.url), "utf8");
 const registration = readFileSync(new URL("../components/service-worker-lifecycle.tsx", import.meta.url), "utf8");
 const config = readFileSync(new URL("../next.config.ts", import.meta.url), "utf8");
+const layout = readFileSync(new URL("../app/layout.tsx", import.meta.url), "utf8");
 
 test("service worker caches only versioned same-origin immutable static assets", () => {
   assert.match(worker, /teachlab-console-static-/);
@@ -32,6 +33,8 @@ test("offline shell fails closed unless snapshot and current account scope match
   assert.match(shell, /value\.expiresAt <= Date\.now\(\)/);
   assert.match(shell, /textContent =/);
   assert.doesNotMatch(shell, /innerHTML|insertAdjacentHTML|document\.write/);
+  assert.match(shell, /event\.key === "Tab" && !event\.shiftKey/);
+  assert.match(shell, /retry\?\.focus\(\)/);
 });
 
 test("A-to-B login transition blocks the offline shell before any prior-account storage read", async () => {
@@ -40,7 +43,7 @@ test("A-to-B login transition blocks the offline shell before any prior-account 
     ["offline-status", {textContent: ""}],
     ["offline-project", {hidden: false}],
     ["offline-retry", {addEventListener() {}}],
-    ["offline-main", {focus() {}}],
+    ["offline-main", {addEventListener() {}, focus() {}}],
   ]);
   vm.runInNewContext(shell, {
     document: {
@@ -69,8 +72,16 @@ test("production registration bypasses HTTP cache and immutable shell asset is v
   assert.match(registration, /process\.env\.NODE_ENV !== "production"/);
   assert.match(registration, /updateViaCache: "none"/);
   assert.match(registration, /PREWARM_IMMUTABLE/);
+  assert.match(registration, /const OFFLINE_SHELL_URL = "\/teachlab-offline-shell-v1\.js"/);
+  assert.match(registration, /return \[new URL\(OFFLINE_SHELL_URL, origin\)\.href, \.\.\.pageResources\]/);
+  assert.match(registration, /\)\)\)\.slice\(0, 63\)/);
   assert.match(config, /teachlab-offline-shell-v1\.js/);
   assert.match(config, /max-age=31536000, immutable/);
   assert.match(config, /teachlab-sw-v1\.js/);
   assert.match(config, /no-cache, no-store, must-revalidate/);
+});
+
+test("service worker registration starts only after the account cache boundary allows rendering", () => {
+  assert.ok(layout.indexOf("<Providers>") < layout.indexOf("<ServiceWorkerLifecycle />"));
+  assert.ok(layout.indexOf("<ServiceWorkerLifecycle />") < layout.indexOf("</Providers>"));
 });

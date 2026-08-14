@@ -1,6 +1,7 @@
 # Production builds must pass digest-pinned images, for example
 # node:22-bookworm-slim@sha256:<verified digest>. Mutable tags are rejected.
 ARG NODE_BUILD_IMAGE
+ARG PYTHON_RUNTIME_IMAGE
 FROM ${NODE_BUILD_IMAGE} AS api-build
 ARG NODE_BUILD_IMAGE
 RUN case "${NODE_BUILD_IMAGE}" in *@sha256:????????????????????????????????????????????????????????????????) ;; *) echo "NODE_BUILD_IMAGE must be digest pinned" >&2; exit 64;; esac
@@ -14,7 +15,6 @@ RUN npm run build \
     && npm prune --omit=dev --ignore-scripts \
     && npm cache clean --force
 
-ARG PYTHON_RUNTIME_IMAGE
 FROM ${PYTHON_RUNTIME_IMAGE} AS runtime
 ARG PYTHON_RUNTIME_IMAGE
 ARG PROJECT_WHEEL=dist/teaching_skill_miner-1.2.0-py3-none-any.whl

@@ -56,8 +56,12 @@ test("project menu and mobile inspector deterministically restore and contain fo
     'role={isMobile ? "dialog" : "complementary"}',
     "aria-modal={isMobile ? true : undefined}",
     'event.key !== "Tab"',
-    "document.activeElement === first",
-    "document.activeElement === last",
+    'button:not([disabled]), summary, [href]',
+    "getClientRects().length > 0",
+    "event.preventDefault()",
+    "focusable.indexOf(document.activeElement as HTMLElement)",
+    "activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1",
+    "activeIndex < 0 || activeIndex === focusable.length - 1 ? 0 : activeIndex + 1",
     "previous?.focus?.()",
   ]);
 });

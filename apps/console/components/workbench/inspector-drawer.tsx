@@ -315,7 +315,7 @@ function TeachingResourceCard({resource, teacherAuthority, onReviewed}: {
             ))}
           </fieldset>
           <p className="text-[10px] leading-4 text-[var(--inspector-muted)]">仅发送这段有界文字、冲突/层 ID、声明与备注。原文件、图片、音视频不会随复核请求发送。</p>
-          {error && <p className="rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-500" role="alert">{error}</p>}
+          {error && <p className="rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-300" role="alert">{error}</p>}
           {notice && <p className="rounded-lg border border-[var(--app-success)]/40 bg-[var(--app-success-soft)] p-3 text-xs leading-5 text-[var(--app-success)]" role="status">{notice}</p>}
           <Button className="w-full" size="sm" disabled={busy || !availability.enabled} onClick={() => void submitReview()}>{busy ? "正在安全提交…" : reviewed ? "保存新修订" : "提交认证复核"}</Button>
         </div>
@@ -812,18 +812,15 @@ export function InspectorDrawer({open, onClose, session, teachingResources: teac
       }
       if (event.key !== "Tab" || !panelRef.current) return;
       const focusable = Array.from(panelRef.current.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      ));
+        'button:not([disabled]), summary, [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )).filter((element) => element.getClientRects().length > 0);
       if (!focusable.length) return;
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      event.preventDefault();
+      const activeIndex = focusable.indexOf(document.activeElement as HTMLElement);
+      const nextIndex = event.shiftKey
+        ? activeIndex <= 0 ? focusable.length - 1 : activeIndex - 1
+        : activeIndex < 0 || activeIndex === focusable.length - 1 ? 0 : activeIndex + 1;
+      focusable[nextIndex]?.focus();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => {
@@ -1039,7 +1036,7 @@ export function InspectorDrawer({open, onClose, session, teachingResources: teac
                     <span>{label}</span><strong>{typeof value === "number" ? `${Math.round(value * 100)}%` : "—"}</strong>
                   </div>
                 ))}
-                {learningError && <p className="rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-500" role="alert">{learningError}</p>}
+                {learningError && <p className="rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-300" role="alert">{learningError}</p>}
                 {learningNotice && <p className="rounded-lg border border-[var(--app-success)]/40 bg-[var(--app-success-soft)] p-3 text-xs leading-5 text-[var(--app-success)]" role="status">{learningNotice}</p>}
 
                 <details open className="rounded-xl border border-[var(--inspector-border)] bg-[var(--inspector-card)] p-4 shadow-sm">
@@ -1157,7 +1154,7 @@ export function InspectorDrawer({open, onClose, session, teachingResources: teac
                       ? "：当前认证会话没有配置允许的教师角色，领取与裁决失败关闭。浏览器不能提交角色、actor 或 authority receipt。"
                       : "：bootstrap 权威状态缺失或不一致，领取与裁决失败关闭。"}
               </div>
-              {adjudicationError && <p className="mt-3 rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-500" role="alert">{adjudicationError}</p>}
+              {adjudicationError && <p className="mt-3 rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-300" role="alert">{adjudicationError}</p>}
               {adjudicationNotice && <p className="mt-3 rounded-lg border border-[var(--app-success)]/40 bg-[var(--app-success-soft)] p-3 text-xs leading-5 text-[var(--app-success)]" role="status">{adjudicationNotice}</p>}
               <Separator className="my-6 bg-[var(--inspector-border)]" />
               {session && adjudicationCandidates.length > 0 && (
@@ -1249,7 +1246,7 @@ export function InspectorDrawer({open, onClose, session, teachingResources: teac
                 </div>
                 <Button variant="subtle" size="sm" onClick={() => void refreshConsents()} disabled={consentBusy !== null}>刷新</Button>
               </div>
-              {consentError && <p className="mt-4 rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-500" role="alert">{consentError}</p>}
+              {consentError && <p className="mt-4 rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-300" role="alert">{consentError}</p>}
               {consentNotice && <p className="mt-4 rounded-lg border border-[var(--app-success)]/40 bg-[var(--app-success-soft)] p-3 text-xs leading-5 text-[var(--app-success)]" role="status">{consentNotice}</p>}
               <Separator className="my-6 bg-[var(--inspector-border)]" />
 
@@ -1337,7 +1334,7 @@ export function InspectorDrawer({open, onClose, session, teachingResources: teac
                 onClick={() => void refreshSafeguardingCases()}
               >{safeguardingBusy === "list" ? "正在读取…" : "读取内容无关案例"}</Button>
 
-              {safeguardingError && <p className="mt-4 rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-500" role="alert">{safeguardingError}</p>}
+              {safeguardingError && <p className="mt-4 rounded-lg border border-red-400/40 bg-red-500/10 p-3 text-xs leading-5 text-red-300" role="alert">{safeguardingError}</p>}
               {safeguardingNotice && <p className="mt-4 rounded-lg border border-[var(--app-success)]/40 bg-[var(--app-success-soft)] p-3 text-xs leading-5 text-[var(--app-success)]" role="status">{safeguardingNotice}</p>}
 
               <div className="mt-5 grid gap-4">

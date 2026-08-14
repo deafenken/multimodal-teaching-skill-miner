@@ -168,7 +168,7 @@ export function CommandCenter({open, onOpenChange, chatRunning, teachRunning, on
                     role="option"
                     aria-selected="false"
                     onClick={() => runAction(action.id)}
-                    className={cn("rounded-xl px-3 py-2.5 text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-accent)]", action.danger && "text-red-500")}
+                    className={cn("rounded-xl px-3 py-2.5 text-left hover:bg-[var(--app-hover)] focus-visible:outline-2 focus-visible:outline-[var(--app-accent)]", action.danger && "text-red-300")}
                   >
                     <span className="block text-sm font-medium">{action.title}</span>
                     <span className="mt-0.5 block text-xs text-[var(--app-muted)]">{action.detail}</span>
@@ -194,7 +194,7 @@ export function CommandCenter({open, onOpenChange, chatRunning, teachRunning, on
                             <span className="text-[10px] text-[var(--app-faint)]">{relativeTaskTime(task.updated_at_utc)}</span>
                           </div>
                           <p className="mt-1 truncate font-mono text-[10px] text-[var(--app-faint)]">{task.task_id}</p>
-                          {task.error_code && <p className="mt-1 text-xs text-red-500">{task.error_code}</p>}
+                          {task.error_code && <p className="mt-1 text-xs text-red-300">{task.error_code}</p>}
                         </div>
                         <div className="flex shrink-0 gap-1">
                           {task.resumable && <Button variant="subtle" size="sm" disabled={busy || task.resume_command_pending} onClick={() => {void mutateTask(task, "resume");}}><Play className="mr-1 size-3" />恢复</Button>}

@@ -115,6 +115,8 @@ test("Workbench gates cache hydration and cleanup on the server authentication r
   assert.ok(source.includes('if (identityBoundary === "checking")'));
   assert.ok(source.includes("if (!authenticatedBootstrapReady) return;\n    const loaded = parseChatThreads"));
   assert.ok(source.includes("if (signedOut || authenticationRequired || initialIdentityCheckPending"));
+  assert.ok(source.includes("const accountDeletionStatusProbeAllowed = authenticationRequired"));
+  assert.ok(source.includes("if (signedOut || !accountDeletionStatusProbeAllowed) return;"));
   assert.ok(source.includes("void boundedLogoutCleanup(clearOfflineRuntimeForLogout)"));
   assert.equal(source.includes("organizationLoginAvailable() && bootstrap.isError"), false);
   const providers = readFileSync(new URL("../app/providers.tsx", import.meta.url), "utf8");

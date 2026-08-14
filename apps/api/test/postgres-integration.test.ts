@@ -15,6 +15,10 @@ import {PostgresArtifactStorageAdapter} from "../src/platform/postgres-artifact-
 const adminUrl = process.env.POSTGRES_TEST_ADMIN_URL?.trim();
 const appRole = "teachlab_app_integration";
 const appPassword = "test-pass";
+const accountScopeKeys = [{
+  version: "k1",
+  secret: "postgres-integration-account-scope-key-32-bytes"
+}];
 
 function applicationUrl(source: string): string {
   const url = new URL(source);
@@ -100,7 +104,8 @@ test(
       dataBackend: "postgres",
       databaseUrl: applicationUrl(adminUrl),
       postgresPoolMax: 6,
-      postgresSslMode: "disable"
+      postgresSslMode: "disable",
+      accountScopeKeys
     } as unknown as AppConfigService);
     await database.assertReady();
 
@@ -425,7 +430,8 @@ test(
       dataBackend: "postgres",
       databaseUrl: applicationUrl(adminUrl),
       postgresPoolMax: 6,
-      postgresSslMode: "disable"
+      postgresSslMode: "disable",
+      accountScopeKeys
     } as unknown as AppConfigService);
     await database.assertReady();
     revocations = new PostgresSessionRevocationRepository(database);

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import subprocess
+import tempfile
 import unittest
 
 
@@ -11,26 +13,36 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 class TeacherAgentConsoleDeliveryTests(unittest.TestCase):
     def test_launcher_lifecycle_and_shell_syntax(self) -> None:
-        subprocess.run(
-            [
-                "node",
-                str(ROOT / "scripts/start_teacher_agent_console.mjs"),
-                "--lifecycle-self-test",
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        # The lifecycle probe must remain hermetic: Python-only package checks
+        # do not install apps/console/node_modules before invoking it.
+        with tempfile.TemporaryDirectory(prefix="teachlab-launcher-self-test-") as tmp:
+            isolated_root = pathlib.Path(tmp)
+            isolated_scripts = isolated_root / "scripts"
+            isolated_scripts.mkdir()
+            isolated_launcher = isolated_scripts / "start_teacher_agent_console.mjs"
+            shutil.copy2(
+                ROOT / "scripts/start_teacher_agent_console.mjs", isolated_launcher
+            )
+            subprocess.run(
+                ["node", str(isolated_launcher), "--lifecycle-self-test"],
+                cwd=isolated_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         runtime_builder = (
             ROOT / "scripts/build_teacher_agent_console_runtime.mjs"
         ).read_text(encoding="utf-8")
         self.assertIn("copyBuildInput", runtime_builder)
         self.assertIn("fs.chmodSync(target, 0o600)", runtime_builder)
         self.assertIn("read-only snapshot input", runtime_builder)
-        subprocess.run(
-            ["zsh", "-n", str(ROOT / "打开题目二教学Agent.command")], check=True
-        )
+        command_path = ROOT / "打开题目二教学Agent.command"
+        command_source = command_path.read_text(encoding="utf-8")
+        self.assertTrue(command_source.startswith("#!/bin/zsh\n"))
+        self.assertTrue(os.access(command_path, os.X_OK))
+        zsh = shutil.which("zsh")
+        if zsh is not None:
+            subprocess.run([zsh, "-n", str(command_path)], check=True)
         subprocess.run(
             [
                 "node",

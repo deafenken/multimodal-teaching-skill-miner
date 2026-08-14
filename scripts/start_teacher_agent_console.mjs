@@ -508,15 +508,6 @@ async function ensureProductionRuntime() {
   }
 }
 
-function installedConsoleNextVersion() {
-  const manifestPath = path.join(root, "apps", "console", "node_modules", "next", "package.json");
-  const parsed = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  if (!parsed || typeof parsed.version !== "string" || !/^\d+\.\d+\.\d+$/.test(parsed.version)) {
-    throw new Error("无法读取 Console 当前安装的 Next.js 版本。");
-  }
-  return parsed.version;
-}
-
 function parseProcessIdentityLine(line) {
   const match = String(line).trimEnd().match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.{24})\s+(.+)$/);
   if (!match) return null;
@@ -1382,7 +1373,10 @@ async function runLifecycleSelfTest() {
     ppid: 4111,
     pgid: 4102,
     started_at_os: "Wed Aug 12 01:00:04 2026",
-    command: `next-server (v${installedConsoleNextVersion()})`,
+    // Keep the lifecycle self-test hermetic.  Python-only CI jobs intentionally
+    // do not install Console dependencies, and this synthetic process identity
+    // does not need the locally installed Next.js version to exercise recovery.
+    command: "next-server (v0.0.0-lifecycle-self-test)",
   };
   consoleServer.command_sha256 = canonicalDigest(consoleServer.command);
 

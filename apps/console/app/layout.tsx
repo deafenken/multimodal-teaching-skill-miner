@@ -21,8 +21,10 @@ export default function RootLayout({children}: {children: ReactNode}) {
         />
       </head>
       <body>
-        <ServiceWorkerLifecycle />
-        <Providers>{children}</Providers>
+        <Providers>
+          <ServiceWorkerLifecycle />
+          {children}
+        </Providers>
       </body>
     </html>
   );
