@@ -74,6 +74,7 @@ class _BrowserErrorGate:
     offline_page_errors: int = 0
     offline_console_errors: int = 0
     accepted_firefox_offline_diagnostics: int = 0
+    first_unexpected_offline_console_source: str = "none"
 
     def on_page_error(self, _error: object) -> None:
         if self.phase == "online":
@@ -87,13 +88,27 @@ class _BrowserErrorGate:
         if self.phase == "online":
             self.online_console_errors += 1
             return
+        source = self._console_error_source(message)
+        # The only tolerated browser diagnostic is attributed to the sealed
+        # worker while the test itself has deliberately severed its transport.
+        # Raw/localized console text is never retained or emitted.
         if (
             self.accepted_firefox_offline_diagnostics
             < _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS
-            and self._is_expected_firefox_offline_diagnostic(message)
+            and self.browser == "firefox"
+            and self.phase == "intentional_offline_navigation"
+            and source == "sealed_worker"
         ):
             self.accepted_firefox_offline_diagnostics += 1
             return
+        if self.offline_console_errors == 0:
+            self.first_unexpected_offline_console_source = (
+                "diagnostic_limit"
+                if source == "sealed_worker"
+                and self.accepted_firefox_offline_diagnostics
+                >= _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS
+                else source
+            )
         self.offline_console_errors += 1
 
     def require_online_clean(self) -> None:
@@ -138,7 +153,10 @@ class _BrowserErrorGate:
         _require(
             self.offline_console_errors == 0,
             stage="browser_offline",
-            code="console_error",
+            code=(
+                "navigation_console_error_"
+                f"{self.first_unexpected_offline_console_source}"
+            ),
             browser=self.browser,
         )
         # The caller invokes this immediately after proving the fixed offline
@@ -162,41 +180,45 @@ class _BrowserErrorGate:
         _require(
             self.offline_console_errors == 0,
             stage="browser_offline",
-            code="console_error",
+            code=(
+                "verified_shell_console_error_"
+                f"{self.first_unexpected_offline_console_source}"
+            ),
             browser=self.browser,
         )
 
-    def _is_expected_firefox_offline_diagnostic(self, message: Any) -> bool:
-        if self.browser != "firefox" or self.phase != "intentional_offline_navigation":
-            return False
+    def _console_error_source(self, message: Any) -> str:
+        """Return a fixed, non-sensitive source class for CI diagnosis."""
+
         try:
             location = message.location
             location_url = str(location.get("url", ""))
+            if not location_url:
+                return "missing_location"
             expected_origin = urlsplit(self.production_origin)
             observed = urlsplit(location_url)
-            source_matches = (
+            same_origin = (
                 observed.scheme == expected_origin.scheme == "http"
                 and observed.hostname == expected_origin.hostname == "127.0.0.1"
                 and observed.port == expected_origin.port
-                and observed.path == "/teachlab-sw-v1.js"
-                and not observed.query
-                and not observed.fragment
             )
         except (AttributeError, TypeError, ValueError):
-            return False
-        if not source_matches:
-            return False
-        # Firefox reports the deliberately severed service-worker navigation
-        # as a platform-dependent number of console errors even when the worker
-        # returns the validated offline shell. Gecko can separately report the
-        # failed inner fetch and intercepted resources; neither the count nor
-        # localized diagnostic text is a stable security boundary. Accept a
-        # bounded number attributed to the exact sealed worker during the
-        # deliberate transport cut. The generous ceiling absorbs per-resource
-        # engine variance but still rejects a diagnostic storm. Online errors,
-        # page errors and every other source remain fail-closed, and the caller
-        # then proves that the scope-bound shell rendered.
-        return True
+            return "invalid_location"
+        if not same_origin:
+            return "other_origin"
+        if (
+            observed.path == "/teachlab-sw-v1.js"
+            and not observed.query
+            and not observed.fragment
+        ):
+            return "sealed_worker"
+        if observed.path == "/teachlab-offline-shell-v1.js":
+            return "offline_shell_script"
+        if observed.path.startswith("/_next/static/"):
+            return "next_static_asset"
+        if observed.path in {"", "/"}:
+            return "navigation_document"
+        return "same_origin_other"
 
 
 def _require(

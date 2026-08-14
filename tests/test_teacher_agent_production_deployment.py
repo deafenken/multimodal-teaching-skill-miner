@@ -107,7 +107,7 @@ def _rendered_json_contract() -> dict[str, object]:
             "source": "/private/teachlab/secrets",
             "target": "/run/teachlab",
             "read_only": True,
-            "bind": {"create_host_path": False},
+            "bind": {"create_host_path": False, "propagation": "rprivate"},
         },
     ]
     api_environment = {

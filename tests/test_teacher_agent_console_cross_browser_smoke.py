@@ -76,25 +76,55 @@ def test_scoped_firefox_offline_network_diagnostics_are_accepted() -> None:
 
 
 @pytest.mark.parametrize(
-    ("browser", "message"),
+    ("browser", "message", "expected_code"),
     (
-        ("chromium", _console_error()),
-        ("webkit", _console_error()),
+        (
+            "chromium",
+            _console_error(),
+            "navigation_console_error_sealed_worker",
+        ),
+        ("webkit", _console_error(), "navigation_console_error_sealed_worker"),
         (
             "firefox",
             _console_error(url="http://127.0.0.1:8766/teachlab-sw-v1.js"),
+            "navigation_console_error_other_origin",
         ),
         (
             "firefox",
             _console_error(url="http://127.0.0.1:not-a-port/teachlab-sw-v1.js"),
+            "navigation_console_error_invalid_location",
         ),
-        ("firefox", _console_error(url=f"{ORIGIN}/application.js")),
-        ("firefox", SimpleNamespace(type="error", text="diagnostic", location={})),
+        (
+            "firefox",
+            _console_error(url=f"{ORIGIN}/application.js"),
+            "navigation_console_error_same_origin_other",
+        ),
+        (
+            "firefox",
+            _console_error(url=f"{ORIGIN}/teachlab-offline-shell-v1.js"),
+            "navigation_console_error_offline_shell_script",
+        ),
+        (
+            "firefox",
+            _console_error(url=f"{ORIGIN}/_next/static/chunks/runtime.js"),
+            "navigation_console_error_next_static_asset",
+        ),
+        (
+            "firefox",
+            _console_error(url=f"{ORIGIN}/?offline-smoke=fixture"),
+            "navigation_console_error_navigation_document",
+        ),
+        (
+            "firefox",
+            SimpleNamespace(type="error", text="diagnostic", location={}),
+            "navigation_console_error_missing_location",
+        ),
     ),
 )
 def test_offline_allowlist_rejects_other_engines_sources_and_messages(
     browser: str,
     message: SimpleNamespace,
+    expected_code: str,
 ) -> None:
     gate = _BrowserErrorGate(browser, ORIGIN)
     gate.begin_intentional_offline_navigation()
@@ -104,7 +134,7 @@ def test_offline_allowlist_rejects_other_engines_sources_and_messages(
         gate.complete_intentional_offline_navigation()
 
     assert caught.value.stage == "browser_offline"
-    assert caught.value.code == "console_error"
+    assert caught.value.code == expected_code
     assert gate.accepted_firefox_offline_diagnostics == 0
 
 
@@ -113,7 +143,10 @@ def test_offline_allowlist_is_bounded_and_never_accepts_page_errors() -> None:
     diagnostic_storm_gate.begin_intentional_offline_navigation()
     for _ in range(_MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS + 1):
         diagnostic_storm_gate.on_console(_console_error())
-    with pytest.raises(SmokeFailure, match="^console_error$"):
+    with pytest.raises(
+        SmokeFailure,
+        match="^navigation_console_error_diagnostic_limit$",
+    ):
         diagnostic_storm_gate.complete_intentional_offline_navigation()
     assert (
         diagnostic_storm_gate.accepted_firefox_offline_diagnostics
@@ -134,7 +167,10 @@ def test_firefox_worker_diagnostic_fails_after_offline_shell_is_verified() -> No
     gate.complete_intentional_offline_navigation()
     gate.on_console(_console_error())
 
-    with pytest.raises(SmokeFailure, match="^console_error$"):
+    with pytest.raises(
+        SmokeFailure,
+        match="^verified_shell_console_error_sealed_worker$",
+    ):
         gate.require_offline_clean()
 
     assert gate.accepted_firefox_offline_diagnostics == 0

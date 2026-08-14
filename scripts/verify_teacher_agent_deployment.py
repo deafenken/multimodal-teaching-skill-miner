@@ -238,7 +238,7 @@ def _verify_rendered_compose_json(model: object) -> dict[str, object]:
     ):
         raise ValueError("api must mount one read-only private secrets directory")
     bind_options = _json_mapping(secret_mount.get("bind"), "api secrets bind options")
-    if bind_options != {"create_host_path": False}:
+    if bind_options.get("create_host_path") is not False:
         raise ValueError("api secrets bind mount must reject a missing host directory")
     if not isinstance(secret_mount.get("source"), str) or not secret_mount["source"].startswith("/"):
         raise ValueError("api secrets directory source must be absolute")
