@@ -55,16 +55,17 @@ def test_online_errors_fail_before_the_offline_transition_without_raw_text() -> 
     assert gate.accepted_firefox_offline_diagnostics == 0
 
 
-def test_one_scoped_firefox_offline_network_diagnostic_is_accepted() -> None:
+def test_bounded_scoped_firefox_offline_network_diagnostics_are_accepted() -> None:
     gate = _BrowserErrorGate("firefox", ORIGIN)
     gate.require_online_clean()
     gate.begin_intentional_offline_navigation()
 
     localized_diagnostic = _console_error(text="本地化的 Firefox 离线导航诊断")
     gate.on_console(localized_diagnostic)
+    gate.on_console(_console_error(text="另一条本地化的 Firefox 离线网络诊断"))
     gate.require_offline_clean()
 
-    assert gate.accepted_firefox_offline_diagnostics == 1
+    assert gate.accepted_firefox_offline_diagnostics == 2
     assert gate.offline_console_errors == 0
     assert localized_diagnostic.text not in repr(gate)
 
@@ -103,14 +104,15 @@ def test_offline_allowlist_rejects_other_engines_sources_and_messages(
 
 
 def test_offline_allowlist_is_bounded_and_never_accepts_page_errors() -> None:
-    duplicate_gate = _BrowserErrorGate("firefox", ORIGIN)
-    duplicate_gate.begin_intentional_offline_navigation()
-    duplicate_gate.on_console(_console_error())
-    duplicate_gate.on_console(_console_error())
+    excessive_gate = _BrowserErrorGate("firefox", ORIGIN)
+    excessive_gate.begin_intentional_offline_navigation()
+    excessive_gate.on_console(_console_error())
+    excessive_gate.on_console(_console_error())
+    excessive_gate.on_console(_console_error())
     with pytest.raises(SmokeFailure, match="^console_error$"):
-        duplicate_gate.require_offline_clean()
-    assert duplicate_gate.accepted_firefox_offline_diagnostics == 1
-    assert duplicate_gate.offline_console_errors == 1
+        excessive_gate.require_offline_clean()
+    assert excessive_gate.accepted_firefox_offline_diagnostics == 2
+    assert excessive_gate.offline_console_errors == 1
 
     page_error_gate = _BrowserErrorGate("firefox", ORIGIN)
     page_error_gate.begin_intentional_offline_navigation()

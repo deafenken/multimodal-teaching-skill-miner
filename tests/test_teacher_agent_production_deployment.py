@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 import re
 
@@ -41,6 +43,138 @@ def re_sub_variables(source: str) -> str:
     return re.sub(r"\$\{[^}]+\}", "/private/fixture", source)
 
 
+def _rendered_json_contract() -> dict[str, object]:
+    def service(
+        image: str,
+        user: str,
+        limits: dict[str, object],
+        reservations: dict[str, object],
+    ) -> dict[str, object]:
+        return {
+            "image": image,
+            "restart": "unless-stopped",
+            "read_only": True,
+            "cap_drop": ["ALL"],
+            "security_opt": ["no-new-privileges:true"],
+            "user": user,
+            "init": True,
+            "healthcheck": {"test": ["CMD", "probe"], "retries": 3},
+            "deploy": {
+                "replicas": 1,
+                "resources": {"limits": limits, "reservations": reservations},
+            },
+        }
+
+    edge = service(
+        "registry.invalid/caddy@sha256:" + "1" * 64,
+        "1000:1000",
+        {"cpus": 1, "memory": "268435456"},
+        {"cpus": 0.1, "memory": "67108864"},
+    )
+    edge.update({"cap_add": ["NET_BIND_SERVICE"], "ports": [{"target": 80}]})
+    console = service(
+        "registry.invalid/console@sha256:" + "2" * 64,
+        "10001:10001",
+        {"cpus": 2, "memory": "805306368"},
+        {"cpus": 0.25, "memory": "268435456"},
+    )
+    console["environment"] = {
+        "NEXT_PUBLIC_TEACHLAB_AUTH_MODE": "oidc",
+        "TEACHLAB_HARNESS_MODE": "authenticated_apps_api",
+        "TEACHLAB_APPS_API_INTERNAL_URL": "http://api:4000",
+        "TEACHLAB_APPS_API_URL": "https://console.example.invalid",
+    }
+    api = service(
+        "registry.invalid/api@sha256:" + "3" * 64,
+        "10001:10001",
+        {"cpus": 4, "memory": "4294967296", "pids": 256},
+        {"cpus": 0.5, "memory": "1073741824"},
+    )
+    api["pids_limit"] = 256
+    api["healthcheck"] = {
+        "test": [
+            "CMD",
+            "node",
+            "-e",
+            "fetch('http://127.0.0.1:4000/ready').then(r=>r.ok)",
+        ],
+        "retries": 5,
+    }
+    api["volumes"] = [
+        {"type": "volume", "source": "scope_data", "target": "/var/lib/teachlab"},
+        {
+            "type": "bind",
+            "source": "/private/teachlab/secrets",
+            "target": "/run/teachlab",
+            "read_only": True,
+            "bind": {},
+        },
+    ]
+    api_environment = {
+        "HARNESS_GATEWAY_ENABLED": "true",
+        "HARNESS_WORKER_ROOT": "/var/lib/teachlab/scopes",
+        "HARNESS_WORKER_BACKEND": "deepseek",
+        "HARNESS_WORKER_FILESYSTEM_ISOLATION_REQUIRED": "true",
+        "HARNESS_WORKER_RLIMIT_CORE_BYTES": "0",
+        "HARNESS_WORKER_RLIMIT_NOFILE": "256",
+        "HARNESS_WORKER_RLIMIT_FSIZE_BYTES": "536870912",
+        "HARNESS_WORKER_RLIMIT_AS_BYTES": "1610612736",
+        "AUTH_MODE": "oidc",
+        "DATA_BACKEND": "postgres",
+        "PG_SSL_MODE": "verify-full",
+        "SAFEGUARDING_AUTHORITY_ROLES": "safeguarding",
+        "SESSION_SECRET_FILE": "/run/teachlab/session-secret",
+        "OIDC_CLIENT_SECRET_FILE": "/run/teachlab/oidc-client-secret",
+        "OIDC_TRANSACTION_SECRET_FILE": "/run/teachlab/oidc-transaction-secret",
+        "ACCOUNT_SCOPE_SECRET_FILE": "/run/teachlab/account-scope-secret",
+        "ACCOUNT_IDENTITY_NAMESPACE_SECRET_FILE": "/run/teachlab/account-identity-namespace-secret",
+        "ACCOUNT_DELETION_STATUS_SECRET_FILE": "/run/teachlab/account-deletion-status-secret",
+        "ACCOUNT_CACHE_SCOPE_SECRET_FILE": "/run/teachlab/account-cache-scope-secret",
+        "HARNESS_SCOPE_SECRET_FILE": "/run/teachlab/harness-scope-secret",
+        "HARNESS_PROVIDER_API_KEY_FILE": "/run/teachlab/provider-api-key",
+        "HARNESS_SAFEGUARDING_DISPATCH_BEARER_SECRET_FILE": "/run/teachlab/safeguarding-dispatch-bearer",
+        "HARNESS_SAFEGUARDING_RETENTION_AUTHORITY_SECRET_FILE": "/run/teachlab/safeguarding-retention-authority",
+        "TEACHER_ENTITLEMENT_DIRECTORY_BEARER_SECRET_FILE": "/run/teachlab/teacher-entitlement-directory-bearer",
+        "TEACHER_ENTITLEMENT_BINDING_KEY_FILE": "/run/teachlab/teacher-entitlement-binding-key",
+        "TEACHER_ENTITLEMENT_RECEIPT_KEY_FILE": "/run/teachlab/teacher-entitlement-receipt-key",
+        "METRICS_TOKEN_FILE": "/run/teachlab/metrics-token",
+    }
+    for key in (
+        "OIDC_ACCOUNT_AAL2_ACR_VALUES",
+        "TEACHER_ENTITLEMENT_DIRECTORY_URL",
+        "TEACHER_ENTITLEMENT_POLICY_ID",
+        "TEACHER_ENTITLEMENT_POLICY_VERSION",
+        "TEACHER_ENTITLEMENT_FRESHNESS_TTL_MS",
+        "TEACHER_ENTITLEMENT_CACHE_TTL_MS",
+        "TEACHER_ENTITLEMENT_PROVIDER_TIMEOUT_MS",
+        "TEACHER_ENTITLEMENT_MAX_RESPONSE_BYTES",
+        "TEACHER_ENTITLEMENT_MAX_CLOCK_SKEW_MS",
+        "TEACHER_ENTITLEMENT_MAX_CACHE_ENTRIES",
+        "TEACHER_ENTITLEMENT_MIN_ASSURANCE_LEVEL",
+        "TEACHER_AUTHORITY_ROLES",
+        "HARNESS_PROVIDER_POLICY_ID",
+        "HARNESS_PROVIDER_POLICY_VERSION",
+        "HARNESS_PROVIDER_PROCESSING_REGION",
+        "HARNESS_PROVIDER_RETENTION_DAYS",
+        "HARNESS_PROVIDER_DELETION_STATUS",
+        "HARNESS_PROVIDER_DOCUMENTATION_URL",
+        "HARNESS_SAFEGUARDING_LOCALE",
+        "HARNESS_SAFEGUARDING_DISPATCH_URL",
+        "HARNESS_SAFEGUARDING_DISPATCH_POLICY_VERSION",
+        "HARNESS_SAFEGUARDING_DISPATCH_TIMEOUT_MS",
+        "HARNESS_SAFEGUARDING_DISPATCH_MAX_RESPONSE_BYTES",
+        "HARNESS_SAFEGUARDING_RETENTION_POLICY_VERSION",
+        "HARNESS_SAFEGUARDING_RETENTION_MINIMUM_CLOSED_AGE_SECONDS",
+        "HARNESS_SAFEGUARDING_RETENTION_MAXIMUM_CASES_PER_RUN",
+        "HARNESS_SAFEGUARDING_RETENTION_DEPLOYMENT_CONTEXT_SHA256",
+        "REMOTE_SUBJECT_POLICY_ID",
+        "REMOTE_SUBJECT_POLICY_VERSION",
+    ):
+        api_environment[key] = "configured"
+    api["environment"] = api_environment
+    return {"name": "teachlab-production", "services": {"edge": edge, "console": console, "api": api}}
+
+
 def test_rendered_single_replica_contract_passes(tmp_path: Path) -> None:
     rendered = tmp_path / "compose.yaml"
     rendered.write_text(_rendered_contract(), encoding="utf-8")
@@ -54,6 +188,36 @@ def test_rendered_single_replica_contract_passes(tmp_path: Path) -> None:
         "distributed_worker_scheduler": False,
         "external_image_signing_verified": False,
     }
+
+
+def test_canonical_compose_json_contract_passes(tmp_path: Path) -> None:
+    rendered = tmp_path / "compose.json"
+    rendered.write_text(json.dumps(_rendered_json_contract()), encoding="utf-8")
+    receipt = verify_rendered_compose(rendered)
+    assert receipt["status"] == "deployment_contract_verified"
+    assert receipt["api_container_pid_limit"] == 256
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda model: model["services"].update({"surprise": {}}),
+        lambda model: model["services"]["api"].update({"pids_limit": 1024}),
+        lambda model: model["services"]["api"]["deploy"]["resources"]["limits"].update({"pids": 1024}),
+        lambda model: model["services"]["console"].update({"ports": [{"target": 3000}]}),
+        lambda model: model["services"]["api"].update({"image": "registry.invalid/api:latest"}),
+        lambda model: model["services"]["api"]["deploy"].update({"replicas": 2}),
+        lambda model: model["services"]["api"]["environment"].update({"TEACHLAB_SESSION_SECRET": "inline"}),
+        lambda model: model["services"]["api"]["volumes"][1].update({"read_only": False}),
+    ],
+)
+def test_unsafe_canonical_compose_json_fails_closed(tmp_path: Path, mutation) -> None:
+    model = copy.deepcopy(_rendered_json_contract())
+    mutation(model)
+    rendered = tmp_path / "compose.json"
+    rendered.write_text(json.dumps(model), encoding="utf-8")
+    with pytest.raises(ValueError):
+        verify_rendered_compose(rendered)
 
 
 @pytest.mark.parametrize(
@@ -95,6 +259,10 @@ def test_rendered_single_replica_contract_passes(tmp_path: Path) -> None:
             'HARNESS_WORKER_RLIMIT_AS_BYTES: "1073741824"',
         ),
         lambda text: text.replace("    pids_limit: 256", "    pids_limit: 1024"),
+        lambda text: text.replace(
+            'limits: {cpus: "4.00", memory: 4G, pids: 256}',
+            'limits: {cpus: "4.00", memory: 4G, pids: 1024}',
+        ),
         lambda text: text.replace(
             "HARNESS_SAFEGUARDING_RETENTION_POLICY_VERSION:",
             "HARNESS_SAFEGUARDING_RETENTION_POLICY_MISSING:",
@@ -214,6 +382,7 @@ def test_dockerfiles_reject_mutable_base_images_and_run_as_non_root() -> None:
     assert 'HARNESS_WORKER_RLIMIT_FSIZE_BYTES: "536870912"' in compose
     assert 'HARNESS_WORKER_RLIMIT_AS_BYTES: "1610612736"' in compose
     assert "pids_limit: 256" in compose
+    assert 'limits: {cpus: "4.00", memory: 4G, pids: 256}' in compose
     assert "HARNESS_SAFEGUARDING_RETENTION_POLICY_VERSION:" in compose
     assert "HARNESS_SAFEGUARDING_RETENTION_MINIMUM_CLOSED_AGE_SECONDS:" in compose
     assert "HARNESS_SAFEGUARDING_RETENTION_MAXIMUM_CASES_PER_RUN:" in compose
@@ -320,6 +489,7 @@ def test_ci_supply_chain_and_production_image_gate_are_commit_or_digest_pinned()
         "teacher_agent_gateway_worker --self-check",
         "teacher_agent_safeguarding_supervisor --self-check",
         "docker compose -f deploy/production/compose.yaml config",
+        "config --format json > /tmp/teachlab-rendered-compose.json",
         "--caddyfile deploy/production/Caddyfile",
         "TEACHLAB_TEACHER_ENTITLEMENT_DIRECTORY_URL:",
         "TEACHLAB_SAFEGUARDING_LOCALE:",

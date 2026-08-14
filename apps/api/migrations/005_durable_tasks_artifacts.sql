@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS teachlab_artifacts (
   tenant_id text NOT NULL,
   owner_id text NOT NULL,
   artifact_key text NOT NULL CHECK (
-    artifact_key ~ '^[A-Za-z0-9][A-Za-z0-9._/-]{0,511}$'
+    char_length(artifact_key) BETWEEN 1 AND 512
+    AND artifact_key ~ '^[A-Za-z0-9][A-Za-z0-9._/-]*$'
     AND artifact_key !~ '(^|/)\.\.?(/|$)' AND artifact_key !~ '//'
   ),
   content_type text NOT NULL CHECK (char_length(content_type) BETWEEN 1 AND 255),

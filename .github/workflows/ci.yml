@@ -172,9 +172,9 @@ jobs:
           TEACHLAB_SAFEGUARDING_RETENTION_DEPLOYMENT_CONTEXT_SHA256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           TEACHLAB_SECRETS_DIR: /private/teachlab/secrets
         run: |
-          docker compose -f deploy/production/compose.yaml config > /tmp/teachlab-rendered-compose.yaml
+          docker compose -f deploy/production/compose.yaml config --format json > /tmp/teachlab-rendered-compose.json
           python scripts/verify_teacher_agent_deployment.py \
-            --compose /tmp/teachlab-rendered-compose.yaml \
+            --compose /tmp/teachlab-rendered-compose.json \
             --caddyfile deploy/production/Caddyfile
 
   tests:

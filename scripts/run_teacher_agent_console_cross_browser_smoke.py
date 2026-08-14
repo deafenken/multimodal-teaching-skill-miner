@@ -42,6 +42,9 @@ RECEIPT_SCHEMA = "teachlab.console.cross_browser_smoke.v1"
 SUPPORTED_BROWSERS = ("chromium", "firefox", "webkit")
 PROJECT_ID = "project_000000000000000000000001"
 TIMESTAMP = "2026-01-01T00:00:00Z"
+_MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS = 2
+
+
 class SmokeFailure(RuntimeError):
     """A fixed-code failure that is safe to print in a CI receipt."""
 
@@ -85,7 +88,8 @@ class _BrowserErrorGate:
             self.online_console_errors += 1
             return
         if (
-            self.accepted_firefox_offline_diagnostics == 0
+            self.accepted_firefox_offline_diagnostics
+            < _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS
             and self._is_expected_firefox_offline_diagnostic(message)
         ):
             self.accepted_firefox_offline_diagnostics += 1
@@ -159,11 +163,13 @@ class _BrowserErrorGate:
         if not source_matches:
             return False
         # Firefox reports the deliberately severed service-worker navigation
-        # as a console error even when the worker returns the validated offline
-        # shell. Its localized diagnostic text is not a stable security
-        # boundary. Instead, accept at most one error attributed to the exact
-        # sealed worker after the deliberate transport cut. The caller then
-        # proves that the scope-bound shell rendered and remained accessible.
+        # as one or two console errors even when the worker returns the
+        # validated offline shell. Gecko on Linux can report both the failed
+        # inner fetch and the intercepted navigation; its localized diagnostic
+        # text is not a stable security boundary. Accept only this bounded pair
+        # attributed to the exact sealed worker after the deliberate transport
+        # cut. The caller then proves that the scope-bound shell rendered and
+        # remained accessible.
         return True
 
 

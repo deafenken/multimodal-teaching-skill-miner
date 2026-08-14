@@ -189,7 +189,9 @@ services:
       # may never share this volume until a distributed lease scheduler exists.
       replicas: 1
       resources:
-        limits: {cpus: "4.00", memory: 4G}
+        # Compose requires this deploy-level PID budget to agree with the
+        # service-level pids_limit above.
+        limits: {cpus: "4.00", memory: 4G, pids: 256}
         reservations: {cpus: "0.50", memory: 1G}
     networks: [frontend, data]
 

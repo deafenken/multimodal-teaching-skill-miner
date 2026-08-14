@@ -192,6 +192,16 @@ test("migrations force RLS on all four tenant tables and hash-only auth sessions
   assert.doesNotMatch(authMigration, /csrf|cookie|raw_token|access_token/i);
 });
 
+test("artifact migration bounds keys outside PostgreSQL regex repetition limits", async () => {
+  const migration = await readFile(
+    resolve(process.cwd(), "migrations/005_durable_tasks_artifacts.sql"),
+    "utf8"
+  );
+  assert.match(migration, /char_length\(artifact_key\) BETWEEN 1 AND 512/);
+  assert.match(migration, /artifact_key ~ '\^\[A-Za-z0-9\]\[A-Za-z0-9\._\/-\]\*\$'/);
+  assert.doesNotMatch(migration, /\{0,511\}/);
+});
+
 test("Postgres revocation locks once, uses CAS, and repeats idempotently", async () => {
   const active = {
     tenant_id: "tenant-a",
