@@ -107,7 +107,9 @@ def _rendered_json_contract() -> dict[str, object]:
             "source": "/private/teachlab/secrets",
             "target": "/run/teachlab",
             "read_only": True,
-            "bind": {"create_host_path": False, "propagation": "rprivate"},
+            # Compose 2.38 omits an explicit false value in canonical JSON;
+            # the source Compose contract remains the authoritative proof.
+            "bind": {"propagation": "rprivate"},
         },
     ]
     api_environment = {
@@ -193,9 +195,22 @@ def test_rendered_single_replica_contract_passes(tmp_path: Path) -> None:
 def test_canonical_compose_json_contract_passes(tmp_path: Path) -> None:
     rendered = tmp_path / "compose.json"
     rendered.write_text(json.dumps(_rendered_json_contract()), encoding="utf-8")
-    receipt = verify_rendered_compose(rendered)
+    with pytest.raises(ValueError, match="requires its source Compose contract"):
+        verify_rendered_compose(rendered)
+    receipt = verify_rendered_compose(
+        rendered, source_compose=ROOT / "deploy/production/compose.yaml"
+    )
     assert receipt["status"] == "deployment_contract_verified"
     assert receipt["api_container_pid_limit"] == 256
+
+    unsafe_source = tmp_path / "unsafe-source.yaml"
+    source = (ROOT / "deploy/production/compose.yaml").read_text(encoding="utf-8")
+    unsafe_source.write_text(
+        source.replace("          create_host_path: false", "          create_host_path: true"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="explicitly reject"):
+        verify_rendered_compose(rendered, source_compose=unsafe_source)
 
 
 @pytest.mark.parametrize(
@@ -218,7 +233,9 @@ def test_unsafe_canonical_compose_json_fails_closed(tmp_path: Path, mutation) ->
     rendered = tmp_path / "compose.json"
     rendered.write_text(json.dumps(model), encoding="utf-8")
     with pytest.raises(ValueError):
-        verify_rendered_compose(rendered)
+        verify_rendered_compose(
+            rendered, source_compose=ROOT / "deploy/production/compose.yaml"
+        )
 
 
 @pytest.mark.parametrize(
@@ -492,6 +509,7 @@ def test_ci_supply_chain_and_production_image_gate_are_commit_or_digest_pinned()
         "teacher_agent_safeguarding_supervisor --self-check",
         "docker compose -f deploy/production/compose.yaml config",
         "config --format json > /tmp/teachlab-rendered-compose.json",
+        "--source-compose deploy/production/compose.yaml",
         "--caddyfile deploy/production/Caddyfile",
         "TEACHLAB_TEACHER_ENTITLEMENT_DIRECTORY_URL:",
         "TEACHLAB_SAFEGUARDING_LOCALE:",

@@ -43,6 +43,9 @@ SUPPORTED_BROWSERS = ("chromium", "firefox", "webkit")
 PROJECT_ID = "project_000000000000000000000001"
 TIMESTAMP = "2026-01-01T00:00:00Z"
 _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS = 64
+_FIREFOX_OFFLINE_NETWORK_DIAGNOSTIC_SOURCES = frozenset(
+    {"sealed_worker", "browser_internal"}
+)
 
 
 class SmokeFailure(RuntimeError):
@@ -89,22 +92,24 @@ class _BrowserErrorGate:
             self.online_console_errors += 1
             return
         source = self._console_error_source(message)
-        # The only tolerated browser diagnostic is attributed to the sealed
-        # worker while the test itself has deliberately severed its transport.
+        # Firefox can attribute the deliberate transport failure either to the
+        # sealed worker or to a browser-owned resource/about URL. The latter is
+        # safe to quarantine only inside this causal window: the independent
+        # request observer still fails on every actual non-production request.
         # Raw/localized console text is never retained or emitted.
         if (
             self.accepted_firefox_offline_diagnostics
             < _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS
             and self.browser == "firefox"
             and self.phase == "intentional_offline_navigation"
-            and source == "sealed_worker"
+            and source in _FIREFOX_OFFLINE_NETWORK_DIAGNOSTIC_SOURCES
         ):
             self.accepted_firefox_offline_diagnostics += 1
             return
         if self.offline_console_errors == 0:
             self.first_unexpected_offline_console_source = (
                 "diagnostic_limit"
-                if source == "sealed_worker"
+                if source in _FIREFOX_OFFLINE_NETWORK_DIAGNOSTIC_SOURCES
                 and self.accepted_firefox_offline_diagnostics
                 >= _MAX_FIREFOX_OFFLINE_NETWORK_DIAGNOSTICS
                 else source
@@ -205,7 +210,13 @@ class _BrowserErrorGate:
         except (AttributeError, TypeError, ValueError):
             return "invalid_location"
         if not same_origin:
-            return "other_origin"
+            if observed.scheme in {"about", "resource", "moz-extension"}:
+                return "browser_internal"
+            if observed.scheme == "http" and observed.hostname == "127.0.0.1":
+                return "loopback_other_port"
+            if observed.scheme in {"http", "https"}:
+                return "web_other_origin"
+            return "other_scheme"
         if (
             observed.path == "/teachlab-sw-v1.js"
             and not observed.query

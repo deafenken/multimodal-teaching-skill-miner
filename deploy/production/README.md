@@ -101,11 +101,14 @@ provider 已接收的副本同样受 provider 政策约束，账户删除收据�
 
 ```sh
 docker compose --env-file /private/teachlab/deployment.env \
-  -f deploy/production/compose.yaml config >/private/teachlab/rendered-compose.yaml
+  -f deploy/production/compose.yaml config --format json \
+  >/private/teachlab/rendered-compose.json
 python scripts/verify_teacher_agent_deployment.py \
-  --compose /private/teachlab/rendered-compose.yaml \
+  --compose /private/teachlab/rendered-compose.json \
+  --source-compose deploy/production/compose.yaml \
   --caddyfile deploy/production/Caddyfile
-docker compose -f /private/teachlab/rendered-compose.yaml up -d
+docker compose --env-file /private/teachlab/deployment.env \
+  -f deploy/production/compose.yaml up -d
 ```
 
 `/health` 仅表示进程存活；`/ready` 连续探测 PostgreSQL、真实 runtime canary、content-free

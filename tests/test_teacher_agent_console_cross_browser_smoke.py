@@ -24,6 +24,11 @@ SERVICE_WORKER_SOURCE = (
     / "public"
     / "teachlab-sw-v1.js"
 ).read_text(encoding="utf-8")
+RUNNER_SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "run_teacher_agent_console_cross_browser_smoke.py"
+).read_text(encoding="utf-8")
 
 
 def _console_error(
@@ -39,6 +44,12 @@ def test_scoped_firefox_allowlist_source_never_logs_console_errors() -> None:
     assert 'console["error"]' not in SERVICE_WORKER_SOURCE
     assert "console['error']" not in SERVICE_WORKER_SOURCE
     assert "event.respondWith(fetch(request).catch(() => offlineDocument()))" in SERVICE_WORKER_SOURCE
+
+
+def test_other_origin_diagnostic_quarantine_keeps_external_request_gate() -> None:
+    assert 'page.on("request", observe_request)' in RUNNER_SOURCE
+    assert "external_requests += 1" in RUNNER_SOURCE
+    assert "_require(external_requests == 0" in RUNNER_SOURCE
 
 
 def test_online_errors_fail_before_the_offline_transition_without_raw_text() -> None:
@@ -85,9 +96,9 @@ def test_scoped_firefox_offline_network_diagnostics_are_accepted() -> None:
         ),
         ("webkit", _console_error(), "navigation_console_error_sealed_worker"),
         (
-            "firefox",
+            "chromium",
             _console_error(url="http://127.0.0.1:8766/teachlab-sw-v1.js"),
-            "navigation_console_error_other_origin",
+            "navigation_console_error_loopback_other_port",
         ),
         (
             "firefox",
@@ -118,6 +129,16 @@ def test_scoped_firefox_offline_network_diagnostics_are_accepted() -> None:
             "firefox",
             SimpleNamespace(type="error", text="diagnostic", location={}),
             "navigation_console_error_missing_location",
+        ),
+        (
+            "firefox",
+            _console_error(url="https://example.invalid/application.js"),
+            "navigation_console_error_web_other_origin",
+        ),
+        (
+            "firefox",
+            _console_error(url="custom-scheme:diagnostic"),
+            "navigation_console_error_other_scheme",
         ),
     ),
 )
@@ -159,6 +180,26 @@ def test_offline_allowlist_is_bounded_and_never_accepts_page_errors() -> None:
     page_error_gate.on_page_error(RuntimeError("private page payload"))
     with pytest.raises(SmokeFailure, match="^page_error$"):
         page_error_gate.complete_intentional_offline_navigation()
+
+
+def test_firefox_browser_internal_diagnostic_is_scoped_to_navigation_window() -> None:
+    gate = _BrowserErrorGate("firefox", ORIGIN)
+    other_origin = _console_error(
+        url="resource://gre/modules/ServiceWorkerManager.sys.mjs"
+    )
+    gate.begin_intentional_offline_navigation()
+    gate.on_console(other_origin)
+    gate.complete_intentional_offline_navigation()
+    gate.require_offline_clean()
+
+    assert gate.accepted_firefox_offline_diagnostics == 1
+
+    gate.on_console(other_origin)
+    with pytest.raises(
+        SmokeFailure,
+        match="^verified_shell_console_error_browser_internal$",
+    ):
+        gate.require_offline_clean()
 
 
 def test_firefox_worker_diagnostic_fails_after_offline_shell_is_verified() -> None:

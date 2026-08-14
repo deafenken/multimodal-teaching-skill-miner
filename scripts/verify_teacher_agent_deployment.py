@@ -34,6 +34,29 @@ def _service_blocks(text: str) -> dict[str, str]:
     return blocks
 
 
+def verify_source_compose_secrets_contract(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    if len(text.encode("utf-8")) > 2_000_000:
+        raise ValueError("source deployment is unexpectedly large")
+    api = _service_blocks(text).get("api", "")
+    private_directory_mounts = re.findall(
+        r"(?m)^      - type: bind\n"
+        r"        source: \$\{TEACHLAB_SECRETS_DIR:\?uid-10001 mode-0700 private directory required\}\n"
+        r"        target: /run/teachlab\n"
+        r"        read_only: true\n"
+        r"        bind:\n"
+        r"(?:          #[^\n]*\n)*"
+        r"          create_host_path: false$",
+        api,
+    )
+    if len(private_directory_mounts) != 1:
+        raise ValueError(
+            "source deployment must explicitly reject secrets-directory creation"
+        )
+    if re.search(r"(?m)^\s+target: /run/teachlab/", api) or ":/run/teachlab" in api:
+        raise ValueError("source deployment must not bind individual secret files")
+
+
 def _line(block: str, pattern: str) -> bool:
     return re.search(rf"(?m)^{pattern}$", block) is not None
 
@@ -238,7 +261,13 @@ def _verify_rendered_compose_json(model: object) -> dict[str, object]:
     ):
         raise ValueError("api must mount one read-only private secrets directory")
     bind_options = _json_mapping(secret_mount.get("bind"), "api secrets bind options")
-    if bind_options.get("create_host_path") is not False:
+    # Compose 2.38 omits an explicit false value from canonical JSON. The
+    # separately verified source contract proves the value is present; reject
+    # a rendered true value if a serializer does retain it.
+    if (
+        "create_host_path" in bind_options
+        and bind_options["create_host_path"] is not False
+    ):
         raise ValueError("api secrets bind mount must reject a missing host directory")
     if not isinstance(secret_mount.get("source"), str) or not secret_mount["source"].startswith("/"):
         raise ValueError("api secrets directory source must be absolute")
@@ -278,7 +307,9 @@ def _verify_rendered_compose_json(model: object) -> dict[str, object]:
     }
 
 
-def verify_rendered_compose(path: Path) -> dict[str, object]:
+def verify_rendered_compose(
+    path: Path, *, source_compose: Path | None = None
+) -> dict[str, object]:
     text = path.read_text(encoding="utf-8")
     if len(text.encode("utf-8")) > 2_000_000:
         raise ValueError("rendered deployment is unexpectedly large")
@@ -303,6 +334,11 @@ def verify_rendered_compose(path: Path) -> dict[str, object]:
             )
 
     if text.lstrip().startswith("{"):
+        if source_compose is None:
+            raise ValueError(
+                "canonical JSON verification requires its source Compose contract"
+            )
+        verify_source_compose_secrets_contract(source_compose)
         try:
             model = json.loads(text)
         except json.JSONDecodeError as error:
@@ -527,10 +563,13 @@ def verify_caddyfile(path: Path) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--compose", type=Path, required=True)
+    parser.add_argument("--source-compose", type=Path, required=True)
     parser.add_argument("--caddyfile", type=Path, required=True)
     args = parser.parse_args()
     receipt = {
-        "compose": verify_rendered_compose(args.compose),
+        "compose": verify_rendered_compose(
+            args.compose, source_compose=args.source_compose
+        ),
         "edge": verify_caddyfile(args.caddyfile),
     }
     print(receipt)
