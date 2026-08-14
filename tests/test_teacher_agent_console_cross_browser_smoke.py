@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,13 @@ EXPECTED_FIREFOX_TEXT = (
     '[JavaScript Error: "Failed to load. A ServiceWorker intercepted the request '
     'and encountered an unexpected error."]'
 )
+SERVICE_WORKER_SOURCE = (
+    Path(__file__).resolve().parents[1]
+    / "apps"
+    / "console"
+    / "public"
+    / "teachlab-sw-v1.js"
+).read_text(encoding="utf-8")
 
 
 def _console_error(
@@ -23,6 +31,13 @@ def _console_error(
     url: str = f"{ORIGIN}/teachlab-sw-v1.js",
 ) -> SimpleNamespace:
     return SimpleNamespace(type="error", text=text, location={"url": url})
+
+
+def test_scoped_firefox_allowlist_source_never_logs_console_errors() -> None:
+    assert "console.error" not in SERVICE_WORKER_SOURCE
+    assert 'console["error"]' not in SERVICE_WORKER_SOURCE
+    assert "console['error']" not in SERVICE_WORKER_SOURCE
+    assert "event.respondWith(fetch(request).catch(() => offlineDocument()))" in SERVICE_WORKER_SOURCE
 
 
 def test_online_errors_fail_before_the_offline_transition_without_raw_text() -> None:
@@ -45,12 +60,13 @@ def test_one_scoped_firefox_offline_network_diagnostic_is_accepted() -> None:
     gate.require_online_clean()
     gate.begin_intentional_offline_navigation()
 
-    gate.on_console(_console_error())
+    localized_diagnostic = _console_error(text="本地化的 Firefox 离线导航诊断")
+    gate.on_console(localized_diagnostic)
     gate.require_offline_clean()
 
     assert gate.accepted_firefox_offline_diagnostics == 1
     assert gate.offline_console_errors == 0
-    assert EXPECTED_FIREFOX_TEXT not in repr(gate)
+    assert localized_diagnostic.text not in repr(gate)
 
 
 @pytest.mark.parametrize(
@@ -67,7 +83,7 @@ def test_one_scoped_firefox_offline_network_diagnostic_is_accepted() -> None:
             _console_error(url="http://127.0.0.1:not-a-port/teachlab-sw-v1.js"),
         ),
         ("firefox", _console_error(url=f"{ORIGIN}/application.js")),
-        ("firefox", _console_error(text="Failed to load")),
+        ("firefox", SimpleNamespace(type="error", text="diagnostic", location={})),
     ),
 )
 def test_offline_allowlist_rejects_other_engines_sources_and_messages(

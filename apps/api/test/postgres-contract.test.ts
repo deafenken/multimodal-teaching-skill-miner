@@ -9,6 +9,7 @@ import type {
   TenantTransaction
 } from "../src/database/tenant-database.port";
 import {PostgresSessionRevocationRepository} from "../src/auth/postgres-session-revocation.repository";
+import {AccountDataRightsError} from "../src/account/account-data-rights.errors";
 import {PostgresSessionRepository} from "../src/sessions/postgres-session.repository";
 import type {AccessScope} from "../src/tenancy/access-scope";
 import {
@@ -351,6 +352,67 @@ test("tenant transactions roll back and release the client on failure", async ()
   );
   assert.equal(calls.at(-1), "ROLLBACK");
   assert.equal(released, true);
+});
+
+test("tenant lifecycle fencing blocks only the deleting scope before application SQL", async () => {
+  function clientFor(deleting: boolean): {
+    client: PostgresClientContract;
+    calls: string[];
+    released: () => boolean;
+  } {
+    const calls: string[] = [];
+    let wasReleased = false;
+    return {
+      calls,
+      released: () => wasReleased,
+      client: {
+        async query(sql) {
+          calls.push(sql);
+          if (sql.includes("teachlab_account_deletion_operations")) {
+            return {rows: [{deleting, deleted: false}], rowCount: 1};
+          }
+          return {rows: [], rowCount: 0};
+        },
+        release() {
+          wasReleased = true;
+        }
+      }
+    };
+  }
+
+  const fenced = clientFor(true);
+  let fencedOperationCalled = false;
+  await assert.rejects(
+    runTenantTransaction(
+      fenced.client,
+      {tenantId: "tenant-deleting", ownerId: "charlie"},
+      async () => {
+        fencedOperationCalled = true;
+      },
+      {scopeHashes: ["a".repeat(64)]}
+    ),
+    (error: unknown) => error instanceof AccountDataRightsError
+      && error.statusCode === 409
+      && error.code === "account_deletion_already_started"
+  );
+  assert.equal(fencedOperationCalled, false);
+  assert.equal(fenced.calls.at(-1), "ROLLBACK");
+  assert.equal(fenced.released(), true);
+
+  const active = clientFor(false);
+  const result = await runTenantTransaction(
+    active.client,
+    {tenantId: "tenant-active", ownerId: "alice"},
+    async (transaction) => {
+      await transaction.query("SELECT application_work");
+      return "committed";
+    },
+    {scopeHashes: ["b".repeat(64)]}
+  );
+  assert.equal(result, "committed");
+  assert.equal(active.calls.includes("SELECT application_work"), true);
+  assert.equal(active.calls.at(-1), "COMMIT");
+  assert.equal(active.released(), true);
 });
 
 test("Postgres task creation atomically requires an active owned session", async () => {

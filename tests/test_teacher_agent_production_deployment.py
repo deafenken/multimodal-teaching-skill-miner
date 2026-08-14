@@ -171,7 +171,12 @@ def test_dockerfiles_reject_mutable_base_images_and_run_as_non_root() -> None:
     assert "teacher_agent_gateway_worker --self-check" in api
     assert "teacher_agent_safeguarding_supervisor --self-check" in api
     assert "--require-hashes --only-binary=:all:" in api
-    assert "--no-deps /tmp/teaching-skill-miner.whl" in api
+    wheel_path = "/tmp/teaching_skill_miner-1.2.0-py3-none-any.whl"
+    assert f"COPY ${{PROJECT_WHEEL}} {wheel_path}" in api
+    assert f"Path('{wheel_path}')" in api
+    assert f"--no-deps {wheel_path}" in api
+    assert f"rm {wheel_path}" in api
+    assert "teaching-skill-miner.whl" not in api
     assert "python -m pip check" in api
     assert "TEACHLAB_RELEASE_VERSION=${TEACHLAB_RELEASE_VERSION}" in api
     assert "TEACHLAB_RELEASE_ID=${TEACHLAB_RELEASE_ID}" in api

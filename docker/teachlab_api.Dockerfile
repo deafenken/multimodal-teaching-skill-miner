@@ -47,21 +47,21 @@ COPY --from=api-build /build/apps/api/dist /opt/teachlab/api/dist
 COPY --from=api-build /build/apps/api/node_modules /opt/teachlab/api/node_modules
 COPY --from=api-build /build/apps/api/package.json /opt/teachlab/api/package.json
 COPY deploy/production/python-runtime.lock /tmp/python-runtime.lock
-COPY ${PROJECT_WHEEL} /tmp/teaching-skill-miner.whl
+COPY ${PROJECT_WHEEL} /tmp/teaching_skill_miner-1.2.0-py3-none-any.whl
 RUN python - "${PROJECT_WHEEL_SHA256}" <<'PY'
 from hashlib import sha256
 from pathlib import Path
 import sys
-actual = sha256(Path('/tmp/teaching-skill-miner.whl').read_bytes()).hexdigest()
+actual = sha256(Path('/tmp/teaching_skill_miner-1.2.0-py3-none-any.whl').read_bytes()).hexdigest()
 if actual != sys.argv[1]:
     raise SystemExit('release wheel SHA-256 mismatch')
 PY
 RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: --requirement /tmp/python-runtime.lock \
-    && python -m pip install --no-cache-dir --no-deps /tmp/teaching-skill-miner.whl \
+    && python -m pip install --no-cache-dir --no-deps /tmp/teaching_skill_miner-1.2.0-py3-none-any.whl \
     && python -m pip check \
     && python -m teaching_skill_miner.teacher_agent_gateway_worker --self-check >/dev/null \
     && python -m teaching_skill_miner.teacher_agent_safeguarding_supervisor --self-check >/dev/null \
-    && rm /tmp/teaching-skill-miner.whl /tmp/python-runtime.lock \
+    && rm /tmp/teaching_skill_miner-1.2.0-py3-none-any.whl /tmp/python-runtime.lock \
     && mkdir -p /var/lib/teachlab /run/teachlab /tmp/teachlab \
     && chown -R 10001:10001 /var/lib/teachlab /run/teachlab /tmp/teachlab \
     && chmod 0700 /var/lib/teachlab /run/teachlab /tmp/teachlab

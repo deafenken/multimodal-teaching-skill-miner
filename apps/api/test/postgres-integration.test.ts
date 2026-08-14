@@ -118,6 +118,7 @@ test(
     let revocations = new PostgresSessionRevocationRepository(database);
     const alice = {tenantId: "school-a", ownerId: "alice"};
     const bob = {tenantId: "school-b", ownerId: "bob"};
+    const deleting = {tenantId: "school-c", ownerId: "charlie"};
     const aliceSession = await sessions.create({
       ...alice,
       title: "Algebra review",
@@ -128,8 +129,13 @@ test(
       title: "Biology review",
       learner: "Bob"
     });
+    const deletingSession = await sessions.create({
+      ...deleting,
+      title: "Deletion fence review",
+      learner: "Charlie"
+    });
 
-    await database.withTenant(alice, (transaction) => transaction.query(
+    await database.withTenant(deleting, (transaction) => transaction.query(
       `INSERT INTO public.teachlab_account_deletion_operations (
          tenant_id, owner_id, scope_sha256, operation_id, phase, revision,
          challenge_id, challenge_token_sha256, challenge_csrf_sha256,
@@ -144,7 +150,7 @@ test(
          statement_timestamp() + interval '5 minutes', $12
        )`,
       [
-        alice.tenantId, alice.ownerId, "1".repeat(64),
+        deleting.tenantId, deleting.ownerId, "1".repeat(64),
         `adel_${"2".repeat(32)}`, `adelc_${"3".repeat(32)}`,
         "4".repeat(64), "5".repeat(64), "6".repeat(64), "7".repeat(64),
         "8".repeat(64), "9".repeat(64), "a".repeat(64)
@@ -365,8 +371,8 @@ test(
     );
 
     const fencedTask = await tasks.create({
-      ...alice,
-      sessionId: aliceSession.id,
+      ...deleting,
+      sessionId: deletingSession.id,
       learnerMessage: "Deletion fence must win",
       clientRequestId: "deletion-fence-1"
     });
@@ -377,14 +383,14 @@ test(
       maximumAttempts: 3
     });
     assert.equal(fencedClaim.kind, "claimed");
-    await database.withTenant(alice, (transaction) => transaction.query(
+    await database.withTenant(deleting, (transaction) => transaction.query(
       `UPDATE public.teachlab_account_deletion_operations
           SET phase = 'fencing', revision = revision + 1,
               idempotency_key_sha256 = $3,
               confirmation_sha256 = $4,
               updated_at = statement_timestamp()
         WHERE tenant_id = $1 AND owner_id = $2 AND phase = 'prepared'`,
-      [alice.tenantId, alice.ownerId, "1".repeat(64), "2".repeat(64)]
+      [deleting.tenantId, deleting.ownerId, "1".repeat(64), "2".repeat(64)]
     ), {allowAccountDeleting: true});
     const fencedClaimAfter = await tasks.claimNext({
       leaseOwnerSha256: "1".repeat(64),
@@ -394,19 +400,19 @@ test(
     });
     assert.equal(fencedClaimAfter.kind, "none");
     const fencedSettle = await tasks.settleLease({
-      ...alice,
+      ...deleting,
       taskId: fencedTask.task.id,
       leaseTokenSha256: "0".repeat(64),
       status: "succeeded",
       events: [{type: "status", payload: {kind: "task.succeeded", taskId: fencedTask.task.id}}]
     });
     assert.equal(fencedSettle, undefined);
-    const fencedEvents = await database.withTenant(alice, (transaction) => transaction.query(
+    const fencedEvents = await admin.query(
       `SELECT id FROM public.teachlab_task_events
         WHERE tenant_id = $1 AND owner_id = $2
           AND payload @> $3::jsonb`,
-      [alice.tenantId, alice.ownerId, JSON.stringify({taskId: fencedTask.task.id})]
-    ));
+      [deleting.tenantId, deleting.ownerId, JSON.stringify({taskId: fencedTask.task.id})]
+    );
     assert.equal(fencedEvents.rowCount, 0);
 
     const storedArtifact = await artifacts.put({

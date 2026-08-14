@@ -42,13 +42,6 @@ RECEIPT_SCHEMA = "teachlab.console.cross_browser_smoke.v1"
 SUPPORTED_BROWSERS = ("chromium", "firefox", "webkit")
 PROJECT_ID = "project_000000000000000000000001"
 TIMESTAMP = "2026-01-01T00:00:00Z"
-_FIREFOX_OFFLINE_NETWORK_MARKERS = (
-    "Failed to load",
-    "ServiceWorker intercepted the request",
-    "encountered an unexpected error",
-)
-
-
 class SmokeFailure(RuntimeError):
     """A fixed-code failure that is safe to print in a CI receipt."""
 
@@ -149,7 +142,6 @@ class _BrowserErrorGate:
         if self.browser != "firefox" or self.phase != "intentional_offline_navigation":
             return False
         try:
-            message_text = str(message.text)
             location = message.location
             location_url = str(location.get("url", ""))
             expected_origin = urlsplit(self.production_origin)
@@ -168,8 +160,11 @@ class _BrowserErrorGate:
             return False
         # Firefox reports the deliberately severed service-worker navigation
         # as a console error even when the worker returns the validated offline
-        # shell. Match all stable markers, but never retain or emit the text.
-        return all(marker in message_text for marker in _FIREFOX_OFFLINE_NETWORK_MARKERS)
+        # shell. Its localized diagnostic text is not a stable security
+        # boundary. Instead, accept at most one error attributed to the exact
+        # sealed worker after the deliberate transport cut. The caller then
+        # proves that the scope-bound shell rendered and remained accessible.
+        return True
 
 
 def _require(
