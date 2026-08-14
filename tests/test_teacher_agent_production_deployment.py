@@ -175,11 +175,13 @@ def test_dockerfiles_reject_mutable_base_images_and_run_as_non_root() -> None:
     assert "python -m pip check" in api
     assert "TEACHLAB_RELEASE_VERSION=${TEACHLAB_RELEASE_VERSION}" in api
     assert "TEACHLAB_RELEASE_ID=${TEACHLAB_RELEASE_ID}" in api
+    assert "COPY apps/api/tsconfig.json apps/api/tsconfig.build.json ./" in api
     console = (ROOT / "docker/teachlab_console.Dockerfile").read_text(encoding="utf-8")
     assert console.index("ARG NODE_RUNTIME_IMAGE") < console.index("FROM ")
     assert "NEXT_PUBLIC_TEACHLAB_AUTH_MODE=oidc" in console
     assert "TEACHLAB_RELEASE_VERSION=${TEACHLAB_RELEASE_VERSION}" in console
     assert "TEACHLAB_RELEASE_ID=${TEACHLAB_RELEASE_ID}" in console
+    assert "COPY apps/console/ ./" in console
     compose = (ROOT / "deploy/production/compose.yaml").read_text(encoding="utf-8")
     assert "NEXT_PUBLIC_TEACHLAB_AUTH_MODE: oidc" in compose
     assert "TEACHLAB_APPS_API_INTERNAL_URL: http://api:4000" in compose

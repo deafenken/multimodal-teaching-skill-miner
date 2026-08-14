@@ -42,6 +42,11 @@ RECEIPT_SCHEMA = "teachlab.console.cross_browser_smoke.v1"
 SUPPORTED_BROWSERS = ("chromium", "firefox", "webkit")
 PROJECT_ID = "project_000000000000000000000001"
 TIMESTAMP = "2026-01-01T00:00:00Z"
+_FIREFOX_OFFLINE_NETWORK_MARKERS = (
+    "Failed to load",
+    "ServiceWorker intercepted the request",
+    "encountered an unexpected error",
+)
 
 
 class SmokeFailure(RuntimeError):
@@ -59,6 +64,112 @@ class RuntimeRelease:
     release_id: str
     version: str
     directory: Path
+
+
+@dataclass(slots=True)
+class _BrowserErrorGate:
+    """Keep online failures distinct from one intentional Firefox network cut."""
+
+    browser: str
+    production_origin: str
+    phase: str = "online"
+    online_page_errors: int = 0
+    online_console_errors: int = 0
+    offline_page_errors: int = 0
+    offline_console_errors: int = 0
+    accepted_firefox_offline_diagnostics: int = 0
+
+    def on_page_error(self, _error: object) -> None:
+        if self.phase == "online":
+            self.online_page_errors += 1
+        else:
+            self.offline_page_errors += 1
+
+    def on_console(self, message: Any) -> None:
+        if getattr(message, "type", "") != "error":
+            return
+        if self.phase == "online":
+            self.online_console_errors += 1
+            return
+        if (
+            self.accepted_firefox_offline_diagnostics == 0
+            and self._is_expected_firefox_offline_diagnostic(message)
+        ):
+            self.accepted_firefox_offline_diagnostics += 1
+            return
+        self.offline_console_errors += 1
+
+    def require_online_clean(self) -> None:
+        _require(
+            self.online_page_errors == 0,
+            stage="browser_online",
+            code="page_error",
+            browser=self.browser,
+        )
+        _require(
+            self.online_console_errors == 0,
+            stage="browser_online",
+            code="console_error",
+            browser=self.browser,
+        )
+
+    def begin_intentional_offline_navigation(self) -> None:
+        _require(
+            self.phase == "online",
+            stage="browser_offline",
+            code="invalid_error_gate_phase",
+            browser=self.browser,
+        )
+        # Re-check at the transition so an event racing with the network cut
+        # cannot be reclassified as an expected offline diagnostic.
+        self.require_online_clean()
+        self.phase = "intentional_offline_navigation"
+
+    def require_offline_clean(self) -> None:
+        _require(
+            self.phase == "intentional_offline_navigation",
+            stage="browser_offline",
+            code="invalid_error_gate_phase",
+            browser=self.browser,
+        )
+        _require(
+            self.offline_page_errors == 0,
+            stage="browser_offline",
+            code="page_error",
+            browser=self.browser,
+        )
+        _require(
+            self.offline_console_errors == 0,
+            stage="browser_offline",
+            code="console_error",
+            browser=self.browser,
+        )
+
+    def _is_expected_firefox_offline_diagnostic(self, message: Any) -> bool:
+        if self.browser != "firefox" or self.phase != "intentional_offline_navigation":
+            return False
+        try:
+            message_text = str(message.text)
+            location = message.location
+            location_url = str(location.get("url", ""))
+            expected_origin = urlsplit(self.production_origin)
+            observed = urlsplit(location_url)
+            source_matches = (
+                observed.scheme == expected_origin.scheme == "http"
+                and observed.hostname == expected_origin.hostname == "127.0.0.1"
+                and observed.port == expected_origin.port
+                and observed.path == "/teachlab-sw-v1.js"
+                and not observed.query
+                and not observed.fragment
+            )
+        except (AttributeError, TypeError, ValueError):
+            return False
+        if not source_matches:
+            return False
+        # Firefox reports the deliberately severed service-worker navigation
+        # as a console error even when the worker returns the validated offline
+        # shell. Match all stable markers, but never retain or emit the text.
+        return all(marker in message_text for marker in _FIREFOX_OFFLINE_NETWORK_MARKERS)
 
 
 def _require(
@@ -690,18 +801,14 @@ def _browser_smoke(
     except Exception as exc:
         browser.close()
         raise SmokeFailure("browser_launch", "browser_context_unavailable", browser_name) from exc
-    page_errors = 0
-    console_errors = 0
+    error_gate = _BrowserErrorGate(browser_name, base_url)
     external_requests = 0
 
-    def on_page_error(_error: object) -> None:
-        nonlocal page_errors
-        page_errors += 1
+    def on_page_error(error: object) -> None:
+        error_gate.on_page_error(error)
 
     def on_console(message: Any) -> None:
-        nonlocal console_errors
-        if message.type == "error":
-            console_errors += 1
+        error_gate.on_console(message)
 
     def guard_route(route: Any) -> None:
         target = urlsplit(route.request.url)
@@ -1007,7 +1114,9 @@ def _browser_smoke(
         # Playwright's engine-specific offline emulation. The public listener
         # stays bound, while the worker's internal fetch receives a real
         # connection failure and falls back to the scope-bound offline document.
+        error_gate.require_online_clean()
         disconnect_production_origin()
+        error_gate.begin_intentional_offline_navigation()
         page.evaluate(
             "url => window.location.assign(url)",
             f"{base_url}/?offline-smoke={secrets.token_hex(8)}",
@@ -1038,8 +1147,7 @@ def _browser_smoke(
             browser=browser_name,
         )
         axe_results.append(_axe_audit(page, axe_source, "offline_scope_bound_shell", browser_name))
-        _require(page_errors == 0, stage="browser", code="page_error", browser=browser_name)
-        _require(console_errors == 0, stage="browser", code="console_error", browser=browser_name)
+        error_gate.require_offline_clean()
         _require(external_requests == 0, stage="browser", code="external_request", browser=browser_name)
         return {
             "browser": browser_name,
@@ -1053,6 +1161,13 @@ def _browser_smoke(
             "reflow": reflow_results,
             "offline_hard_reload": "scope_bound_read_only_shell_passed",
             "cache_policy": "same_origin_immutable_static_only",
+            "error_gate": {
+                "online": "zero_page_or_console_errors",
+                "offline": "zero_unexpected_page_or_console_errors",
+                "accepted_firefox_offline_network_diagnostics": (
+                    error_gate.accepted_firefox_offline_diagnostics
+                ),
+            },
         }
     except SmokeFailure:
         raise

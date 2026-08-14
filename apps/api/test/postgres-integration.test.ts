@@ -110,7 +110,10 @@ test(
     await database.assertReady();
 
     const sessions = new PostgresSessionRepository(database);
-    const tasks = new PostgresTaskRepository(database);
+    // Production Nest wiring injects PostgresDatabase through both the tenant
+    // repository and TASK_SYSTEM_DATABASE boundaries. Mirror that wiring here
+    // so lease claims exercise the dispatcher-only RLS transaction.
+    const tasks = new PostgresTaskRepository(database, database);
     const artifacts = new PostgresArtifactStorageAdapter(database);
     let revocations = new PostgresSessionRevocationRepository(database);
     const alice = {tenantId: "school-a", ownerId: "alice"};

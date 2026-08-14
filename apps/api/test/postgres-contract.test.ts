@@ -109,6 +109,17 @@ function claimInput(overrides: Partial<TaskLeaseClaimInput> = {}): TaskLeaseClai
   };
 }
 
+test("real PostgreSQL integration wires the dispatcher system boundary", async () => {
+  const integrationSource = await readFile(
+    resolve(process.cwd(), "test/postgres-integration.test.ts"),
+    "utf8"
+  );
+  assert.match(
+    integrationSource,
+    /new PostgresTaskRepository\(database, database\)/
+  );
+});
+
 const row = {
   id: "00000000-0000-4000-8000-000000000001",
   tenant_id: "tenant-a",

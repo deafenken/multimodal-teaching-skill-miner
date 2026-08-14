@@ -8,7 +8,7 @@ RUN case "${NODE_BUILD_IMAGE}" in *@sha256:?????????????????????????????????????
 WORKDIR /build/apps/api
 COPY apps/api/package.json apps/api/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
-COPY apps/api/tsconfig.json ./
+COPY apps/api/tsconfig.json apps/api/tsconfig.build.json ./
 COPY apps/api/scripts ./scripts
 COPY apps/api/src ./src
 RUN npm run build \
