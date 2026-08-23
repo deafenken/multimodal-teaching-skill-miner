@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 from threading import Thread
 import time
@@ -25,9 +27,16 @@ from ..core import (
 
 PERMISSION_PROFILES: dict[str, frozenset[str]] = {
     "read-only": frozenset({"workspace.read"}),
-    "workspace-write": frozenset({"workspace.read", "workspace.write"}),
+    "workspace-write": frozenset(
+        {"workspace.read", "workspace.write", "process.exec.sandboxed"}
+    ),
     "full-access": frozenset(
-        {"workspace.read", "workspace.write", "process.exec"}
+        {
+            "workspace.read",
+            "workspace.write",
+            "process.exec.sandboxed",
+            "process.exec.host",
+        }
     ),
 }
 
@@ -55,7 +64,11 @@ _MAX_SEARCH_BYTES = 32 * 1024 * 1024
 _PROCESS_TERM_GRACE_SECONDS = 0.25
 _PROCESS_KILL_GRACE_SECONDS = 0.25
 _PATCH_BINARY = "/usr/bin/patch"
-_SAFE_EXEC_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+_MACOS_SANDBOX_BINARY = "/usr/bin/sandbox-exec"
+_SAFE_EXEC_PATH = (
+    "/Library/Developer/CommandLineTools/usr/bin:"
+    "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
+)
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _PATCH_MODE = re.compile(r"^(?:old|new|deleted file|new file) mode\s+120000$")
 
@@ -113,9 +126,22 @@ def _bounded_text(data: bytes, *, maximum: int) -> tuple[str, bool]:
     return _CONTROL.sub("�", text), truncated
 
 
-def _bounded_process_text(data: bytes, *, maximum: int) -> tuple[str, bool]:
+def _bounded_process_text(
+    data: bytes,
+    *,
+    maximum: int,
+    strict_utf8: bool = False,
+) -> tuple[str, bool]:
     truncated = len(data) > maximum
-    text = data[:maximum].decode("utf-8", errors="replace")
+    try:
+        text = data[:maximum].decode(
+            "utf-8", errors="strict" if strict_utf8 else "replace"
+        )
+    except UnicodeDecodeError as exc:
+        raise ToolExecutionError(
+            "command output is not valid UTF-8",
+            code="invalid_utf8",
+        ) from exc
     return _CONTROL.sub("�", text.replace("\x00", "�")), truncated
 
 
@@ -173,7 +199,7 @@ def _terminate_process_group(process: subprocess.Popen[bytes]) -> bool:
     )
 
 
-def _safe_process_environment() -> dict[str, str]:
+def _safe_process_environment(*, private_home: Path | None = None) -> dict[str, str]:
     environment = {
         key: os.environ[key]
         for key in ("LANG", "LC_ALL", "LC_CTYPE", "TERM", "TMPDIR", "TZ")
@@ -190,7 +216,154 @@ def _safe_process_environment() -> dict[str, str]:
             "ZDOTDIR": "/nonexistent",
         }
     )
+    if private_home is not None:
+        private = str(private_home)
+        environment.update(
+            {
+                "HOME": private,
+                "TMPDIR": private,
+                "XDG_CACHE_HOME": private,
+                "XDG_CONFIG_HOME": private,
+                "XDG_DATA_HOME": private,
+            }
+        )
     return environment
+
+
+def _workspace_sandbox_available() -> bool:
+    return (
+        sys.platform == "darwin"
+        and Path(_MACOS_SANDBOX_BINARY).is_file()
+        and os.access(_MACOS_SANDBOX_BINARY, os.X_OK)
+    )
+
+
+def _workspace_patch_available() -> bool:
+    return (
+        _workspace_sandbox_available()
+        and Path(_PATCH_BINARY).is_file()
+        and os.access(_PATCH_BINARY, os.X_OK)
+    )
+
+
+def workspace_sandbox_status() -> dict[str, Any]:
+    available = _workspace_sandbox_available()
+    return {
+        "available": available,
+        "backend": "macos-seatbelt" if available else "unavailable",
+        "isolation_kind": "seatbelt-policy-not-container" if available else "none",
+        "process_exec_available": available,
+        "workspace_patch_available": _workspace_patch_available(),
+        "filesystem_write_scope": (
+            "workspace+per-call-runtime+/dev" if available else "not-enforced"
+        ),
+        "user_data_read_policy": (
+            "deny-known-roots-outside-workspace" if available else "not-enforced"
+        ),
+        "network_denied": available,
+        "signals_from_sandbox_denied": available,
+        "keychain_ipc_policy": (
+            "deny-known-security-mach-services" if available else "not-enforced"
+        ),
+        "container_isolation": False,
+    }
+
+
+def _sandbox_literal(path: Path) -> str:
+    rendered = str(path.resolve(strict=True))
+    if any(ord(character) < 32 or ord(character) == 127 for character in rendered):
+        raise ToolExecutionError(
+            "sandbox path contains control characters",
+            code="sandbox_setup_failed",
+        )
+    return json.dumps(rendered)
+
+
+def _macos_workspace_sandbox_profile(
+    root: Path,
+    runtime_directory: Path,
+    *,
+    workspace_writable: bool = True,
+    deny_process_fork: bool = False,
+    deny_git_read: bool = False,
+) -> str:
+    """Build a deny-overlay Seatbelt profile for workspace tools.
+
+    Apple does not publish a stable high-level workspace profile for arbitrary
+    binaries. This profile therefore starts from normal host reads needed by
+    compilers/interpreters, then denies reads from user-data roots outside the
+    selected workspace. Writes are allowed only below the workspace, the
+    per-command private runtime directory, and device files such as /dev/null.
+    It is a host policy, not a container or a complete confidentiality boundary.
+    """
+
+    workspace = _sandbox_literal(root)
+    runtime = _sandbox_literal(runtime_directory)
+    readable = f"(require-any (subpath {workspace}) (subpath {runtime}))"
+    data_roots = {
+        Path("/Users"),
+        Path("/Volumes"),
+        Path("/private/tmp"),
+        Path("/private/var/folders"),
+    }
+    read_denials = []
+    for data_root in sorted(data_roots, key=str):
+        if not data_root.exists():
+            continue
+        rendered = _sandbox_literal(data_root)
+        read_denials.append(
+            "(deny file-read* "
+            f"(require-all (subpath {rendered}) (require-not {readable})))"
+        )
+    protected = " ".join(
+        f"(subpath {json.dumps(str(root / name))})"
+        for name in sorted(_PROTECTED_PATHS)
+    )
+    protected_reads = {".private", ".agent-harness"}
+    if deny_git_read:
+        protected_reads.add(".git")
+    protected_read_rules = " ".join(
+        f"(subpath {json.dumps(str(root / name))})"
+        for name in sorted(protected_reads)
+    )
+    write_roots = (
+        f"(require-any (subpath {workspace}) (subpath {runtime}) (subpath \"/dev\"))"
+        if workspace_writable
+        else f"(require-any (subpath {runtime}) (subpath \"/dev\"))"
+    )
+    process_rules = ("(deny process-fork)",) if deny_process_fork else ()
+    return "\n".join(
+        (
+            "(version 1)",
+            "(allow default)",
+            "(deny network*)",
+            "(deny signal)",
+            *process_rules,
+            # Keychain APIs normally cross one of these Mach service families.
+            # Cover global, per-user/local and XPC lookup namespaces. This is a
+            # conservative deny list for known services, not a claim that
+            # future macOS credential service names are automatically covered.
+            '(deny mach-lookup (global-name-prefix "com.apple.security"))',
+            '(deny mach-lookup (local-name-prefix "com.apple.security"))',
+            '(deny mach-lookup (xpc-service-name-prefix "com.apple.security"))',
+            '(deny mach-lookup (global-name "com.apple.SecurityServer"))',
+            '(deny mach-lookup (local-name "com.apple.SecurityServer"))',
+            '(deny mach-lookup (xpc-service-name "com.apple.SecurityServer"))',
+            *read_denials,
+            "(deny file-read* "
+            f"(require-any {protected_read_rules}))",
+            (
+                '(deny file-read* '
+                '(regex #"(?i).*/[.](git|private|agent-harness)(/.*)?$"))'
+                if deny_git_read
+                else '(deny file-read* '
+                '(regex #"(?i).*/[.](private|agent-harness)(/.*)?$"))'
+            ),
+            f"(deny file-write* (require-not {write_roots}))",
+            f"(deny file-write* (require-any {protected}))",
+            '(deny file-write* (regex #"(?i).*/[.](git|private|agent-harness)(/.*)?$"))',
+        )
+    )
 
 
 def _patch_path(raw: str, *, strip_git_prefix: bool) -> Path | None:
@@ -468,6 +641,7 @@ class WorkspaceToolset:
         timeout: float,
         environment: Mapping[str, str] | None = None,
         begin_effect: bool = False,
+        strict_utf8_output: bool = False,
     ) -> dict[str, Any]:
         _check_context(context)
         started = time.monotonic()
@@ -568,6 +742,7 @@ class WorkspaceToolset:
         text, truncated = _bounded_process_text(
             bytes(output),
             maximum=_MAX_COMMAND_OUTPUT_BYTES,
+            strict_utf8=strict_utf8_output,
         )
         return {
             "exit_code": (
@@ -581,7 +756,94 @@ class WorkspaceToolset:
             "duration_ms": round((time.monotonic() - started) * 1_000),
         }
 
+    def _run_workspace_sandboxed_process(
+        self,
+        command: list[str],
+        context: ToolExecutionContext,
+        *,
+        stdin: bytes | None = None,
+        timeout: float,
+        begin_effect: bool = False,
+        workspace_writable: bool = True,
+        deny_process_fork: bool = False,
+        strict_utf8_output: bool = False,
+        deny_git_read: bool = False,
+    ) -> dict[str, Any]:
+        """Run one subprocess under the workspace Seatbelt policy.
+
+        Both command execution and the two patch phases use this exact wrapper.
+        The policy is evaluated by the kernel on the resolved write target, so
+        replacing an inspected workspace component with an external symlink
+        cannot turn the user-space path preflight into host write authority.
+        """
+
+        if not _workspace_sandbox_available():
+            raise ToolExecutionError(
+                "workspace OS sandbox is unavailable on this host",
+                code="sandbox_unavailable",
+            )
+        with tempfile.TemporaryDirectory(
+            prefix=".agent-harness-runtime-",
+            dir=self.root,
+        ) as runtime_text:
+            runtime_directory = Path(runtime_text).resolve(strict=True)
+            os.chmod(runtime_directory, 0o700)
+            profile = _macos_workspace_sandbox_profile(
+                self.root,
+                runtime_directory,
+                workspace_writable=workspace_writable,
+                deny_process_fork=deny_process_fork,
+                deny_git_read=deny_git_read,
+            )
+            return self._run_process(
+                [
+                    _MACOS_SANDBOX_BINARY,
+                    "-p",
+                    profile,
+                    *command,
+                ],
+                context,
+                stdin=stdin,
+                timeout=timeout,
+                environment=_safe_process_environment(
+                    private_home=runtime_directory,
+                ),
+                begin_effect=begin_effect,
+                strict_utf8_output=strict_utf8_output,
+            )
+
+    def run_policy_hook(
+        self,
+        command: list[str],
+        context: ToolExecutionContext,
+        *,
+        stdin: bytes,
+        timeout: float,
+    ) -> dict[str, Any]:
+        """Run a trusted hook with a read-only workspace view.
+
+        Hooks are control-plane code, not model-visible tools. They receive
+        known-root/network/signal/credential-service denials, may write only
+        their private per-call runtime directory, and cannot fork children.
+        """
+
+        return self._run_workspace_sandboxed_process(
+            command,
+            context,
+            stdin=stdin,
+            timeout=timeout,
+            workspace_writable=False,
+            deny_process_fork=True,
+            strict_utf8_output=True,
+            deny_git_read=True,
+        )
+
     def apply_patch(self, arguments: Mapping[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+        if not _workspace_patch_available():
+            raise ToolExecutionError(
+                "workspace patch sandbox is unavailable on this host",
+                code="sandbox_unavailable",
+            )
         patch = arguments.get("patch")
         if not isinstance(patch, str) or not patch.strip():
             raise ToolExecutionError("patch is required", code="invalid_patch")
@@ -649,7 +911,7 @@ class WorkspaceToolset:
                         )
         if not touched:
             raise ToolExecutionError("patch contains no workspace paths", code="invalid_patch")
-        checked = self._run_process(
+        checked = self._run_workspace_sandboxed_process(
             [
                 _PATCH_BINARY,
                 "-C",
@@ -669,7 +931,7 @@ class WorkspaceToolset:
         )
         if checked["exit_code"] != 0:
             raise ToolExecutionError("patch preflight failed", code="patch_rejected")
-        applied = self._run_process(
+        applied = self._run_workspace_sandboxed_process(
             [
                 _PATCH_BINARY,
                 "-f",
@@ -698,7 +960,10 @@ class WorkspaceToolset:
                 )
         return {"applied": True, "paths": sorted(touched)}
 
-    def run_command(self, arguments: Mapping[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+    def _validated_shell_command(
+        self,
+        arguments: Mapping[str, Any],
+    ) -> tuple[list[str], float]:
         command = arguments.get("command")
         if not isinstance(command, str) or not command.strip() or len(command) > 20_000:
             raise ToolExecutionError("command is invalid", code="invalid_command")
@@ -709,6 +974,27 @@ class WorkspaceToolset:
         shell_arguments = [shell, "-f", "-c", command]
         if shell.endswith("bash"):
             shell_arguments = [shell, "--noprofile", "--norc", "-c", command]
+        return shell_arguments, timeout
+
+    def run_command(self, arguments: Mapping[str, Any], context: ToolExecutionContext) -> dict[str, Any]:
+        """Run a command in the macOS workspace sandbox, failing closed elsewhere."""
+
+        shell_arguments, timeout = self._validated_shell_command(arguments)
+        return self._run_workspace_sandboxed_process(
+            shell_arguments,
+            context,
+            timeout=timeout,
+            begin_effect=True,
+        )
+
+    def run_host_command(
+        self,
+        arguments: Mapping[str, Any],
+        context: ToolExecutionContext,
+    ) -> dict[str, Any]:
+        """Run a host-level command only through the explicit full-access tool."""
+
+        shell_arguments, timeout = self._validated_shell_command(arguments)
         return self._run_process(
             shell_arguments,
             context,
@@ -787,7 +1073,10 @@ def build_workspace_registry(root: os.PathLike[str] | str) -> ToolRegistry:
             ToolSpec(
                 name="workspace.patch",
                 version="1",
-                description="Apply one validated unified diff inside the workspace.",
+                description=(
+                    "Apply one validated unified diff under an OS-enforced "
+                    "workspace-write sandbox."
+                ),
                 input_schema=_schema(
                     {"patch": _string(max_length=_MAX_PATCH_BYTES, min_length=1)},
                     required=("patch",),
@@ -798,7 +1087,10 @@ def build_workspace_registry(root: os.PathLike[str] | str) -> ToolRegistry:
                 data_scope="workspace_write",
                 timeout_seconds=30.0,
                 execution_isolation="trusted_inline",
-                trusted_inline_reason=trusted_reason,
+                trusted_inline_reason=(
+                    "Repository-owned validator launches both patch phases under "
+                    "macOS Seatbelt"
+                ),
                 retry_policy=RetryPolicy(max_attempts=1),
             ),
             tools.apply_patch,
@@ -807,7 +1099,10 @@ def build_workspace_registry(root: os.PathLike[str] | str) -> ToolRegistry:
             ToolSpec(
                 name="process.exec",
                 version="1",
-                description="Run one zsh command in the workspace with secrets removed from the environment.",
+                description=(
+                    "Run one command in an OS-enforced workspace sandbox: writes stay "
+                    "inside the workspace, private paths are denied, and network is off."
+                ),
                 input_schema=_schema(
                     {
                         "command": _string(max_length=20_000, min_length=1),
@@ -815,19 +1110,57 @@ def build_workspace_registry(root: os.PathLike[str] | str) -> ToolRegistry:
                     },
                     required=("command",),
                 ),
-                permission="process.exec",
+                permission="process.exec.sandboxed",
+                risk="high",
+                replay_policy="never",
+                data_scope="workspace_write",
+                timeout_seconds=310.0,
+                execution_isolation="trusted_inline",
+                trusted_inline_reason=(
+                    "Central handler validates input then launches macOS Seatbelt"
+                ),
+                retry_policy=RetryPolicy(max_attempts=1),
+            ),
+            tools.run_command,
+        ),
+        (
+            ToolSpec(
+                name="process.exec_host",
+                version="1",
+                description=(
+                    "Run one unsandboxed host command with a scrubbed environment; "
+                    "this is available only in explicit full-access mode."
+                ),
+                input_schema=_schema(
+                    {
+                        "command": _string(max_length=20_000, min_length=1),
+                        "timeout_seconds": {
+                            "type": "number",
+                            "minimum": 0.1,
+                            "maximum": 300,
+                        },
+                    },
+                    required=("command",),
+                ),
+                permission="process.exec.host",
                 risk="high",
                 replay_policy="never",
                 data_scope="host_access",
                 timeout_seconds=310.0,
                 execution_isolation="trusted_inline",
-                trusted_inline_reason=trusted_reason,
+                trusted_inline_reason=(
+                    "Explicit full-access host shell with bounded output and cleanup"
+                ),
                 retry_policy=RetryPolicy(max_attempts=1),
             ),
-            tools.run_command,
+            tools.run_host_command,
         ),
     )
     for spec, handler in specs:
+        if spec.name == "workspace.patch" and not _workspace_patch_available():
+            continue
+        if spec.name == "process.exec" and not _workspace_sandbox_available():
+            continue
         registry.register(spec, handler)
     return registry
 
@@ -837,4 +1170,5 @@ __all__ = [
     "WorkspaceToolset",
     "build_workspace_registry",
     "permission_profile",
+    "workspace_sandbox_status",
 ]

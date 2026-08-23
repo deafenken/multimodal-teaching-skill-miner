@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import argparse
 import curses
+from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
 import sys
-from threading import Thread
+from threading import Event, Thread
 import time
 from typing import Any, Mapping, Sequence
 
-from .core import CancellationToken
+from .core import (
+    ApprovalDecision,
+    ApprovalRequest,
+    ApprovalRule,
+    CancellationToken,
+)
+from .hooks import load_project_hooks
 from .runner import AgentRunner, TurnOutcome
 from .session import SessionStoreError
 from .toolsets import PERMISSION_PROFILES, permission_profile
@@ -28,6 +35,55 @@ _MAX_FOLLOWUPS = 32
 _MAX_FOLLOWUP_CHARS = 100_000
 
 
+@dataclass(slots=True)
+class _PendingApproval:
+    request: ApprovalRequest
+    preview: str
+    event: Event = field(default_factory=Event)
+    decision: ApprovalDecision | None = None
+
+    def settle(self, *, verdict: str, reason_code: str) -> None:
+        if self.event.is_set():
+            return
+        self.decision = ApprovalDecision.for_request(
+            self.request,
+            verdict=verdict,  # type: ignore[arg-type]
+            reason_code=reason_code,
+        )
+        self.event.set()
+
+
+class _TuiApprovalBroker:
+    def __init__(
+        self,
+        queue: Queue[tuple[str, Any]],
+        cancellation: CancellationToken,
+    ) -> None:
+        self.queue = queue
+        self.cancellation = cancellation
+
+    def decide(
+        self,
+        request: ApprovalRequest,
+        *,
+        preview: str,
+    ) -> ApprovalDecision:
+        pending = _PendingApproval(
+            request=request,
+            preview=sanitize_terminal_text(preview)[:20_000],
+        )
+        self.queue.put(("approval", pending))
+        while not pending.event.wait(0.05):
+            self.cancellation.raise_if_cancelled()
+        if pending.decision is None:
+            return ApprovalDecision.for_request(
+                request,
+                verdict="deny",
+                reason_code="approval_broker_failed",
+            )
+        return pending.decision
+
+
 class HarnessTui:
     def __init__(self, runner: AgentRunner, session: Mapping[str, Any]) -> None:
         self.runner = runner
@@ -38,8 +94,18 @@ class HarnessTui:
         self.scroll = 0
         self.queue: Queue[tuple[str, Any]] = Queue()
         self.worker: Thread | None = None
+        self.worker_kind: str | None = None
         self.cancellation: CancellationToken | None = None
         self.followups: list[str] = []
+        self.pending_approval: _PendingApproval | None = None
+        self.approval_scroll = 0
+        self.approval_preview_visible = False
+        self.approval_broker: _TuiApprovalBroker | None = None
+        # Keep an explicit record of exact rules granted while this TUI is
+        # running. The durable store remains the authority for later runs;
+        # this list makes the current interactive grant visible to the
+        # in-process controller without broadening the frozen run policy.
+        self.turn_approval_rules: list[ApprovalRule] = []
         self.running = True
 
     @property
@@ -70,6 +136,10 @@ class HarnessTui:
         self.transcript.append({"role": "user", "content": prompt})
         self.state.begin_turn()
         self.cancellation = CancellationToken()
+        self.approval_broker = _TuiApprovalBroker(
+            self.queue,
+            self.cancellation,
+        )
 
         def work() -> None:
             try:
@@ -78,12 +148,39 @@ class HarnessTui:
                     prompt,
                     cancellation_token=self.cancellation,
                     event_sink=self._event_sink,
+                    approval_broker=self.approval_broker,
                 )
                 self.queue.put(("outcome", outcome))
             except BaseException as exc:
                 self.queue.put(("error", exc))
 
         self.worker = Thread(target=work, name="agent-harness-turn", daemon=True)
+        self.worker_kind = "turn"
+        self.worker.start()
+
+    def start_compaction(self) -> None:
+        if self.busy:
+            self.state.notice("运行完成后才能压缩上下文")
+            return
+        self.state.status = "compacting"
+        self.cancellation = CancellationToken()
+
+        def work() -> None:
+            try:
+                result = self.runner.compact_session(
+                    self.state.session_id,
+                    cancellation_token=self.cancellation,
+                )
+                self.queue.put(("compaction_outcome", result))
+            except BaseException as exc:
+                self.queue.put(("error", exc))
+
+        self.worker = Thread(
+            target=work,
+            name="agent-harness-compaction",
+            daemon=True,
+        )
+        self.worker_kind = "compaction"
         self.worker.start()
 
     def _complete_turn(self, outcome: TurnOutcome) -> None:
@@ -99,15 +196,39 @@ class HarnessTui:
             and outcome.turn_id != self.state.active_turn_id
         ):
             raise ValueError("outcome belongs to another turn")
-        if outcome.message:
-            self.transcript.append(
-                {"role": "assistant", "content": outcome.message, "run_id": outcome.run_id}
-            )
-        elif outcome.status != "cancelled":
+        if not outcome.message and outcome.status != "cancelled":
             self.state.notice(f"运行未生成回答：{outcome.status} · {outcome.reason}")
+        persisted = self.runner.store.load(self.state.session_id)
+        self.session = dict(persisted)
+        self.transcript = [dict(item) for item in persisted.get("messages", [])]
         self.state.assistant_draft = ""
         self.worker = None
+        self.worker_kind = None
         self.cancellation = None
+        self.pending_approval = None
+        self.approval_scroll = 0
+        self.approval_preview_visible = False
+        self.approval_broker = None
+        if self.followups:
+            next_prompt = self.followups.pop(0)
+            self.start_turn(next_prompt)
+
+    def _complete_compaction(self, result: Mapping[str, Any]) -> None:
+        persisted = self.runner.store.load(self.state.session_id)
+        self.session = dict(persisted)
+        self.transcript = [dict(item) for item in persisted.get("messages", [])]
+        self.worker = None
+        self.worker_kind = None
+        self.cancellation = None
+        self.state.status = "idle"
+        if result.get("status") == "compacted":
+            self.state.notice(
+                f"上下文已压缩：覆盖 {result.get('source_message_count', 0)} 条原始消息 · "
+                f"保留 {result.get('active_message_count', 0)} 条活动消息 · "
+                f"摘要 {str(result.get('summary_sha256', ''))[:12]}"
+            )
+        else:
+            self.state.notice("没有可压缩的已完成旧轮次")
         if self.followups:
             next_prompt = self.followups.pop(0)
             self.start_turn(next_prompt)
@@ -123,12 +244,36 @@ class HarnessTui:
                     self.state.apply_event(payload)
                 elif kind == "outcome":
                     self._complete_turn(payload)
+                elif kind == "compaction_outcome":
+                    if not isinstance(payload, Mapping):
+                        raise ValueError("invalid compaction outcome")
+                    self._complete_compaction(payload)
+                elif kind == "approval":
+                    if isinstance(payload, _PendingApproval) and not payload.event.is_set():
+                        self.pending_approval = payload
+                        self.approval_scroll = 0
+                        self.approval_preview_visible = False
+                        self.state.status = "approval"
                 elif kind == "error":
                     self.worker = None
+                    self.worker_kind = None
                     self.cancellation = None
                     self.state.status = "failed"
                     self.state.assistant_draft = ""
                     self.followups.clear()
+                    self.pending_approval = None
+                    self.approval_scroll = 0
+                    self.approval_preview_visible = False
+                    self.approval_broker = None
+                    try:
+                        persisted = self.runner.store.load(self.state.session_id)
+                    except SessionStoreError as refresh_error:
+                        self.state.notice(f"会话刷新失败：{refresh_error}")
+                    else:
+                        self.session = dict(persisted)
+                        self.transcript = [
+                            dict(item) for item in persisted.get("messages", [])
+                        ]
                     self.state.notice(f"运行失败：{type(payload).__name__}: {payload}")
             except Exception as exc:
                 if self.cancellation is not None:
@@ -141,8 +286,23 @@ class HarnessTui:
         self.transcript = [dict(item) for item in session.get("messages", [])]
         self.runner.permission_mode = str(session.get("permission_mode", "read-only"))
         self.scroll = 0
+        self.pending_approval = None
+        self.approval_scroll = 0
+        self.approval_preview_visible = False
+        self.approval_broker = None
         for notice in session.get("risk_notices", [])[-8:]:
             self.state.notice(str(notice))
+
+    def _hook_status(self) -> dict[str, Any]:
+        status_loader = getattr(self.runner, "hook_status", None)
+        if callable(status_loader):
+            status = status_loader()
+        else:
+            snapshot = load_project_hooks(self.runner.workspace)
+            status = snapshot.metadata(self.runner.store.hook_trust_state())
+        if not isinstance(status, Mapping):
+            raise ValueError("hook status must be an object")
+        return dict(status)
 
     def command(self, raw: str) -> None:
         command, _, argument = raw.strip().partition(" ")
@@ -156,7 +316,8 @@ class HarnessTui:
         elif command == "/help":
             self.state.notice(
                 "/new /sessions /resume ID /fork /archive /effects "
-                "/reconcile RUN_ID /status /model /permissions MODE /tools /clear /quit"
+                "/reconcile RUN_ID /status /model /permissions MODE /tools "
+                "/instructions /hooks /context /compact /approvals /clear /quit"
             )
         elif command == "/new":
             if self.busy:
@@ -222,8 +383,16 @@ class HarnessTui:
                     self.state.notice(str(exc))
         elif command == "/status":
             status = self.runner.provider_status
+            sandbox = status.get("workspace_sandbox", {})
+            sandbox_label = (
+                sandbox.get("backend", "unknown")
+                if isinstance(sandbox, Mapping)
+                else "unknown"
+            )
             self.state.notice(
-                f"session={self.state.session_id} provider={status['provider']} model={status['model']} permissions={self.runner.permission_mode} cwd={status['workspace']}"
+                f"session={self.state.session_id} provider={status['provider']} "
+                f"model={status['model']} permissions={self.runner.permission_mode} "
+                f"sandbox={sandbox_label} cwd={status['workspace']}"
             )
         elif command == "/model":
             self.state.notice(f"当前模型：{self.runner.client.config.model}")
@@ -241,6 +410,107 @@ class HarnessTui:
             allowed = permission_profile(self.runner.permission_mode)
             names = [spec.name for spec in self.runner.registry.specs() if spec.permission in allowed]
             self.state.notice("可用工具：" + ", ".join(names))
+        elif command == "/instructions":
+            try:
+                snapshot = self.runner.instruction_snapshot()
+                self.state.notice(
+                    f"项目指令：{len(snapshot.documents)} 个文件 · "
+                    f"{snapshot.total_bytes} bytes · {snapshot.snapshot_sha256[:12]}"
+                )
+                for document in snapshot.documents[-12:]:
+                    self.state.notice(
+                        f"{document.relative_path} · {document.byte_length} bytes · "
+                        f"{document.content_sha256[:12]}"
+                    )
+            except Exception as exc:
+                self.state.notice(f"项目指令不可用：{exc}")
+        elif command == "/hooks":
+            if argument:
+                self.state.notice("用法：/hooks（只读；信任或禁用请使用 harness hooks）")
+                return
+            try:
+                status = self._hook_status()
+                if not status.get("config_present"):
+                    self.state.notice(
+                        "未配置项目 hooks：.agent-harness/hooks.json"
+                    )
+                    return
+                hooks = status.get("hooks", [])
+                if not isinstance(hooks, list):
+                    raise ValueError("hook status list is invalid")
+                self.state.notice(
+                    f"项目 hooks：{status.get('hook_count', 0)} configured · "
+                    f"{status.get('trusted_hook_count', 0)} trusted · "
+                    f"{status.get('disabled_hook_count', 0)} disabled · "
+                    f"{status.get('pending_hook_count', 0)} review-required · "
+                    f"snapshot {str(status.get('snapshot_sha256', ''))[:12]}"
+                )
+                for item in hooks[:5]:
+                    if not isinstance(item, Mapping):
+                        raise ValueError("hook status entry is invalid")
+                    self.state.notice(
+                        f"{item.get('hook_id', 'hook')} · "
+                        f"{item.get('event_name', 'event')} · "
+                        f"{item.get('trust_status', 'unknown')} · "
+                        f"{str(item.get('definition_sha256', ''))[:12]}"
+                    )
+                if len(hooks) > 5:
+                    self.state.notice(
+                        f"另有 {len(hooks) - 5} 个；运行 harness hooks 查看完整列表"
+                    )
+                if int(status.get("pending_hook_count", 0)) > 0:
+                    self.state.notice(
+                        "信任或禁用仅通过显式 CLI：harness hooks"
+                    )
+            except Exception as exc:
+                self.state.notice(f"项目 hooks 不可用：{exc}")
+        elif command == "/context":
+            try:
+                status = self.runner.context_status(self.state.session_id)
+                self.state.notice(
+                    f"上下文：原始 {status['transcript_message_count']} · "
+                    f"已压缩 {status['compacted_message_count']} · "
+                    f"活动 {status['active_message_count']} messages · "
+                    f"估算 {status['estimated_input_tokens_upper_bound']}/"
+                    f"{status['available_input_tokens']} tokens"
+                )
+                if status["compaction_id"]:
+                    self.state.notice(
+                        f"摘要：{status['summary_chars']} chars · "
+                        f"{status['summary_sha256'][:12]} · {status['compaction_id']}"
+                    )
+            except Exception as exc:
+                self.state.notice(f"上下文诊断不可用：{exc}")
+        elif command == "/compact":
+            self.start_compaction()
+        elif command == "/approvals":
+            try:
+                if argument.startswith("clear "):
+                    scope = argument.partition(" ")[2].strip().casefold()
+                    if scope not in {"session", "workspace"}:
+                        self.state.notice(
+                            "用法：/approvals 或 /approvals clear session|workspace"
+                        )
+                        return
+                    if self.busy:
+                        self.state.notice("运行中不能清除审批规则")
+                        return
+                    removed = self.runner.store.clear_approval_rules(
+                        scope=scope,
+                        session_id=self.state.session_id,
+                    )
+                    self.state.notice(f"已清除 {removed} 条 {scope} 审批规则")
+                    return
+                rules = self.runner.store.approval_rules(self.state.session_id)
+                self.state.notice(
+                    "审批：low=allow · medium/high=ask · "
+                    f"persistent rules={len(rules)}"
+                )
+                for rule in rules[-12:]:
+                    scope = "exact" if rule.exact else "tool"
+                    self.state.notice(f"{rule.action} · {rule.tool_name} · {scope}")
+            except SessionStoreError as exc:
+                self.state.notice(f"审批规则不可用：{exc}")
         elif command == "/clear":
             self.state.notices.clear()
             self.state.tools.clear()
@@ -260,6 +530,9 @@ class HarnessTui:
 
     def handle_key(self, key: Any) -> None:
         if key == curses.KEY_RESIZE:
+            return
+        if self.pending_approval is not None:
+            self._handle_approval_key(key)
             return
         if key in ("\n", "\r", curses.KEY_ENTER):
             self.submit()
@@ -284,6 +557,76 @@ class HarnessTui:
             self.state.notice("正在停止当前运行…")
         else:
             self.input_buffer = ""
+
+    def _handle_approval_key(self, key: Any) -> None:
+        pending = self.pending_approval
+        if pending is None:
+            return
+        normalized = key.casefold() if isinstance(key, str) else key
+        if normalized in (curses.KEY_UP, curses.KEY_PPAGE, "k"):
+            self.approval_scroll = max(0, self.approval_scroll - 3)
+            return
+        if normalized in (curses.KEY_DOWN, curses.KEY_NPAGE, "j"):
+            self.approval_scroll += 3
+            return
+        if normalized in ("\x03", 3):
+            pending.settle(verdict="deny", reason_code="user_denied_once")
+            self.pending_approval = None
+            self.approval_scroll = 0
+            self.approval_preview_visible = False
+            self._handle_interrupt()
+            return
+        if normalized == "n":
+            pending.settle(verdict="deny", reason_code="user_denied_once")
+            self.pending_approval = None
+            self.approval_scroll = 0
+            self.approval_preview_visible = False
+            return
+        if normalized in {"y", "s", "w"} and not self.approval_preview_visible:
+            self.state.notice("审批预览尚不可见；请放大终端并检查完整参数后再批准")
+            return
+        if normalized == "y":
+            pending.settle(verdict="allow", reason_code="user_allowed_once")
+            self.pending_approval = None
+            self.approval_scroll = 0
+            self.approval_preview_visible = False
+            return
+        if normalized not in {"s", "w"}:
+            return
+        if not pending.request.persistent_scope_allowed:
+            self.state.notice(
+                "可信策略 hook 要求逐次审批；本次不能保存会话或工作区放行规则"
+            )
+            return
+        rule = ApprovalRule(
+            action="allow",
+            tool_name=pending.request.tool_name,
+            tool_version=pending.request.tool_version,
+            arguments_sha256=pending.request.arguments_sha256,
+        )
+        scope = "session" if normalized == "s" else "workspace"
+        try:
+            self.runner.store.add_approval_rule(
+                rule,
+                scope=scope,
+                session_id=self.state.session_id,
+            )
+        except SessionStoreError as exc:
+            self.state.notice(f"审批规则保存失败：{exc}")
+            return
+        self.turn_approval_rules.append(rule)
+        pending.settle(
+            verdict="allow",
+            reason_code=(
+                "user_allowed_session"
+                if scope == "session"
+                else "user_allowed_workspace"
+            ),
+        )
+        self.pending_approval = None
+        self.approval_scroll = 0
+        self.approval_preview_visible = False
+        self.state.notice(f"已保存 {scope} 精确审批规则")
 
     def _body_lines(self, width: int) -> list[str]:
         lines: list[str] = []
@@ -323,8 +666,14 @@ class HarnessTui:
     def render(self, screen: Any) -> None:
         rows, columns = screen.getmaxyx()
         screen.erase()
-        if rows < 8 or columns < 40:
-            self._add(screen, 0, 0, "终端过小：至少需要 40×8", columns - 1, curses.A_BOLD)
+        self.approval_preview_visible = False
+        minimum_rows = 12 if self.pending_approval is not None else 8
+        if rows < minimum_rows or columns < 40:
+            size = f"40×{minimum_rows}"
+            message = f"终端过小：至少需要 {size}"
+            if self.pending_approval is not None:
+                message += "；可按 n 拒绝，放大后才能批准"
+            self._add(screen, 0, 0, message, columns - 1, curses.A_BOLD)
             screen.refresh()
             return
         header = (
@@ -334,7 +683,10 @@ class HarnessTui:
         self._add(screen, 0, 0, header.ljust(columns - 1), columns - 1, curses.A_REVERSE)
         self._add(screen, 1, 0, "─" * (columns - 1), columns - 1, curses.A_DIM)
         body_top = 2
-        body_height = rows - 6
+        approval_height = (
+            min(10, max(5, rows // 3)) if self.pending_approval is not None else 0
+        )
+        body_height = max(1, rows - 6 - approval_height)
         all_lines = self._body_lines(columns - 1)
         maximum_scroll = max(0, len(all_lines) - body_height)
         self.scroll = min(self.scroll, maximum_scroll)
@@ -342,12 +694,67 @@ class HarnessTui:
         start = max(0, end - body_height)
         for offset, line in enumerate(all_lines[start:end]):
             self._add(screen, body_top + offset, 0, line, columns - 1)
+        if self.pending_approval is not None:
+            pending = self.pending_approval
+            modal_top = body_top + body_height
+            preview_lines = wrap_display(pending.preview or "(no preview)", columns - 4)
+            preview_height = max(1, approval_height - 2)
+            maximum_approval_scroll = max(0, len(preview_lines) - preview_height)
+            self.approval_scroll = min(
+                max(0, self.approval_scroll), maximum_approval_scroll
+            )
+            preview_end = self.approval_scroll + preview_height
+            position = (
+                f" · lines {self.approval_scroll + 1}-"
+                f"{min(preview_end, len(preview_lines))}/{len(preview_lines)}"
+                if len(preview_lines) > preview_height
+                else ""
+            )
+            self._add(
+                screen,
+                modal_top,
+                0,
+                (
+                    f" APPROVAL · {pending.request.tool_name} · {pending.request.risk} · "
+                    f"args {pending.request.arguments_sha256[:12]}{position} "
+                ).ljust(columns - 1),
+                columns - 1,
+                curses.A_REVERSE,
+            )
+            for offset, preview in enumerate(
+                preview_lines[self.approval_scroll:preview_end]
+            ):
+                self._add(
+                    screen,
+                    modal_top + 1 + offset,
+                    2,
+                    preview,
+                    columns - 4,
+                )
+            approval_help = (
+                "↑↓/PgUp/PgDn 查看 · y 本次 · n 拒绝"
+                if not pending.request.persistent_scope_allowed
+                else "↑↓/PgUp/PgDn 查看 · y 本次 · s 会话 · w 工作区 · n 拒绝"
+            )
+            self._add(
+                screen,
+                modal_top + approval_height - 1,
+                2,
+                approval_help,
+                columns - 4,
+                curses.A_BOLD,
+            )
+            self.approval_preview_visible = True
         total = self.state.usage.get("total_tokens", 0)
         cache_hit = self.state.usage.get("prompt_cache_hit_tokens", 0)
         cache_total = cache_hit + self.state.usage.get("prompt_cache_miss_tokens", 0)
         cache = f"cache {round(cache_hit * 100 / cache_total)}%" if cache_total else "cache —"
         queue_label = f" · queued {len(self.followups)}" if self.followups else ""
-        status = f" {self.state.status} · {total} tokens · {cache}{queue_label} "
+        approval_label = " · approval waiting" if self.pending_approval else ""
+        status = (
+            f" {self.state.status} · {total} tokens · {cache}{queue_label}"
+            f"{approval_label} "
+        )
         self._add(screen, rows - 4, 0, status.ljust(columns - 1), columns - 1, curses.A_REVERSE)
         self._add(screen, rows - 3, 0, "─" * (columns - 1), columns - 1, curses.A_DIM)
         prompt = "> " + self.input_buffer
@@ -419,6 +826,7 @@ class _TuiArgumentParser(argparse.ArgumentParser):
 def build_parser() -> argparse.ArgumentParser:
     parser = _TuiArgumentParser(prog="harness-tui", description="Agent Harness terminal UI")
     parser.add_argument("--cwd", default=".")
+    parser.add_argument("--active-directory")
     parser.add_argument("--resume", nargs="?", const="")
     parser.add_argument("--model")
     parser.add_argument("--permissions", choices=tuple(PERMISSION_PROFILES), default=None)
@@ -432,6 +840,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args = build_parser().parse_args(argv)
         runner = AgentRunner(
             Path(args.cwd),
+            active_directory=args.active_directory,
             state_home=args.state_home,
             api_key_file=args.api_key_file,
             model=args.model,

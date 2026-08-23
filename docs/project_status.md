@@ -1,7 +1,7 @@
 # Project status
 
 Status: **engineering preview**
-Version: **2.0.0**
+Version: **2.3.0**
 
 ## Implemented
 
@@ -12,7 +12,17 @@ Version: **2.0.0**
 - read-only downgrade on resume, workspace-wide unresolved-run fencing and manual
   `effects`/`reconcile` acknowledgement;
 - DeepSeek adapter with central tool calls and native final-answer streaming;
-- list/read/search/patch/process tools behind explicit permission profiles;
+- list/read/search tools, macOS Seatbelt-enforced patch/command writers, and a separately
+  named host command behind explicit permission profiles;
+- per-call approval before sensitive effects, fail-closed headless behavior and private
+  exact session/workspace rules;
+- secure `AGENTS.override.md`/`AGENTS.md` snapshots, provider wiring and context diagnostics;
+- exact-digest-trusted synchronous command hooks for `PreToolUse`, `PostToolUse` and
+  `PostToolUseFailure`; project hooks are monotonic, post hooks are observe-only, execution
+  uses a dedicated read-only/no-network macOS sandbox with no unsupported-host fallback,
+  and events omit raw hook I/O;
+- stable message identities, append-only transcripts, provider-generated summary lineage,
+  active-context projection, manual `/compact` and bounded 80%→60% automatic compaction;
 - curses TUI and headless text/JSONL commands;
 - macOS double-click launcher;
 - unit, contract, security, persistence and reducer tests.
@@ -20,11 +30,17 @@ Version: **2.0.0**
 ## Deliberately not claimed
 
 - feature parity with Claude Code or Codex;
-- a kernel/container-grade shell sandbox;
-- containment of a `full-access` command that daemonizes outside its initial process group;
+- a portable cross-platform or container-grade command sandbox (the enforced backend is
+  currently macOS Seatbelt only);
+- complete host-read, IPC or credential-service isolation: the Seatbelt profile is an
+  allow-default deny overlay covering named boundaries, not a container or VM;
+- cleanup or containment of an unsandboxed `process.exec_host` command that daemonizes
+  outside its initial process group;
 - confidentiality isolation between a session and its fork;
-- per-call approval rules;
-- MCP, hooks, instruction discovery, context compaction or subagents;
+- MCP, `CLAUDE.md` compatibility or subagents;
+- full Claude Code/Codex hooks parity: only the three synchronous tool lifecycle events are
+  implemented, with no async hooks, input rewriting or other run/session/model events;
+- a provider-neutral compaction implementation beyond the current DeepSeek adapter;
 - exact cost estimates when the provider does not supply a stable price contract;
 - production deployment or multi-user tenancy;
 - automatic cross-process continuation of an in-flight run;

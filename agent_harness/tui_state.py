@@ -170,6 +170,12 @@ class TuiState:
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
                     clean_key = str(key)
                     self.usage[clean_key] = self.usage.get(clean_key, 0) + value
+        elif event_type == "approval.requested":
+            self.status = "approval"
+        elif event_type == "approval.resolved":
+            self.status = "running"
+        elif event_type.startswith("hook."):
+            self.status = "hook"
         elif event_type.startswith("tool."):
             call_id = str(payload.get("call_id", "tool"))[:160]
             name = str(payload.get("tool_name", "tool"))[:160]

@@ -194,7 +194,7 @@ class HarnessCheckpoint:
                 "harness checkpoint external effect flag is invalid"
             )
         if self.pending_effect is not None:
-            expected_fields = {
+            required_fields = {
                 "kind",
                 "step",
                 "call",
@@ -204,7 +204,12 @@ class HarnessCheckpoint:
                 "effect_started",
                 "remaining_calls",
             }
-            if set(self.pending_effect) != expected_fields:
+            optional_fields = {"hook_guarded"}
+            actual_fields = set(self.pending_effect)
+            if (
+                not required_fields <= actual_fields
+                or actual_fields - required_fields - optional_fields
+            ):
                 raise HarnessContractError(
                     "harness checkpoint pending effect fields are invalid"
                 )
@@ -214,6 +219,7 @@ class HarnessCheckpoint:
                 )
             step = self.pending_effect.get("step")
             effect_started = self.pending_effect.get("effect_started")
+            hook_guarded = self.pending_effect.get("hook_guarded", False)
             remaining = self.pending_effect.get("remaining_calls")
             raw_call = self.pending_effect.get("call")
             if (
@@ -221,6 +227,7 @@ class HarnessCheckpoint:
                 or not isinstance(step, int)
                 or step < 1
                 or type(effect_started) is not bool
+                or type(hook_guarded) is not bool
                 or not isinstance(raw_call, Mapping)
                 or not isinstance(remaining, list)
                 or len(remaining) > 8

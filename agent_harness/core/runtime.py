@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict, dataclass
+import json
 from typing import Any, Callable, Mapping, Protocol
 from uuid import uuid4
 
+from .approvals import ApprovalBroker, ApprovalPolicy
 from .cancellation import (
     CancellationToken,
     HarnessClock,
@@ -29,9 +31,11 @@ from .contracts import (
 )
 from .events import (
     HarnessEventEmitter,
+    canonical_json,
     canonical_sha256,
     public_event_projection,
 )
+from .hooks import ToolHookBroker
 from .journal import HarnessJournal
 from .provider_registry import (
     ProviderErrorKind,
@@ -117,6 +121,10 @@ class _ProviderPlanningFailed(HarnessContractError):
 
 class _ExternalEffectUncertain(HarnessContractError):
     """A declared effect boundary was crossed without a safe settlement."""
+
+
+class _ApprovalRequired(HarnessContractError):
+    """A headless run reached an effect that requires human approval."""
 
 
 def _pending_step_value(pending: Mapping[str, Any], fallback: int) -> int:
@@ -274,6 +282,8 @@ def _execution_policy_material(
     allowed_permissions: set[str],
     trusted_data_scopes: frozenset[str],
     tool_execution_manifests: tuple[Mapping[str, Any], ...],
+    approval_policy: ApprovalPolicy | None,
+    tool_hooks: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Return every execution knob which must remain fixed on resume."""
 
@@ -288,6 +298,10 @@ def _execution_policy_material(
         "tool_execution_manifests": [
             dict(manifest) for manifest in tool_execution_manifests
         ],
+        "approval_policy": (
+            approval_policy.material() if approval_policy is not None else None
+        ),
+        "tool_hooks": dict(tool_hooks) if tool_hooks is not None else None,
     }
 
 
@@ -432,6 +446,15 @@ def _invoke_model(
                 attempt_telemetry=attempt_telemetry,
             )
             response = HarnessModelResponse.from_value(raw)
+            model_response_material = {
+                "kind": response.kind,
+                "tool_calls": [call.to_dict() for call in response.tool_calls],
+                "output": response.output,
+                "reason": response.reason,
+                "usage": dict(response.usage),
+                "provider_request_id": response.provider_request_id,
+                "parallel_tool_calls": response.parallel_tool_calls,
+            }
             emitter.emit(
                 "model.completed",
                 {
@@ -439,13 +462,23 @@ def _invoke_model(
                     "step": request.step,
                     "kind": response.kind,
                     "provider_request_id": response.provider_request_id,
-                    "usage": dict(response.usage),
-                    "model_response": {
-                        "kind": response.kind,
-                        "tool_calls": [call.to_dict() for call in response.tool_calls],
-                        "output": response.output,
-                        "reason": response.reason,
-                    },
+                    "model_response_sha256": canonical_sha256(
+                        model_response_material
+                    ),
+                    "tool_call_count": len(response.tool_calls),
+                    "tool_calls": [
+                        {
+                            "call_id": call.call_id,
+                            "tool_name": call.name,
+                            "arguments_sha256": canonical_sha256(
+                                dict(call.arguments)
+                            ),
+                        }
+                        for call in response.tool_calls
+                    ],
+                    "output_sha256": canonical_sha256(response.output),
+                    "reason_sha256": canonical_sha256(response.reason),
+                    "usage_sha256": canonical_sha256(dict(response.usage)),
                 },
             )
             _save_checkpoint(state, emitter, checkpoint_sink)
@@ -610,6 +643,9 @@ def _execute_call(
     principal_id: str,
     session_id: str | None,
     trusted_data_scopes: frozenset[str],
+    approval_policy: ApprovalPolicy | None,
+    approval_broker: ApprovalBroker | None,
+    tool_hook_broker: ToolHookBroker | None,
     remaining_calls: tuple[ToolCall, ...] = (),
 ) -> ToolExecutionResult:
     if call.call_id in state.completed_call_receipts:
@@ -643,6 +679,19 @@ def _execute_call(
             },
         )
         raise HarnessContractError("total_tool_call_budget_exceeded")
+    hook_guarded = False
+    if tool_hook_broker is not None:
+        try:
+            hook_guarded = any(
+                tool_hook_broker.matches(event_name, call.name)
+                for event_name in (
+                    "PreToolUse",
+                    "PostToolUse",
+                    "PostToolUseFailure",
+                )
+            )
+        except Exception as exc:
+            raise HarnessContractError("hook matcher failed closed") from exc
     state.tool_calls += 1
     state.pending_effect = _pending_effect(
         call,
@@ -650,6 +699,12 @@ def _execute_call(
         step=step,
         remaining_calls=remaining_calls,
     )
+    if hook_guarded:
+        # A project hook is executable policy code. Even a nominally safe tool
+        # may not be replayed after a process death once a matching hook could
+        # have crossed its own external-effect boundary.
+        state.pending_effect["hook_guarded"] = True
+        state.pending_effect["replay_policy"] = "never"
     _save_checkpoint(state, emitter, checkpoint_sink)
 
     def mark_effect_started() -> None:
@@ -675,7 +730,15 @@ def _execute_call(
         session_id=session_id,
         trusted_data_scopes=trusted_data_scopes,
         effect_started_sink=mark_effect_started,
+        approval_policy=approval_policy,
+        approval_broker=approval_broker,
+        tool_hook_broker=tool_hook_broker,
+        hook_effect_started_sink=mark_effect_started,
     )
+    if result.error_code == "approval_required":
+        state.pending_effect = None
+        _save_checkpoint(state, emitter, checkpoint_sink)
+        raise _ApprovalRequired("approval_required")
     _record_tool_result(state, call, result, receipt, registry)
     if result.effect_started and not result.ok:
         # Keep pending_effect in the checkpoint. The journal contains the
@@ -792,6 +855,12 @@ def _reconcile_journal_tail(
                 )
             continue
         if event_type not in {
+            "approval.requested",
+            "approval.resolved",
+            "hook.started",
+            "hook.effect_started",
+            "hook.completed",
+            "hook.failed",
             "tool.requested",
             "tool.started",
             "tool.effect_started",
@@ -819,6 +888,38 @@ def _reconcile_journal_tail(
                 tool_name=call.name,
             )
         operational.append(event)
+
+    hook_states: dict[str, str] = {}
+    for event in operational:
+        event_type = str(event.get("type", ""))
+        if not event_type.startswith("hook."):
+            continue
+        payload = event["payload"]
+        invocation_id = payload.get("invocation_id")
+        if not isinstance(invocation_id, str) or not invocation_id:
+            return _JournalTailRecovery(
+                disposition="blocked",
+                reason_code="durable_hook_tail_invalid",
+                call_id=call.call_id,
+                tool_name=call.name,
+            )
+        previous = hook_states.get(invocation_id)
+        if event_type == "hook.started" and previous is None:
+            hook_states[invocation_id] = "started"
+        elif event_type == "hook.effect_started" and previous == "started":
+            hook_states[invocation_id] = "effect_started"
+        elif event_type in {"hook.completed", "hook.failed"} and previous in {
+            "started",
+            "effect_started",
+        }:
+            hook_states[invocation_id] = "settled"
+        else:
+            return _JournalTailRecovery(
+                disposition="blocked",
+                reason_code="durable_hook_tail_ambiguous",
+                call_id=call.call_id,
+                tool_name=call.name,
+            )
 
     expected_arguments_sha256 = str(pending.get("arguments_sha256", ""))
     if expected_arguments_sha256 != canonical_sha256(dict(call.arguments)):
@@ -883,6 +984,13 @@ def _reconcile_journal_tail(
             step=pending_step,
             remaining_calls=remaining_calls,
         )
+    if any(state_value != "settled" for state_value in hook_states.values()):
+        return _JournalTailRecovery(
+            disposition="blocked",
+            reason_code="durable_hook_settlement_missing",
+            call_id=call.call_id,
+            tool_name=call.name,
+        )
     if len(settlements) != 1 or operational[-1] is not settlements[0]:
         return _JournalTailRecovery(
             disposition="blocked",
@@ -893,6 +1001,19 @@ def _reconcile_journal_tail(
     settlement = settlements[0]
     payload = settlement["payload"]
     settlement_type = str(settlement["type"])
+    if (
+        settlement_type == "tool.rejected"
+        and payload.get("error_code") == "approval_required"
+    ):
+        state.pending_effect = None
+        return _JournalTailRecovery(
+            disposition="approval_required",
+            reason_code="approval_required",
+            call_id=call.call_id,
+            tool_name=call.name,
+            step=pending_step,
+            remaining_calls=remaining_calls,
+        )
     if settlement_type == "tool.failed" and (
         pending.get("effect_started") is True
         or any(item.get("type") == "tool.effect_started" for item in operational)
@@ -1054,6 +1175,9 @@ def run_agent_harness(
     principal_id: str = "local-user",
     session_id: str | None = None,
     trusted_data_scopes: frozenset[str] | set[str] = DEFAULT_TRUSTED_DATA_SCOPES,
+    approval_policy: ApprovalPolicy | None = None,
+    approval_broker: ApprovalBroker | None = None,
+    tool_hook_broker: ToolHookBroker | None = None,
     _resume_checkpoint: HarnessCheckpoint | None = None,
 ) -> dict[str, Any]:
     """Execute one bounded operation and return its authoritative event trace."""
@@ -1066,6 +1190,10 @@ def run_agent_harness(
         raise HarnessContractError("model must implement plan()")
     if journal is not None and not isinstance(journal, HarnessJournal):
         raise HarnessContractError("journal must be a HarnessJournal")
+    if tool_hook_broker is not None and not isinstance(
+        tool_hook_broker, ToolHookBroker
+    ):
+        raise HarnessContractError("tool_hook_broker must satisfy ToolHookBroker")
     limits = (limits or HarnessLimits()).validated()
     retry_policy = (retry_policy or RetryPolicy()).validated()
     allowed_permissions = validate_allowed_permissions(allowed_permissions)
@@ -1084,6 +1212,21 @@ def run_agent_harness(
         raise HarnessContractError("session_id is invalid")
     session_id = session_id.strip() if isinstance(session_id, str) else None
     trusted_data_scopes = validate_trusted_data_scopes(trusted_data_scopes)
+    if approval_policy is None:
+        approval_policy = ApprovalPolicy()
+    elif not isinstance(approval_policy, ApprovalPolicy):
+        raise HarnessContractError("approval_policy must be an ApprovalPolicy")
+    hook_policy_material: dict[str, Any] | None = None
+    if tool_hook_broker is not None:
+        try:
+            raw_hook_policy = tool_hook_broker.policy_material
+            if not isinstance(raw_hook_policy, Mapping):
+                raise HarnessContractError("hook policy material must be an object")
+            hook_policy_material = json.loads(canonical_json(dict(raw_hook_policy)))
+        except HarnessContractError:
+            raise
+        except Exception as exc:
+            raise HarnessContractError("hook policy material is invalid") from exc
     clock = clock or SystemClock()
     cancellation_token = cancellation_token or CancellationToken()
     authorized_tool_definitions = registry.definitions(
@@ -1101,6 +1244,8 @@ def run_agent_harness(
             allowed_permissions=allowed_permissions,
             trusted_data_scopes=trusted_data_scopes,
             tool_execution_manifests=tool_execution_manifests,
+            approval_policy=approval_policy,
+            tool_hooks=hook_policy_material,
         )
     )
     context_hash = canonical_sha256(
@@ -1200,14 +1345,115 @@ def run_agent_harness(
     checkpoint_sink = _persistence_checkpoint_sink(journal, checkpoint_sink)
     started = clock.monotonic()
     deadline = started + limits.deadline_seconds
-    emitter.emit(
-        "run.started",
-        {
-            "resumed": _resume_checkpoint is not None,
-            "context_sha256": context_hash,
-            "policy_sha256": policy_hash,
-        },
-    )
+    run_started_payload: dict[str, Any] = {
+        "resumed": _resume_checkpoint is not None,
+        "context_sha256": context_hash,
+        "policy_sha256": policy_hash,
+    }
+    if hook_policy_material is not None:
+        raw_definitions = hook_policy_material.get("definitions", [])
+        definitions = raw_definitions if isinstance(raw_definitions, list) else []
+        run_started_payload.update(
+            {
+                "hooks_sha256": canonical_sha256(hook_policy_material),
+                "hook_count": len(definitions),
+                "trusted_hook_count": sum(
+                    isinstance(item, Mapping)
+                    and item.get("trust_status") == "trusted"
+                    for item in definitions
+                ),
+                "disabled_hook_count": sum(
+                    isinstance(item, Mapping)
+                    and item.get("trust_status") == "disabled"
+                    for item in definitions
+                ),
+            }
+        )
+    raw_instruction_snapshot = context.get("instruction_snapshot")
+    if isinstance(raw_instruction_snapshot, Mapping):
+        snapshot_sha256 = raw_instruction_snapshot.get("snapshot_sha256")
+        documents = raw_instruction_snapshot.get("documents")
+        total_bytes = raw_instruction_snapshot.get("total_bytes")
+        if (
+            isinstance(snapshot_sha256, str)
+            and len(snapshot_sha256) == 64
+            and isinstance(documents, list)
+            and isinstance(total_bytes, int)
+            and not isinstance(total_bytes, bool)
+            and total_bytes >= 0
+        ):
+            run_started_payload.update(
+                {
+                    "instructions_sha256": snapshot_sha256,
+                    "instruction_count": len(documents),
+                    "instruction_bytes": total_bytes,
+                }
+            )
+    raw_context_lineage = context.get("context_lineage")
+    if isinstance(raw_context_lineage, Mapping):
+        compaction_id = raw_context_lineage.get("compaction_id")
+        if (
+            isinstance(compaction_id, str)
+            and compaction_id.strip()
+            and len(compaction_id.strip()) <= 160
+        ):
+            run_started_payload["compaction_id"] = compaction_id.strip()
+        source_message_count = raw_context_lineage.get("source_message_count")
+        if (
+            isinstance(source_message_count, int)
+            and not isinstance(source_message_count, bool)
+            and source_message_count >= 0
+        ):
+            run_started_payload["source_message_count"] = source_message_count
+        for field in (
+            "source_messages_sha256",
+            "summary_sha256",
+            "active_context_sha256",
+        ):
+            value = raw_context_lineage.get(field)
+            if (
+                isinstance(value, str)
+                and len(value) == 64
+                and all(character in "0123456789abcdef" for character in value)
+            ):
+                run_started_payload[field] = value
+        active_message_count = raw_context_lineage.get("active_message_count")
+        if active_message_count is None:
+            active_message_ids = raw_context_lineage.get("active_message_ids")
+            if isinstance(active_message_ids, list):
+                active_message_count = len(active_message_ids)
+        if (
+            isinstance(active_message_count, int)
+            and not isinstance(active_message_count, bool)
+            and active_message_count >= 0
+        ):
+            run_started_payload["active_message_count"] = active_message_count
+    emitter.emit("run.started", run_started_payload)
+
+    def approval_handoff_result() -> dict[str, Any]:
+        emitter.emit(
+            "run.handoff",
+            {"reason_code": "approval_required"},
+        )
+        approval_checkpoint = _save_checkpoint(
+            state,
+            emitter,
+            checkpoint_sink,
+            status="handoff",
+        )
+        return _result(
+            status="handoff",
+            output=None,
+            reason="human approval is required for the requested tool",
+            state=state,
+            emitter=emitter,
+            checkpoint=approval_checkpoint,
+            started_monotonic=started,
+            clock=clock,
+        )
+
+    if recovery.disposition == "approval_required":
+        return approval_handoff_result()
     if recovery.disposition == "blocked":
         emitter.emit(
             "run.handoff",
@@ -1240,24 +1486,30 @@ def run_agent_harness(
             },
         )
         recovery_step = recovery.step or state.next_step
-        for index, remaining_call in enumerate(recovery.remaining_calls):
-            _execute_call(
-                remaining_call,
-                step=recovery_step,
-                state=state,
-                registry=registry,
-                allowed_permissions=allowed_permissions,
-                emitter=emitter,
-                clock=clock,
-                cancellation_token=cancellation_token,
-                deadline_monotonic=deadline,
-                limits=limits,
-                checkpoint_sink=checkpoint_sink,
-                principal_id=principal_id,
-                session_id=session_id,
-                trusted_data_scopes=trusted_data_scopes,
-                remaining_calls=recovery.remaining_calls[index + 1 :],
-            )
+        try:
+            for index, remaining_call in enumerate(recovery.remaining_calls):
+                _execute_call(
+                    remaining_call,
+                    step=recovery_step,
+                    state=state,
+                    registry=registry,
+                    allowed_permissions=allowed_permissions,
+                    emitter=emitter,
+                    clock=clock,
+                    cancellation_token=cancellation_token,
+                    deadline_monotonic=deadline,
+                    limits=limits,
+                    checkpoint_sink=checkpoint_sink,
+                    principal_id=principal_id,
+                    session_id=session_id,
+                    trusted_data_scopes=trusted_data_scopes,
+                    approval_policy=approval_policy,
+                    approval_broker=approval_broker,
+                    tool_hook_broker=tool_hook_broker,
+                    remaining_calls=recovery.remaining_calls[index + 1 :],
+                )
+        except _ApprovalRequired:
+            return approval_handoff_result()
         state.next_step = max(state.next_step, recovery_step + 1)
         latest_checkpoint = _save_checkpoint(state, emitter, checkpoint_sink)
     else:
@@ -1271,10 +1523,15 @@ def run_agent_harness(
         replay_policy = str(pending.get("replay_policy", "never"))
         raw_call = pending.get("call")
         if replay_policy == "never" or not isinstance(raw_call, Mapping):
+            replay_reason = (
+                "unsafe_hook_replay_blocked"
+                if pending.get("hook_guarded") is True
+                else "unsafe_tool_replay_blocked"
+            )
             emitter.emit(
                 "run.handoff",
                 {
-                    "reason_code": "unsafe_tool_replay_blocked",
+                    "reason_code": replay_reason,
                     "tool_name": (
                         raw_call.get("name") if isinstance(raw_call, Mapping) else None
                     ),
@@ -1286,7 +1543,7 @@ def run_agent_harness(
             return _result(
                 status="handoff",
                 output=None,
-                reason="unsafe_tool_replay_blocked",
+                reason=replay_reason,
                 state=state,
                 emitter=emitter,
                 checkpoint=latest_checkpoint,
@@ -1321,9 +1578,14 @@ def run_agent_harness(
                     principal_id=principal_id,
                     session_id=session_id,
                     trusted_data_scopes=trusted_data_scopes,
+                    approval_policy=approval_policy,
+                    approval_broker=approval_broker,
+                    tool_hook_broker=tool_hook_broker,
                     remaining_calls=recovery_calls[index + 1 :],
                 )
             state.next_step = max(state.next_step, pending_step + 1)
+        except _ApprovalRequired:
+            return approval_handoff_result()
         except (HarnessCancelled, HarnessDeadlineExceeded):
             raise
 
@@ -1512,6 +1774,9 @@ def run_agent_harness(
                     principal_id=principal_id,
                     session_id=session_id,
                     trusted_data_scopes=trusted_data_scopes,
+                    approval_policy=approval_policy,
+                    approval_broker=approval_broker,
+                    tool_hook_broker=tool_hook_broker,
                     remaining_calls=calls[index + 1 :],
                 )
             state.next_step += 1
@@ -1521,6 +1786,8 @@ def run_agent_harness(
             {"reason_code": "step_budget_exceeded"},
         )
         raise HarnessContractError("step_budget_exceeded")
+    except _ApprovalRequired:
+        return approval_handoff_result()
     except HarnessCancelled as exc:
         if state.external_effect_started:
             emitter.emit(

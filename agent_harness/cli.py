@@ -9,7 +9,9 @@ import signal
 import sys
 from typing import Any, Mapping, Sequence
 
-from .core import CancellationToken
+from .core import CancellationToken, HarnessCancelled
+from .hooks import HookDefinition, HookLoadError, HookSnapshot, load_project_hooks
+from .instructions import InstructionLoadError, load_project_instructions
 from .providers import DeepSeekClientError, DeepSeekConfigurationError
 from .runner import AgentRunner
 from .session import SessionStore, SessionStoreError
@@ -43,6 +45,7 @@ def _json(value: Mapping[str, Any]) -> str:
 def _runner(args: argparse.Namespace) -> AgentRunner:
     return AgentRunner(
         Path(args.cwd),
+        active_directory=args.active_directory,
         state_home=args.state_home,
         api_key_file=args.api_key_file,
         model=args.model,
@@ -234,6 +237,188 @@ def _status(runner: AgentRunner) -> int:
     return 0
 
 
+def _context(args: argparse.Namespace, runner: AgentRunner) -> int:
+    status = runner.context_status(args.session_id)
+    if args.json:
+        print(_json(status))
+        return 0
+    print(
+        f"context {status['active_context_sha256'][:12]} · "
+        f"raw {status['transcript_message_count']} · "
+        f"compacted {status['compacted_message_count']} · "
+        f"active {status['active_message_count']} · "
+        f"estimate {status['estimated_input_tokens_upper_bound']}/"
+        f"{status['available_input_tokens']} tokens"
+    )
+    if status["compaction_id"]:
+        print(
+            f"summary {status['summary_sha256'][:12]} · "
+            f"{status['summary_chars']} chars · {status['compaction_id']}"
+        )
+    return 0
+
+
+def _compact(args: argparse.Namespace, runner: AgentRunner) -> int:
+    cancellation = CancellationToken()
+    previous_interrupt: Any = None
+
+    def interrupt(_signum: int, _frame: Any) -> None:
+        if not cancellation.cancel("keyboard_interrupt"):
+            raise KeyboardInterrupt
+
+    try:
+        previous_interrupt = signal.getsignal(signal.SIGINT)
+        signal.signal(signal.SIGINT, interrupt)
+    except (AttributeError, ValueError):
+        previous_interrupt = None
+    try:
+        try:
+            result = runner.compact_session(
+                args.session_id,
+                cancellation_token=cancellation,
+            )
+        except (HarnessCancelled, KeyboardInterrupt):
+            return EXIT_CANCELLED
+    finally:
+        if previous_interrupt is not None:
+            signal.signal(signal.SIGINT, previous_interrupt)
+    if args.json:
+        print(_json(result))
+    elif result["status"] == "compacted":
+        print(
+            f"compacted {result['source_message_count']} messages · "
+            f"active {result['active_message_count']} · "
+            f"summary {str(result['summary_sha256'])[:12]}"
+        )
+    else:
+        print("No eligible completed turns to compact.")
+    return 0
+
+
+def _instructions(args: argparse.Namespace) -> int:
+    workspace = Path(args.cwd).expanduser().resolve(strict=True)
+    active = Path(args.active_directory).expanduser() if args.active_directory else workspace
+    if not active.is_absolute():
+        active = workspace / active
+    snapshot = load_project_instructions(workspace, active)
+    metadata = dict(snapshot.metadata())
+    if args.json:
+        print(_json(metadata))
+        return 0
+    if not snapshot.documents:
+        print("No project instructions.")
+        return 0
+    print(
+        f"instructions {snapshot.snapshot_sha256[:12]} · "
+        f"{len(snapshot.documents)} file(s) · {snapshot.total_bytes} bytes"
+    )
+    for document in snapshot.documents:
+        print(
+            f"{document.relative_path}  {document.byte_length} bytes  "
+            f"{document.content_sha256[:12]}"
+        )
+    return 0
+
+
+def _hook_definition(snapshot: HookSnapshot, hook_id: str) -> HookDefinition:
+    for definition in snapshot.definitions:
+        if definition.hook_id == hook_id:
+            return definition
+    raise ValueError(f"project hook is not configured: {hook_id}")
+
+
+def _hooks(args: argparse.Namespace) -> int:
+    """Inspect or update project-hook trust without constructing a provider."""
+
+    store = SessionStore(Path(args.cwd), state_home=args.state_home)
+    action = args.hook_action
+    hook_id = str(args.hook_id).strip() if action is not None else ""
+    if action == "revoke":
+        removed = store.revoke_hook_trust(hook_id)
+        result = {
+            "schema": "agent_harness.hook_trust_update.v1",
+            "hook_id": hook_id,
+            "action": "revoked",
+            "removed": removed,
+        }
+        if args.json:
+            print(_json(result))
+        elif removed:
+            print(f"revoked {sanitize_terminal_text(hook_id)}")
+        else:
+            print(f"no trust decision for {sanitize_terminal_text(hook_id)}")
+        return 0
+
+    supplied_digest = ""
+    if action is not None:
+        supplied_digest = str(args.sha256).strip().casefold()
+        if (
+            len(supplied_digest) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in supplied_digest
+            )
+        ):
+            raise CliUsageError("--sha256 must be a 64-character hexadecimal digest")
+
+    snapshot = load_project_hooks(store.workspace)
+    if action is None:
+        metadata = dict(snapshot.metadata(store.hook_trust_state()))
+        if args.json:
+            print(_json(metadata))
+            return 0
+        if not snapshot.config_present:
+            print("No project hooks.")
+            return 0
+        print(
+            f"hooks {snapshot.snapshot_sha256[:12]} · "
+            f"{metadata['hook_count']} configured · "
+            f"{metadata['trusted_hook_count']} trusted · "
+            f"{metadata['disabled_hook_count']} disabled · "
+            f"{metadata['pending_hook_count']} review-required"
+        )
+        for item in metadata["hooks"]:
+            matchers = ",".join(str(value) for value in item["matchers"])
+            print(
+                f"{sanitize_terminal_text(item['hook_id'])}  "
+                f"{item['event_name']}  {item['trust_status']}  "
+                f"{item['definition_sha256']}  "
+                f"{sanitize_terminal_text(item['entrypoint'])}  {matchers}"
+            )
+        return 0
+
+    definition = _hook_definition(snapshot, hook_id)
+    if supplied_digest != definition.definition_sha256:
+        raise ValueError(
+            "hook digest does not match the current definition; run `harness hooks` again"
+        )
+    # Re-read immediately before persisting. A later change remains safe: the
+    # digest-bound record will be reported as modified and cannot execute.
+    confirmed = _hook_definition(load_project_hooks(store.workspace), hook_id)
+    if confirmed.definition_sha256 != definition.definition_sha256:
+        raise HookLoadError("hook definition changed while recording trust")
+    trust_action = "trusted" if action == "trust" else "disabled"
+    store.set_hook_trust(
+        hook_id,
+        confirmed.definition_sha256,
+        action=trust_action,
+    )
+    result = {
+        "schema": "agent_harness.hook_trust_update.v1",
+        "hook_id": hook_id,
+        "action": trust_action,
+        "definition_sha256": confirmed.definition_sha256,
+    }
+    if args.json:
+        print(_json(result))
+    else:
+        print(
+            f"{trust_action} {sanitize_terminal_text(hook_id)} "
+            f"{confirmed.definition_sha256}"
+        )
+    return 0
+
+
 class _HarnessArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise CliUsageError(message)
@@ -245,6 +430,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Auditable, provider-neutral Agent Harness",
     )
     parser.add_argument("--cwd", default=".", help="workspace directory")
+    parser.add_argument(
+        "--active-directory",
+        help="active subdirectory inside the workspace for scoped instructions",
+    )
     parser.add_argument("--state-home")
     parser.add_argument("--api-key-file")
     parser.add_argument("--model")
@@ -288,6 +477,45 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("run_id")
 
     subparsers.add_parser("status", help="print provider and workspace status")
+    instructions = subparsers.add_parser(
+        "instructions",
+        help="show the project instruction snapshot without file contents",
+    )
+    instructions.add_argument("--json", action="store_true")
+    hooks = subparsers.add_parser(
+        "hooks",
+        help="inspect or update exact project-hook trust decisions",
+    )
+    hooks.add_argument("--json", action="store_true")
+    hook_actions = hooks.add_subparsers(dest="hook_action")
+    for action, help_text in (
+        ("trust", "trust one exact current hook definition"),
+        ("disable", "disable one exact current hook definition"),
+    ):
+        update = hook_actions.add_parser(action, help=help_text)
+        update.add_argument("hook_id")
+        update.add_argument(
+            "--sha256",
+            required=True,
+            help="exact definition digest shown by `harness hooks`",
+        )
+    revoke = hook_actions.add_parser(
+        "revoke",
+        help="remove a saved trust or disable decision",
+    )
+    revoke.add_argument("hook_id")
+    context = subparsers.add_parser(
+        "context",
+        help="show active-context and compaction diagnostics without content",
+    )
+    context.add_argument("session_id")
+    context.add_argument("--json", action="store_true")
+    compact = subparsers.add_parser(
+        "compact",
+        help="summarize old completed turns without deleting the transcript",
+    )
+    compact.add_argument("session_id")
+    compact.add_argument("--json", action="store_true")
     return parser
 
 
@@ -295,6 +523,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+        if args.command == "instructions":
+            return _instructions(args)
+        if args.command == "hooks":
+            return _hooks(args)
         if args.command in {"sessions", "archive", "fork", "effects", "reconcile"}:
             store = SessionStore(Path(args.cwd), state_home=args.state_home)
             if args.command == "sessions":
@@ -325,6 +557,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _exec(args, runner)
         if args.command == "status":
             return _status(runner)
+        if args.command == "context":
+            return _context(args, runner)
+        if args.command == "compact":
+            return _compact(args, runner)
         if args.command == "resume":
             return run_tui(
                 runner,
@@ -338,7 +574,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CliUsageError as exc:
         print(f"harness: {exc}", file=sys.stderr)
         return EXIT_USAGE
-    except (DeepSeekConfigurationError, SessionStoreError, ValueError) as exc:
+    except (
+        DeepSeekConfigurationError,
+        HookLoadError,
+        InstructionLoadError,
+        SessionStoreError,
+        ValueError,
+    ) as exc:
         print(f"harness: {exc}", file=sys.stderr)
         return EXIT_CONFIG
     except DeepSeekClientError as exc:

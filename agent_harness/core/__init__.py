@@ -1,5 +1,19 @@
 """Domain-neutral execution kernel for Agent Harness."""
 
+from .approvals import (
+    ApprovalAction,
+    ApprovalBroker,
+    ApprovalContractError,
+    ApprovalDecision,
+    ApprovalPolicy,
+    ApprovalRequest,
+    ApprovalRule,
+    ApprovalVerdict,
+    HeadlessApprovalBroker,
+    arguments_sha256,
+    resolve_approval,
+    validate_decision,
+)
 from .cancellation import CancellationToken, HarnessClock, SystemClock
 from .checkpoint import HarnessCheckpoint
 from .contracts import (
@@ -30,6 +44,15 @@ from .journal import (
     HarnessJournalError,
     JournalLifecycleError,
 )
+from .hooks import (
+    HOOK_ACTIONS,
+    HOOK_EVENT_NAMES,
+    HookAction,
+    HookAuditSink,
+    ToolHookBroker,
+    ToolHookDecision,
+    ToolHookRequest,
+)
 from .provider_registry import (
     ProviderAdapter,
     ProviderErrorKind,
@@ -54,6 +77,16 @@ __all__ = [
     "HARNESS_EVENT_SCHEMA",
     "HARNESS_EVENT_TYPES",
     "HARNESS_SCHEMA",
+    "HOOK_ACTIONS",
+    "HOOK_EVENT_NAMES",
+    "ApprovalAction",
+    "ApprovalBroker",
+    "ApprovalContractError",
+    "ApprovalDecision",
+    "ApprovalPolicy",
+    "ApprovalRequest",
+    "ApprovalRule",
+    "ApprovalVerdict",
     "CancellationToken",
     "CheckpointWriteAck",
     "DEFAULT_TRUSTED_DATA_SCOPES",
@@ -75,6 +108,9 @@ __all__ = [
     "HarnessModelRequest",
     "HarnessModelResponse",
     "HarnessRunHandle",
+    "HeadlessApprovalBroker",
+    "HookAction",
+    "HookAuditSink",
     "JournalLifecycleError",
     "ProviderAdapter",
     "ProviderCapabilities",
@@ -90,13 +126,19 @@ __all__ = [
     "ToolExecutionContext",
     "ToolExecutionError",
     "ToolExecutionResult",
+    "ToolHookBroker",
+    "ToolHookDecision",
+    "ToolHookRequest",
     "ToolPermissionError",
     "ToolRegistry",
     "ToolSpec",
     "ToolTransientError",
     "approximate_tokens",
+    "arguments_sha256",
     "provider_stream_contract",
     "public_harness_trace",
     "resume_agent_harness",
+    "resolve_approval",
     "run_agent_harness",
+    "validate_decision",
 ]

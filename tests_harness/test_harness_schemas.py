@@ -83,6 +83,20 @@ class HarnessSchemaTests(unittest.TestCase):
         emitter = HarnessEventEmitter(run_id="run_invalid", turn_id="turn_invalid")
         invalid_events = (
             ("message.delta", {}),
+            (
+                "run.started",
+                {"resumed": False, "active_context_sha256": "not-a-digest"},
+            ),
+            (
+                "model.completed",
+                {
+                    "attempt": 1,
+                    "step": 1,
+                    "kind": "tool_calls",
+                    "tool_call_count": 1,
+                    "tool_calls": [],
+                },
+            ),
             ("tool.started", {"tool_name": "retrieve_resources", "attempt": 1}),
             (
                 "tool.completed",

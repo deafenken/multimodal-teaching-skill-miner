@@ -61,6 +61,30 @@ def _validate_event_payload(event_type: str, payload: Mapping[str, Any]) -> None
     if event_type == "run.started":
         if type(payload.get("resumed")) is not bool:
             raise HarnessContractError("resumed is required for run.started")
+        for field in (
+            "instructions_sha256",
+            "hooks_sha256",
+            "source_messages_sha256",
+            "summary_sha256",
+            "active_context_sha256",
+        ):
+            if field in payload and re.fullmatch(
+                r"[0-9a-f]{64}", str(payload.get(field, ""))
+            ) is None:
+                raise HarnessContractError(f"{field} is invalid")
+        if "compaction_id" in payload:
+            _required_text(payload, "compaction_id")
+        for field in (
+            "instruction_count",
+            "instruction_bytes",
+            "hook_count",
+            "trusted_hook_count",
+            "disabled_hook_count",
+            "source_message_count",
+            "active_message_count",
+        ):
+            if field in payload:
+                _required_integer(payload, field, minimum=0)
     elif event_type in {"run.completed", "run.cancelled", "run.handoff"}:
         _required_text(payload, "reason_code", limit=120)
     elif event_type == "run.failed":
@@ -73,6 +97,40 @@ def _validate_event_payload(event_type: str, payload: Mapping[str, Any]) -> None
         _required_integer(payload, "attempt", minimum=1)
         _required_integer(payload, "step", minimum=1)
         _required_text(payload, "kind", limit=80)
+        for field in (
+            "model_response_sha256",
+            "output_sha256",
+            "reason_sha256",
+            "usage_sha256",
+        ):
+            if field in payload and re.fullmatch(
+                r"[0-9a-f]{64}", str(payload.get(field, ""))
+            ) is None:
+                raise HarnessContractError(f"{field} is invalid")
+        if "tool_call_count" in payload:
+            _required_integer(payload, "tool_call_count", minimum=0)
+        if "tool_calls" in payload:
+            tool_calls = payload.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                raise HarnessContractError("tool_calls is invalid for model.completed")
+            if payload.get("tool_call_count") != len(tool_calls):
+                raise HarnessContractError(
+                    "tool_call_count does not match model.completed summaries"
+                )
+            for summary in tool_calls:
+                if not isinstance(summary, Mapping):
+                    raise HarnessContractError(
+                        "tool call summary is invalid for model.completed"
+                    )
+                _required_text(summary, "call_id")
+                _required_text(summary, "tool_name", limit=128)
+                if re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(summary.get("arguments_sha256", "")),
+                ) is None:
+                    raise HarnessContractError(
+                        "tool call arguments_sha256 is invalid"
+                    )
     elif event_type == "model.failed":
         _required_integer(payload, "attempt", minimum=1)
         _required_integer(payload, "step", minimum=1)
@@ -115,6 +173,58 @@ def _validate_event_payload(event_type: str, payload: Mapping[str, Any]) -> None
         _required_text(payload, "call_id")
         _required_text(payload, "tool_name", limit=128)
         _required_text(payload, "phase", limit=40)
+    elif event_type in {"approval.requested", "approval.resolved"}:
+        _required_text(payload, "approval_id")
+        _required_text(payload, "call_id")
+        _required_text(payload, "tool_name", limit=128)
+        _required_text(payload, "tool_version", limit=64)
+        _required_text(payload, "arguments_sha256", limit=64)
+        _required_text(payload, "policy_sha256", limit=64)
+        _required_text(payload, "risk", limit=16)
+        if any(
+            re.fullmatch(r"[0-9a-f]{64}", str(payload.get(field, ""))) is None
+            for field in ("arguments_sha256", "policy_sha256")
+        ):
+            raise HarnessContractError("approval digest is invalid")
+        if payload.get("risk") not in {"low", "medium", "high"}:
+            raise HarnessContractError("approval risk is invalid")
+        if event_type == "approval.requested":
+            _required_text(payload, "policy_action", limit=16)
+            if payload.get("policy_action") not in {"allow", "ask", "deny"}:
+                raise HarnessContractError("approval policy_action is invalid")
+            if "persistent_scope_allowed" in payload and type(
+                payload.get("persistent_scope_allowed")
+            ) is not bool:
+                raise HarnessContractError(
+                    "approval persistent_scope_allowed is invalid"
+                )
+        else:
+            _required_text(payload, "verdict", limit=16)
+            _required_text(payload, "reason_code", limit=128)
+            if payload.get("verdict") not in {"allow", "deny"}:
+                raise HarnessContractError("approval verdict is invalid")
+    elif event_type.startswith("hook."):
+        _required_text(payload, "invocation_id")
+        _required_text(payload, "hook_id")
+        _required_text(payload, "hook_event_name", limit=40)
+        _required_text(payload, "call_id")
+        _required_text(payload, "tool_name", limit=128)
+        _required_integer(payload, "ordinal", minimum=1)
+        for field in ("hook_sha256", "input_sha256"):
+            if re.fullmatch(r"[0-9a-f]{64}", str(payload.get(field, ""))) is None:
+                raise HarnessContractError(f"{field} is invalid")
+        if event_type in {"hook.completed", "hook.failed"}:
+            _required_integer(payload, "duration_ms", minimum=0)
+            if re.fullmatch(
+                r"[0-9a-f]{64}", str(payload.get("output_sha256", ""))
+            ) is None:
+                raise HarnessContractError("hook output_sha256 is invalid")
+        if event_type == "hook.completed":
+            _required_text(payload, "action", limit=16)
+            if payload.get("action") not in {"pass", "ask", "deny"}:
+                raise HarnessContractError("hook action is invalid")
+        if event_type == "hook.failed":
+            _required_text(payload, "error_code", limit=128)
     elif event_type.startswith("tool."):
         _required_text(payload, "call_id")
         _required_text(payload, "tool_name", limit=128)
@@ -321,13 +431,39 @@ class HarnessEventEmitter:
 
 
 _PUBLIC_PAYLOAD_FIELDS: dict[str, tuple[str, ...]] = {
-    "run.started": ("resumed",),
+    "run.started": (
+        "resumed",
+        "instructions_sha256",
+        "instruction_count",
+        "instruction_bytes",
+        "hooks_sha256",
+        "hook_count",
+        "trusted_hook_count",
+        "disabled_hook_count",
+        "compaction_id",
+        "source_message_count",
+        "source_messages_sha256",
+        "summary_sha256",
+        "active_context_sha256",
+        "active_message_count",
+    ),
     "run.completed": ("reason_code", "duration_ms"),
     "run.cancelled": ("reason_code",),
     "run.failed": ("error_code", "reason_code"),
     "run.handoff": ("reason_code",),
     "model.started": ("attempt", "step"),
-    "model.completed": ("attempt", "step", "kind", "provider_request_id"),
+    "model.completed": (
+        "attempt",
+        "step",
+        "kind",
+        "provider_request_id",
+        "model_response_sha256",
+        "tool_call_count",
+        "tool_calls",
+        "output_sha256",
+        "reason_sha256",
+        "usage_sha256",
+    ),
     "model.failed": (
         "attempt",
         "step",
@@ -351,6 +487,69 @@ _PUBLIC_PAYLOAD_FIELDS: dict[str, tuple[str, ...]] = {
         "reason_code",
         "error_kind",
         "safe_code",
+    ),
+    "approval.requested": (
+        "approval_id",
+        "call_id",
+        "tool_name",
+        "tool_version",
+        "risk",
+        "policy_action",
+    ),
+    "approval.resolved": (
+        "approval_id",
+        "call_id",
+        "tool_name",
+        "tool_version",
+        "risk",
+        "verdict",
+        "reason_code",
+    ),
+    "hook.started": (
+        "invocation_id",
+        "hook_id",
+        "hook_event_name",
+        "hook_sha256",
+        "input_sha256",
+        "call_id",
+        "tool_name",
+        "ordinal",
+    ),
+    "hook.effect_started": (
+        "invocation_id",
+        "hook_id",
+        "hook_event_name",
+        "hook_sha256",
+        "input_sha256",
+        "call_id",
+        "tool_name",
+        "ordinal",
+    ),
+    "hook.completed": (
+        "invocation_id",
+        "hook_id",
+        "hook_event_name",
+        "hook_sha256",
+        "input_sha256",
+        "call_id",
+        "tool_name",
+        "ordinal",
+        "duration_ms",
+        "action",
+        "output_sha256",
+    ),
+    "hook.failed": (
+        "invocation_id",
+        "hook_id",
+        "hook_event_name",
+        "hook_sha256",
+        "input_sha256",
+        "call_id",
+        "tool_name",
+        "ordinal",
+        "duration_ms",
+        "error_code",
+        "output_sha256",
     ),
     "tool.requested": ("call_id", "tool_name", "tool_version"),
     "tool.started": ("call_id", "tool_name", "attempt"),

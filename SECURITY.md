@@ -7,15 +7,22 @@ Security fixes target the current `2.x` Agent Harness line.
 ## Trust boundaries
 
 - The default permission mode is `read-only`.
-- `workspace-write` exposes only validated unified patches inside the selected workspace.
-- `full-access` additionally exposes `process.exec`; it must be an explicit user choice.
-  The shell starts in the workspace but is not workspace-confined: it can exercise every
-  host permission already held by the current OS user. It can read workspace secrets,
-  read files outside the workspace, use the network and place those bytes in bounded tool
-  output that may be sent to the provider. This is not a kernel/container sandbox.
+- `workspace-write` exposes validated unified patches and `process.exec` only when the macOS
+  Seatbelt backend is available. Both run under a workspace-write, no-network policy.
+- `full-access` additionally exposes the separately named `process.exec_host`; it must be an
+  explicit user choice. This host command is not workspace-confined: it can exercise every
+  permission already held by the current OS user, read workspace secrets or other files,
+  use the network and place those bytes in bounded tool output that may be sent to the
+  provider.
 - The list/read/search/patch handlers reject absolute paths, `..`, symbolic links and
-  protected `.git`, `.private` and `.agent-harness` roots. Those checks do not constrain
-  `process.exec`.
+  protected `.git`, `.private` and `.agent-harness` roots. Those user-space checks do not
+  constrain `process.exec_host`.
+- Sandboxed patch and command execution use an `(allow default)` Seatbelt deny overlay. It
+  denies external writes, network, outgoing signals, reads below known user-data roots
+  outside the workspace, and lookup of known Keychain/securityd Mach services. It is a
+  macOS host policy, not a container, VM, complete host-read boundary or proof that all
+  present and future credential IPC names are covered. Unsupported hosts do not receive an
+  unsandboxed replacement for these tools.
 - Command execution uses a minimal environment, but this only removes named environment
   variables from the direct child. It does not protect secrets stored in files, inherited
   descriptors, subprocess state or the Harness process heap.
@@ -33,6 +40,52 @@ Security fixes target the current `2.x` Agent Harness line.
 - `never` replay tools such as patch and command execution are not silently replayed after
   an uncertain crash boundary. Cancellation after such an effect begins settles as an
   explicit handoff.
+
+### Trusted project command hooks
+
+`.agent-harness/hooks.json` and files below `.agent-harness/hooks/` are untrusted repository
+content until the operator makes an exact decision. Merely opening the workspace never
+executes them. The loader uses descriptor-relative no-follow reads and rejects symlinks,
+non-regular or multi-linked files, foreign-owned files, group/other-writable hook files or
+intermediate hook directories, oversize data and files that change while being read.
+Entrypoints are snapshotted as bytes before a run.
+
+Each definition digest binds the exact config bytes, event, matchers, arguments, timeout and
+entrypoint bytes. `harness hooks trust HOOK_ID --sha256 DIGEST` or `disable ... --sha256`
+stores that exact decision in the 0600 private workspace state outside the repository. Any
+bound change makes the definition `modified` and blocks new runs until the current digest is
+explicitly trusted or disabled. `revoke` removes the decision. Digest binding detects change;
+it is not a code signature or protection against an attacker who already controls both the
+repository and the operator's private Harness state.
+
+The implemented surface is only the synchronous `PreToolUse`, `PostToolUse` and
+`PostToolUseFailure` subset. A pre hook can return `pass`, `ask` or `deny`, but `pass` cannot
+turn a central ask/deny into allow and cannot change tool input. Multiple hooks aggregate as
+`deny > ask > pass`; `ask` requires a fresh per-call decision and cannot be bypassed by an
+existing persistent allow rule. A hook-triggered approval is once-only; the TUI does not
+offer session/workspace persistence for that challenge. Post hooks are observe-only and must
+return `pass`. Thus project hooks can only preserve or tighten permission, scope, approval
+and sandbox decisions; they cannot grant authority.
+
+Trusted hook snapshots execute under a dedicated Seatbelt profile with a read-only workspace,
+no network, no outgoing signals, no process fork, protected `.git`/`.private`/`.agent-harness`
+reads denied, and writes limited to a per-call private runtime directory and `/dev`. This
+remains an allow-default macOS host policy rather than complete confidentiality isolation.
+There is no cross-platform or unsandboxed fallback. If any definition is trusted and the
+sandbox is unavailable, the run fails before compaction or any provider request. During
+execution, a pre-hook command/contract failure tightens to denial; a post-hook failure is
+recorded without changing the already determined tool settlement. Cancellation is propagated.
+
+Hook stdin transiently contains the raw tool input and, for `PostToolUse`, the bounded tool
+result. Only trust programs that may see that data. Raw hook stdin, stdout and merged stderr
+are not written to hook events or journals; events retain identities, timing, safe outcome
+codes and SHA-256 bindings. The bytes may still exist transiently in process memory, and the
+underlying tool retains its independent standard event/persistence contract.
+
+`hook.effect_started` is durably emitted before the trusted command may execute. A crash or
+cancellation after that boundary is handled by the same conservative unresolved-effect fence
+as other uncertain effects. The Harness does not automatically replay a hook that may already
+have acted.
 
 ## Provider credentials
 

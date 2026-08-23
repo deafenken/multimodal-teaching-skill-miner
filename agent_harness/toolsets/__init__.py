@@ -5,6 +5,7 @@ from .workspace import (
     WorkspaceToolset,
     build_workspace_registry,
     permission_profile,
+    workspace_sandbox_status,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "WorkspaceToolset",
     "build_workspace_registry",
     "permission_profile",
+    "workspace_sandbox_status",
 ]

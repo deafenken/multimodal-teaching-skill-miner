@@ -5,24 +5,44 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import time
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from .core import (
+    ApprovalBroker,
+    ApprovalPolicy,
     CancellationToken,
     HarnessJournal,
     HarnessLimits,
     RetryPolicy,
     run_agent_harness,
 )
+from .context import estimate_context_tokens, select_compaction_plan
+from .hooks import (
+    HookLoadError,
+    HookSnapshot,
+    TrustedHookRunner,
+    load_project_hooks,
+)
+from .instructions import InstructionSnapshot, load_project_instructions
 from .providers import DeepSeekClient, DeepSeekCodingModel, DeepSeekConfig
 from .session import SessionStore, SessionStoreError
-from .toolsets import PERMISSION_PROFILES, build_workspace_registry, permission_profile
+from .toolsets import (
+    PERMISSION_PROFILES,
+    build_workspace_registry,
+    permission_profile,
+    workspace_sandbox_status,
+)
 
 
 EventSink = Callable[[Mapping[str, Any]], None]
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
+_CONTEXT_SAFETY_MARGIN_TOKENS = 512
+_AUTO_COMPACTION_TRIGGER_RATIO = 0.80
+_AUTO_COMPACTION_TARGET_RATIO = 0.60
+_MAX_COMPACTION_PASSES = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +98,7 @@ class AgentRunner:
         self,
         workspace: str | Path,
         *,
+        active_directory: str | Path | None = None,
         state_home: str | Path | None = None,
         api_key_file: str | Path | None = None,
         model: str | None = None,
@@ -89,6 +110,21 @@ class AgentRunner:
             raise ValueError(f"unknown permission mode: {permission_mode}")
         self.store = SessionStore(workspace, state_home=state_home)
         self.workspace = self.store.workspace
+        raw_active = (
+            self.workspace
+            if active_directory is None
+            else Path(active_directory).expanduser()
+        )
+        if not raw_active.is_absolute():
+            raw_active = self.workspace / raw_active
+        selected_active = raw_active.resolve(strict=True)
+        if not selected_active.is_dir():
+            raise ValueError("active directory must be a directory")
+        try:
+            selected_active.relative_to(self.workspace)
+        except ValueError as exc:
+            raise ValueError("active directory must stay inside the workspace") from exc
+        self.active_directory = selected_active
         default_key_file = self.workspace / ".private" / "deepseek_api.txt"
         selected_key_file = api_key_file
         if selected_key_file is None and default_key_file.exists():
@@ -128,12 +164,275 @@ class AgentRunner:
         # support.
         provider["web_search_supported"] = False
         provider["web_search_transport"] = "disabled"
+        try:
+            hooks = self.hook_status()
+        except (HookLoadError, SessionStoreError):
+            hooks = {
+                "schema": "agent_harness.hook_status.v1",
+                "status": "invalid",
+                "error_code": "hook_configuration_invalid",
+            }
         return {
             **provider,
             "workspace": str(self.workspace),
+            "active_directory": str(self.active_directory),
             "permission_mode": self.permission_mode,
             "available_permission_modes": list(PERMISSION_PROFILES),
+            "workspace_sandbox": workspace_sandbox_status(),
+            "project_hooks": hooks,
+            "approval_defaults": {
+                "low": "allow",
+                "medium": "ask",
+                "high": "ask",
+                "headless_ask": "handoff",
+            },
         }
+
+    def hook_snapshot(self) -> HookSnapshot:
+        """Freeze the exact project hook definitions proposed for the next run."""
+
+        return load_project_hooks(self.workspace)
+
+    def hook_status(self) -> dict[str, Any]:
+        """Return content-free hook definitions and exact trust status."""
+
+        snapshot = self.hook_snapshot()
+        trust_state = self.store.hook_trust_state()
+        metadata = snapshot.metadata(trust_state)
+        if metadata["pending_hook_count"]:
+            status = "review_required"
+        elif metadata["trusted_hook_count"]:
+            status = "ready" if metadata["sandbox"]["available"] else "blocked"
+        elif metadata["hook_count"]:
+            status = "disabled"
+        else:
+            status = "none"
+        return {
+            **metadata,
+            "schema": "agent_harness.hook_status.v1",
+            "status": status,
+        }
+
+    def set_hook_trust(
+        self,
+        hook_id: str,
+        definition_sha256: str,
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        """Persist a digest-bound trust or disable decision for a current hook."""
+
+        snapshot = self.hook_snapshot()
+        definition = next(
+            (item for item in snapshot.definitions if item.hook_id == hook_id),
+            None,
+        )
+        if definition is None:
+            raise HookLoadError("hook id is not present in the current project config")
+        if definition.definition_sha256 != definition_sha256:
+            raise HookLoadError("hook definition digest does not match current content")
+        self.store.set_hook_trust(
+            definition.hook_id,
+            definition.definition_sha256,
+            action=action,
+        )
+        return self.hook_status()
+
+    def trust_hook(
+        self,
+        hook_id: str,
+        definition_sha256: str,
+        *,
+        action: str = "trusted",
+    ) -> dict[str, Any]:
+        return self.set_hook_trust(
+            hook_id,
+            definition_sha256,
+            action=action,
+        )
+
+    def revoke_hook(self, hook_id: str) -> dict[str, Any]:
+        self.store.revoke_hook_trust(hook_id)
+        return self.hook_status()
+
+    def instruction_snapshot(self) -> InstructionSnapshot:
+        """Load the workspace-scoped instruction set for the next turn."""
+
+        return load_project_instructions(self.workspace, self.active_directory)
+
+    def _context_budget(
+        self,
+        *,
+        session: Mapping[str, Any],
+        snapshot: InstructionSnapshot,
+        prospective_prompt: str = "",
+    ) -> dict[str, Any]:
+        view = self.store.context_view(str(session["session_id"]))
+        permissions = permission_profile(self.permission_mode)
+        scopes = {"internal", "user_input", "workspace_read"}
+        if (
+            "workspace.write" in permissions
+            or "process.exec.sandboxed" in permissions
+            or "process.exec.host" in permissions
+        ):
+            scopes.add("workspace_write")
+        if "process.exec.host" in permissions:
+            scopes.add("host_access")
+        definitions = self.registry.definitions(
+            permissions,
+            trusted_data_scopes=frozenset(scopes),
+        )
+        estimated = estimate_context_tokens(
+            summary=str(view["summary"]),
+            messages=view["messages"],
+            project_instruction_bytes=snapshot.total_bytes,
+            tool_definitions=definitions,
+            prospective_prompt=prospective_prompt,
+        )
+        spec = self.model.model_spec
+        available = max(
+            1,
+            spec.context_window_tokens
+            - spec.maximum_output_tokens
+            - _CONTEXT_SAFETY_MARGIN_TOKENS,
+        )
+        return {
+            "estimated_input_tokens_upper_bound": estimated,
+            "available_input_tokens": available,
+            "automatic_trigger_tokens": max(
+                1, int(available * _AUTO_COMPACTION_TRIGGER_RATIO)
+            ),
+            "automatic_target_tokens": max(
+                1, int(available * _AUTO_COMPACTION_TARGET_RATIO)
+            ),
+            "context_window_tokens": spec.context_window_tokens,
+            "maximum_output_tokens": spec.maximum_output_tokens,
+            "view": view,
+        }
+
+    def context_status(self, session_id: str) -> dict[str, Any]:
+        """Return private-content-free active-context diagnostics."""
+
+        session = self.store.load(session_id)
+        snapshot = self.instruction_snapshot()
+        budget = self._context_budget(session=session, snapshot=snapshot)
+        view = budget.pop("view")
+        lineage = view["lineage"]
+        return {
+            "schema": "agent_harness.context_status.v1",
+            "session_id": session_id,
+            "transcript_message_count": view["transcript_message_count"],
+            "compacted_message_count": view["compacted_message_count"],
+            "active_message_count": view["active_message_count"],
+            "summary_chars": len(str(view["summary"])),
+            "compaction_count": len(session["compactions"]),
+            "compaction_id": lineage["compaction_id"],
+            "summary_sha256": lineage["summary_sha256"],
+            "source_messages_sha256": lineage["source_messages_sha256"],
+            "active_context_sha256": lineage["active_context_sha256"],
+            "instruction_bytes": snapshot.total_bytes,
+            "instruction_count": len(snapshot.documents),
+            **budget,
+        }
+
+    def _compact_locked(
+        self,
+        session_id: str,
+        *,
+        trigger: str,
+        snapshot: InstructionSnapshot,
+        cancellation_token: CancellationToken,
+        target_tokens: int | None = None,
+        prospective_prompt: str = "",
+    ) -> dict[str, Any]:
+        compactor = getattr(self.model, "compact_context", None)
+        if not callable(compactor):
+            raise SessionStoreError("the selected model does not support context compaction")
+        passes = 0
+        latest_record: Mapping[str, Any] | None = None
+        while passes < _MAX_COMPACTION_PASSES:
+            cancellation_token.raise_if_cancelled()
+            session = self.store.load(session_id)
+            plan = select_compaction_plan(session)
+            if plan is None:
+                break
+            result = compactor(
+                plan,
+                cancellation_token=cancellation_token,
+                deadline_monotonic=time.monotonic() + self.limits.deadline_seconds,
+            ).validated()
+            cancellation_token.raise_if_cancelled()
+            latest_record = self.store.record_compaction(
+                session_id,
+                summary=result.summary,
+                source_message_count=plan.source_message_count,
+                provider=self.model.model_spec.provider,
+                model=self.model.model_spec.model,
+                trigger=trigger,
+                usage=result.usage,
+                instructions_sha256=snapshot.snapshot_sha256,
+                provider_request_id=result.provider_request_id,
+            )
+            passes += 1
+            if target_tokens is not None:
+                refreshed = self.store.load(session_id)
+                budget = self._context_budget(
+                    session=refreshed,
+                    snapshot=snapshot,
+                    prospective_prompt=prospective_prompt,
+                )
+                if budget["estimated_input_tokens_upper_bound"] <= target_tokens:
+                    break
+        status = self.context_status(session_id)
+        return {
+            "schema": "agent_harness.compaction_result.v1",
+            "session_id": session_id,
+            "status": "compacted" if latest_record is not None else "not_needed",
+            "passes": passes,
+            "compaction_id": (
+                latest_record.get("compaction_id") if latest_record is not None else None
+            ),
+            "source_message_count": (
+                latest_record.get("source_message_count")
+                if latest_record is not None
+                else status["compacted_message_count"]
+            ),
+            "summary_sha256": (
+                latest_record.get("summary_sha256")
+                if latest_record is not None
+                else status["summary_sha256"]
+            ),
+            "summary_chars": status["summary_chars"],
+            "active_message_count": status["active_message_count"],
+            "transcript_message_count": status["transcript_message_count"],
+            "estimated_input_tokens_upper_bound": status[
+                "estimated_input_tokens_upper_bound"
+            ],
+        }
+
+    def compact_session(
+        self,
+        session_id: str,
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> dict[str, Any]:
+        """Manually compact old turns while preserving the original transcript."""
+
+        token = cancellation_token or CancellationToken()
+        with self.store.workspace_run_lock():
+            unresolved = self.store.unresolved_workspace_runs()
+            if unresolved:
+                raise SessionStoreError(
+                    "workspace has an unresolved run; reconcile it before compacting"
+                )
+            with self.store.turn_lock(session_id):
+                snapshot = self.instruction_snapshot()
+                return self._compact_locked(
+                    session_id,
+                    trigger="manual",
+                    snapshot=snapshot,
+                    cancellation_token=token,
+                )
 
     def new_session(self, *, title: str = "New session") -> dict[str, Any]:
         return self.store.create(
@@ -207,6 +506,7 @@ class AgentRunner:
         *,
         cancellation_token: CancellationToken | None = None,
         event_sink: EventSink | None = None,
+        approval_broker: ApprovalBroker | None = None,
     ) -> TurnOutcome:
         with self.store.workspace_run_lock():
             unresolved = self.store.unresolved_workspace_runs()
@@ -222,6 +522,7 @@ class AgentRunner:
                     prompt,
                     cancellation_token=cancellation_token,
                     event_sink=event_sink,
+                    approval_broker=approval_broker,
                 )
 
     def _run_turn_locked(
@@ -231,10 +532,12 @@ class AgentRunner:
         *,
         cancellation_token: CancellationToken | None = None,
         event_sink: EventSink | None = None,
+        approval_broker: ApprovalBroker | None = None,
     ) -> TurnOutcome:
         content = str(prompt).strip()
         if not content or len(content) > 200_000:
             raise ValueError("prompt must contain 1 to 200000 characters")
+        token = cancellation_token or CancellationToken()
         # Stored permission metadata is never an authority source. The current
         # invocation's explicit runner mode controls the grants, and the
         # per-session turn lock makes the displayed metadata follow it.
@@ -253,20 +556,76 @@ class AgentRunner:
                 "session has an unfinished or uncertain run; inspect its journal "
                 "before archiving it or starting a new session"
             )
-        self.store.update_runtime(
-            session_id,
-            permission_mode=mode,
-            provider="deepseek",
-            model=self.client.config.model,
+        hook_snapshot = self.hook_snapshot()
+        hook_trust_state = self.store.hook_trust_state()
+        # This resolves every project proposal and verifies sandbox support
+        # before automatic compaction can make a provider request.
+        hook_runner = TrustedHookRunner(hook_snapshot, hook_trust_state)
+        permissions = permission_profile(mode)
+        scopes = {"internal", "user_input", "workspace_read"}
+        if (
+            "workspace.write" in permissions
+            or "process.exec.sandboxed" in permissions
+            or "process.exec.host" in permissions
+        ):
+            scopes.add("workspace_write")
+        if "process.exec.host" in permissions:
+            scopes.add("host_access")
+        approval_policy = ApprovalPolicy(
+            rules=(
+                self.store.approval_rules(session_id)
+                if mode != "read-only"
+                else ()
+            )
         )
-        session = self.store.append_message(
-            session_id,
-            role="user",
-            content=content,
-            reserve_messages=1,
+        instruction_snapshot = self.instruction_snapshot()
+        budget = self._context_budget(
+            session=existing,
+            snapshot=instruction_snapshot,
+            prospective_prompt=content,
         )
+        if (
+            budget["estimated_input_tokens_upper_bound"]
+            >= budget["automatic_trigger_tokens"]
+        ):
+            self._compact_locked(
+                session_id,
+                trigger="automatic",
+                snapshot=instruction_snapshot,
+                cancellation_token=token,
+                target_tokens=budget["automatic_target_tokens"],
+                prospective_prompt=content,
+            )
         run_id = f"run_{uuid4().hex}"
         turn_id = f"turn_{uuid4().hex}"
+        session = self.store.begin_run(
+            session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            user_content=content,
+            provider="deepseek",
+            model=self.client.config.model,
+            permission_mode=mode,
+        )
+        context_view = self.store.context_view(session_id)
+        context_lineage = dict(context_view["lineage"])
+        history_summary = (
+            {
+                "content": context_view["summary"],
+                "lineage": {
+                    key: context_lineage[key]
+                    for key in (
+                        "compaction_id",
+                        "source_message_count",
+                        "source_messages_sha256",
+                        "summary_sha256",
+                        "active_context_sha256",
+                    )
+                },
+            }
+            if context_view["summary"]
+            else None
+        )
         event_path, checkpoint_path = self.store.run_paths(run_id)
         journal = HarnessJournal(
             event_path,
@@ -274,18 +633,6 @@ class AgentRunner:
             turn_id=turn_id,
             checkpoint_path=checkpoint_path,
         )
-        self.store.record_run(
-            session_id,
-            run_id=run_id,
-            turn_id=turn_id,
-            status="running",
-        )
-        permissions = permission_profile(mode)
-        scopes = {"internal", "user_input", "workspace_read"}
-        if "workspace.write" in permissions or "process.exec" in permissions:
-            scopes.add("workspace_write")
-        if "process.exec" in permissions:
-            scopes.add("host_access")
         try:
             result = run_agent_harness(
                 self.model,
@@ -293,10 +640,19 @@ class AgentRunner:
                 {
                     "messages": [
                         {"role": item["role"], "content": item["content"]}
-                        for item in session["messages"]
+                        for item in context_view["messages"]
                     ],
                     "workspace": ".",
+                    "active_directory": instruction_snapshot.active_relative_path,
                     "permission_mode": mode,
+                    "project_instructions": (
+                        instruction_snapshot.to_model_content()
+                        if instruction_snapshot.documents
+                        else ""
+                    ),
+                    "instruction_snapshot": instruction_snapshot.metadata(),
+                    "history_summary": history_summary,
+                    "context_lineage": context_lineage,
                     "settled_effects": [
                         {
                             "run_id": run.get("run_id"),
@@ -312,12 +668,15 @@ class AgentRunner:
                 limits=self.limits,
                 retry_policy=self.retry_policy,
                 allowed_permissions=permissions,
-                cancellation_token=cancellation_token or CancellationToken(),
+                cancellation_token=token,
                 event_sink=event_sink,
                 journal=journal,
                 principal_id="local-user",
                 session_id=session_id,
                 trusted_data_scopes=scopes,
+                approval_policy=approval_policy,
+                approval_broker=approval_broker,
+                tool_hook_broker=hook_runner,
             )
         except Exception:
             # Unknown failures may happen after an external effect but before
@@ -336,6 +695,8 @@ class AgentRunner:
         requested: dict[str, Mapping[str, Any]] = {}
         started_effects: dict[str, str] = {}
         settled_effects: set[str] = set()
+        hook_effect_calls: set[str] = set()
+        hook_guarded_settlements: set[str] = set()
         effects: list[dict[str, str]] = []
         terminal_type = ""
         terminal_reason_code = ""
@@ -364,6 +725,16 @@ class AgentRunner:
             tool_name = payload.get("tool_name")
             if not isinstance(tool_name, str):
                 continue
+            if event_type == "hook.effect_started":
+                hook_effect_calls.add(call_id)
+                continue
+            if event_type in {
+                "tool.completed",
+                "tool.failed",
+                "tool.rejected",
+                "tool.replayed",
+            } and call_id in hook_effect_calls:
+                hook_guarded_settlements.add(call_id)
             entry = self.registry.get(tool_name)
             if entry is None or entry[0].replay_policy == "safe":
                 continue
@@ -383,6 +754,7 @@ class AgentRunner:
                 effect["arguments_sha256"] = arguments_sha256
             effects.append(effect)
         unresolved_effects = set(started_effects) - settled_effects
+        unresolved_hook_effects = hook_effect_calls - hook_guarded_settlements
         expected_terminal = {
             "completed": "run.completed",
             "cancelled": "run.cancelled",
@@ -399,6 +771,7 @@ class AgentRunner:
             "deadline_after_external_effect",
             "external_effect_unsettled",
             "failure_after_external_effect",
+            "unsafe_hook_replay_blocked",
         }
         requires_reconciliation = terminal_reason_code in reconciliation_reasons
         checkpoint = result.get("checkpoint")
@@ -406,27 +779,23 @@ class AgentRunner:
             pending_effect = checkpoint.get("pending_effect")
         else:
             pending_effect = getattr(checkpoint, "pending_effect", None)
-        if bool(unresolved_effects) != isinstance(pending_effect, Mapping):
+        if bool(unresolved_effects or unresolved_hook_effects) != isinstance(
+            pending_effect, Mapping
+        ):
             raise SessionStoreError(
                 "runtime effect ledger does not match its authoritative terminal"
-            )
-        if status == "completed" and message:
-            self.store.append_message(
-                session_id,
-                role="assistant",
-                content=message,
-                run_id=run_id,
             )
         stored_status = (
             status
             if status in {"completed", "failed", "cancelled", "handoff"}
             else "failed"
         )
-        self.store.record_run(
+        self.store.finish_run(
             session_id,
             run_id=run_id,
             turn_id=turn_id,
             status=stored_status,
+            assistant_content=message or None,
             usage=usage,
             effects=effects,
             requires_reconciliation=requires_reconciliation,

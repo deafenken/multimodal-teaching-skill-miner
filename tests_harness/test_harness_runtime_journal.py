@@ -8,6 +8,7 @@ from unittest.mock import patch
 from typing import Any, Mapping
 
 from agent_harness.core import (
+    ApprovalPolicy,
     CancellationToken,
     HarnessCheckpoint,
     HarnessContractError,
@@ -69,6 +70,9 @@ class _ScriptedModel:
         if not self.responses:
             raise AssertionError("model was called beyond its script")
         return self.responses.pop(0)
+
+
+_ALLOW_EFFECTS = ApprovalPolicy(medium_risk="allow", high_risk="allow")
 
 
 def _final(message: str = "done") -> HarnessModelResponse:
@@ -137,6 +141,7 @@ def _run(
     journal: HarnessJournal,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    kwargs.setdefault("approval_policy", _ALLOW_EFFECTS)
     return run_agent_harness(
         model,
         registry,
@@ -277,6 +282,7 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
             limits=HarnessLimits(deadline_seconds=5.0),
             retry_policy=RetryPolicy(max_attempts=1),
             allowed_permissions={"effect.write"},
+            approval_policy=_ALLOW_EFFECTS,
         )
 
         self.assertEqual(executions, 1)
@@ -297,6 +303,63 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
             resumed_model.requests[0].observations[-1]["result"],
             {"value": 7},
         )
+
+    def test_durable_approval_required_settlement_resumes_as_handoff(self) -> None:
+        journal = self.journal()
+        executions = 0
+
+        def safe_handler(
+            arguments: Mapping[str, Any], _context: Any
+        ) -> Mapping[str, Any]:
+            nonlocal executions
+            executions += 1
+            return dict(arguments)
+
+        registry = _registry(safe_handler, replay_policy="safe")
+
+        def crash_after_rejection(event: Mapping[str, Any]) -> None:
+            if (
+                event.get("type") == "tool.rejected"
+                and event.get("payload", {}).get("error_code")
+                == "approval_required"
+            ):
+                raise SystemExit("crash after durable approval rejection")
+
+        with self.assertRaisesRegex(SystemExit, "approval rejection"):
+            run_agent_harness(
+                _ScriptedModel([_tool_plan()]),
+                registry,
+                {"topic": "durability"},
+                run_id=journal.run_id,
+                turn_id=journal.turn_id,
+                journal=journal,
+                limits=HarnessLimits(deadline_seconds=5.0),
+                retry_policy=RetryPolicy(max_attempts=1),
+                allowed_permissions={"effect.write"},
+                event_sink=crash_after_rejection,
+            )
+
+        checkpoint = HarnessCheckpoint.from_value(journal.load_checkpoint())
+        self.assertIsNotNone(checkpoint.pending_effect)
+        self.assertEqual(journal.replay()[-1]["type"], "tool.rejected")
+
+        resumed_model = _ScriptedModel([_final("must not run")])
+        resumed = resume_agent_harness(
+            None,
+            resumed_model,
+            registry,
+            {"topic": "durability"},
+            journal=journal,
+            limits=HarnessLimits(deadline_seconds=5.0),
+            retry_policy=RetryPolicy(max_attempts=1),
+            allowed_permissions={"effect.write"},
+        )
+
+        self.assertEqual(resumed["status"], "handoff")
+        self.assertEqual(resumed["reason"], "human approval is required for the requested tool")
+        self.assertIsNone(resumed["checkpoint"].pending_effect)
+        self.assertFalse(resumed_model.requests)
+        self.assertEqual(executions, 0)
 
     def test_uncertain_never_replay_effect_hands_off_after_process_death(self) -> None:
         journal = self.journal()
@@ -324,6 +387,7 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
             limits=HarnessLimits(deadline_seconds=5.0),
             retry_policy=RetryPolicy(max_attempts=1),
             allowed_permissions={"effect.write"},
+            approval_policy=_ALLOW_EFFECTS,
         )
 
         self.assertEqual(executions, 1)
@@ -369,6 +433,7 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
                 limits=HarnessLimits(deadline_seconds=5.0),
                 retry_policy=RetryPolicy(max_attempts=1),
                 allowed_permissions={"effect.write"},
+                approval_policy=_ALLOW_EFFECTS,
                 event_sink=die_after_resume_marker,
             )
         self.assertEqual(journal.last_sequence, checkpoint_sequence + 1)
@@ -382,6 +447,7 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
             limits=HarnessLimits(deadline_seconds=5.0),
             retry_policy=RetryPolicy(max_attempts=1),
             allowed_permissions={"effect.write"},
+            approval_policy=_ALLOW_EFFECTS,
         )
         self.assertEqual(resumed["status"], "handoff")
         self.assertEqual(resumed["reason"], "unsafe_tool_replay_blocked")
@@ -444,6 +510,7 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
                         limits=candidate["limits"],
                         retry_policy=candidate["retry_policy"],
                         allowed_permissions={"effect.write"},
+                        approval_policy=_ALLOW_EFFECTS,
                     )
 
     def test_resume_binds_complete_tool_execution_semantics(self) -> None:
@@ -533,6 +600,7 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
                         limits=HarnessLimits(deadline_seconds=5.0),
                         retry_policy=RetryPolicy(max_attempts=1),
                         allowed_permissions={"effect.write"},
+                        approval_policy=_ALLOW_EFFECTS,
                     )
 
     def test_tool_execution_manifest_is_complete_and_canonical(self) -> None:
@@ -598,6 +666,7 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
                 limits=HarnessLimits(deadline_seconds=5.0),
                 retry_policy=RetryPolicy(max_attempts=1),
                 allowed_permissions={"effect.write"},
+                approval_policy=_ALLOW_EFFECTS,
             )
         checkpoint = HarnessCheckpoint.from_value(journal.load_checkpoint())
         with self.assertRaisesRegex(
@@ -612,6 +681,7 @@ class HarnessRuntimeJournalTests(unittest.TestCase):
                 limits=HarnessLimits(deadline_seconds=5.0),
                 retry_policy=RetryPolicy(max_attempts=1),
                 allowed_permissions={"effect.write"},
+                approval_policy=_ALLOW_EFFECTS,
             )
         self.assertNotIn(private_marker, str(raised.exception))
 

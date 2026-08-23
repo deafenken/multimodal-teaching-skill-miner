@@ -21,6 +21,14 @@ from .cancellation import (
     check_deadline,
     remaining_seconds,
 )
+from .approvals import (
+    ApprovalBroker,
+    ApprovalDecision,
+    ApprovalPolicy,
+    ApprovalRequest,
+    ApprovalRule,
+    resolve_approval,
+)
 from .contracts import (
     HarnessCancelled,
     HarnessContractError,
@@ -33,11 +41,13 @@ from .contracts import (
     ToolPermissionError,
 )
 from .events import HarnessEventEmitter, canonical_json, canonical_sha256
+from .hooks import ToolHookBroker, ToolHookDecision, ToolHookRequest
 from .schema import validate_schema, validate_schema_definition
 
 
 _TOOL_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _PERMISSION = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _DATA_SCOPES = frozenset(
     {
         "internal",
@@ -655,6 +665,28 @@ def _run_handler(
     return _run_isolated_handler(handler, arguments, context, clock=clock)
 
 
+def _approval_preview(spec: ToolSpec, arguments: Mapping[str, Any]) -> str:
+    """Return bounded local UI context without placing it in durable events."""
+
+    if spec.name in {"process.exec", "process.exec_host"}:
+        command = arguments.get("command")
+        if isinstance(command, str):
+            return _CONTROL.sub("�", command)[:20_000]
+    if spec.name == "workspace.patch":
+        patch = arguments.get("patch")
+        if isinstance(patch, str):
+            paths: list[str] = []
+            for line in patch.splitlines():
+                if line.startswith("+++ b/") or line.startswith("--- a/"):
+                    candidate = line[6:].split("\t", 1)[0].strip()
+                    if candidate and candidate not in paths:
+                        paths.append(candidate[:300])
+                if len(paths) >= 12:
+                    break
+            return "patch: " + (", ".join(paths) if paths else "workspace changes")
+    return "arguments: " + ", ".join(sorted(str(key)[:80] for key in arguments))
+
+
 def execute_tool_call(
     call: ToolCall,
     *,
@@ -670,6 +702,10 @@ def execute_tool_call(
     session_id: str | None = None,
     trusted_data_scopes: frozenset[str] = DEFAULT_TRUSTED_DATA_SCOPES,
     effect_started_sink: Callable[[], None] | None = None,
+    approval_policy: ApprovalPolicy | None = None,
+    approval_broker: ApprovalBroker | None = None,
+    tool_hook_broker: ToolHookBroker | None = None,
+    hook_effect_started_sink: Callable[[], None] | None = None,
 ) -> tuple[ToolExecutionResult, dict[str, Any] | None]:
     """Validate, authorize, execute, and normalize one tool call.
 
@@ -677,14 +713,35 @@ def execute_tool_call(
     after successful settlement.
     """
 
+    if approval_policy is None:
+        approval_policy = ApprovalPolicy()
+    elif not isinstance(approval_policy, ApprovalPolicy):
+        raise HarnessContractError("approval_policy must be an ApprovalPolicy")
+    if tool_hook_broker is not None and not isinstance(
+        tool_hook_broker, ToolHookBroker
+    ):
+        raise HarnessContractError("tool_hook_broker must satisfy ToolHookBroker")
+
+    # One canonical string is the immutable authority for this execution.
+    # All validation, approval, retries, handler inputs, and receipts below are
+    # derived from it; the model-owned ToolCall mapping is never read again.
+    canonical_arguments = canonical_json(dict(call.arguments))
+    arguments_snapshot = json.loads(canonical_arguments)
+    if not isinstance(arguments_snapshot, dict):
+        raise HarnessContractError("tool call arguments must be an object")
+    arguments_digest = canonical_sha256(arguments_snapshot)
+
     entry = registry.get(call.name)
+    request_payload = {
+        "call_id": call.call_id,
+        "tool_name": call.name,
+        "arguments_sha256": arguments_digest,
+    }
+    if entry is not None:
+        request_payload["tool_version"] = entry[0].version
     emitter.emit(
         "tool.requested",
-        {
-            "call_id": call.call_id,
-            "tool_name": call.name,
-            "arguments_sha256": canonical_sha256(dict(call.arguments)),
-        },
+        request_payload,
     )
     if entry is None:
         emitter.emit(
@@ -790,7 +847,7 @@ def execute_tool_call(
             None,
         )
     try:
-        validate_schema(dict(call.arguments), spec.input_schema)
+        validate_schema(arguments_snapshot, spec.input_schema)
     except HarnessContractError as exc:
         emitter.emit(
             "tool.rejected",
@@ -839,8 +896,7 @@ def execute_tool_call(
     )
     existing = idempotency_receipts.get(receipt_key or "")
     if isinstance(existing, Mapping):
-        expected_arguments = canonical_sha256(dict(call.arguments))
-        if existing.get("arguments_sha256") != expected_arguments:
+        if existing.get("arguments_sha256") != arguments_digest:
             emitter.emit(
                 "tool.rejected",
                 {
@@ -859,6 +915,213 @@ def execute_tool_call(
                 ),
                 None,
             )
+
+    def evaluate_hooks(
+        event_name: str,
+        *,
+        result: Any = None,
+        result_sha256: str | None = None,
+        error_code: str | None = None,
+    ) -> ToolHookDecision:
+        if tool_hook_broker is None or not tool_hook_broker.matches(
+            event_name, spec.name
+        ):
+            return ToolHookDecision()
+        request = ToolHookRequest(
+            event_name=event_name,
+            run_id=emitter.run_id,
+            turn_id=emitter.turn_id,
+            session_id=session_id,
+            call_id=call.call_id,
+            tool_name=spec.name,
+            tool_version=spec.version,
+            tool_input=arguments_snapshot,
+            arguments_sha256=arguments_digest,
+            result=result,
+            result_sha256=result_sha256,
+            error_code=error_code,
+        )
+
+        hook_effect_started = False
+
+        def audit(event_type: str, payload: Mapping[str, Any]) -> None:
+            nonlocal hook_effect_started
+            emitter.emit(event_type, payload)
+            if event_type == "hook.effect_started":
+                hook_effect_started = True
+                if hook_effect_started_sink:
+                    hook_effect_started_sink()
+
+        try:
+            decision = tool_hook_broker.evaluate(
+                request,
+                cancellation_token=cancellation_token,
+                deadline_monotonic=run_deadline_monotonic,
+                audit_sink=audit,
+            ).validated()
+        except (HarnessCancelled, HarnessDeadlineExceeded):
+            raise
+        except Exception:
+            if hook_effect_started:
+                raise
+            return ToolHookDecision(
+                action="deny" if event_name == "PreToolUse" else "pass"
+            )
+        if event_name != "PreToolUse" and decision.action != "pass":
+            # Post hooks are observation-only. A malformed or custom broker can
+            # never convert an already obtained tool result into a failure.
+            return ToolHookDecision(
+                action="pass",
+                matched_hook_ids=decision.matched_hook_ids,
+                executed_hook_ids=decision.executed_hook_ids,
+                skipped_hook_ids=decision.skipped_hook_ids,
+            )
+        return decision
+
+    pre_hook_decision = evaluate_hooks("PreToolUse")
+    if pre_hook_decision.action == "deny":
+        emitter.emit(
+            "tool.rejected",
+            {
+                "call_id": call.call_id,
+                "tool_name": call.name,
+                "tool_version": spec.version,
+                "error_code": "hook_denied",
+            },
+        )
+        return (
+            ToolExecutionResult(
+                call_id=call.call_id,
+                tool_name=call.name,
+                ok=False,
+                error_code="hook_denied",
+                error_message="tool call was denied by a trusted policy hook",
+            ),
+            None,
+        )
+    effective_approval_policy = approval_policy
+    if pre_hook_decision.action == "ask":
+        effective_approval_policy = ApprovalPolicy(
+            rules=(
+                ApprovalRule(
+                    action="ask",
+                    tool_name=spec.name,
+                    tool_version=spec.version,
+                    arguments_sha256=arguments_digest,
+                ),
+                *approval_policy.rules,
+            ),
+            low_risk=approval_policy.low_risk,
+            medium_risk=approval_policy.medium_risk,
+            high_risk=approval_policy.high_risk,
+        )
+    approval_request = ApprovalRequest.for_call(
+        run_id=emitter.run_id,
+        call_id=call.call_id,
+        tool_name=spec.name,
+        tool_version=spec.version,
+        arguments=arguments_snapshot,
+        policy=effective_approval_policy,
+        risk=spec.risk,
+        persistent_scope_allowed=pre_hook_decision.action != "ask",
+    )
+    approval_action = effective_approval_policy.action_for(
+        tool_name=spec.name,
+        tool_version=spec.version,
+        arguments_sha256=approval_request.arguments_sha256,
+        risk=spec.risk,
+    )
+    if spec.risk != "low" or approval_action != "allow":
+        cancellation_token.raise_if_cancelled()
+        check_deadline(clock=clock, deadline_monotonic=run_deadline_monotonic)
+        emitter.emit(
+            "approval.requested",
+            {
+                "approval_id": approval_request.approval_id,
+                "call_id": call.call_id,
+                "tool_name": spec.name,
+                "tool_version": spec.version,
+                "arguments_sha256": approval_request.arguments_sha256,
+                "policy_sha256": approval_request.policy_sha256,
+                "risk": spec.risk,
+                "policy_action": approval_action,
+                "hook_action": pre_hook_decision.action,
+                "persistent_scope_allowed": (
+                    approval_request.persistent_scope_allowed
+                ),
+            },
+        )
+        approval_decision = resolve_approval(
+            approval_request,
+            effective_approval_policy,
+            approval_broker,
+            preview=_approval_preview(spec, arguments_snapshot),
+        )
+        # Recheck the exact approved material after the interactive seam.  The
+        # canonical string remains the execution authority even if a broker or
+        # another thread mutates an object it was handed.
+        if (
+            canonical_sha256(arguments_snapshot) != arguments_digest
+            or approval_request.arguments_sha256 != arguments_digest
+        ):
+            approval_decision = ApprovalDecision.for_request(
+                approval_request,
+                verdict="deny",
+                reason_code="approval_arguments_changed",
+            )
+        emitter.emit(
+            "approval.resolved",
+            {
+                "approval_id": approval_request.approval_id,
+                "call_id": call.call_id,
+                "tool_name": spec.name,
+                "tool_version": spec.version,
+                "arguments_sha256": approval_request.arguments_sha256,
+                "policy_sha256": approval_request.policy_sha256,
+                "risk": spec.risk,
+                "verdict": approval_decision.verdict,
+                "reason_code": approval_decision.reason_code,
+            },
+        )
+        if approval_decision.verdict != "allow":
+            if approval_decision.reason_code == "approval_unavailable":
+                error_code = "approval_required"
+            elif approval_decision.reason_code in {
+                "approval_policy_denied",
+                "user_denied_once",
+            }:
+                error_code = "approval_denied"
+            else:
+                error_code = "approval_failed"
+            emitter.emit(
+                "tool.rejected",
+                {
+                    "call_id": call.call_id,
+                    "tool_name": call.name,
+                    "tool_version": spec.version,
+                    "error_code": error_code,
+                },
+            )
+            return (
+                ToolExecutionResult(
+                    call_id=call.call_id,
+                    tool_name=call.name,
+                    ok=False,
+                    error_code=error_code,
+                    error_message="tool approval was not granted",
+                ),
+                None,
+            )
+    if isinstance(existing, Mapping):
+        existing_result = existing.get("result")
+        existing_result_sha256 = str(existing.get("result_sha256", ""))
+        if canonical_sha256(existing_result) != existing_result_sha256:
+            raise HarnessContractError("idempotency receipt result digest is invalid")
+        evaluate_hooks(
+            "PostToolUse",
+            result=existing_result,
+            result_sha256=existing_result_sha256,
+        )
         emitter.emit(
             "tool.replayed",
             {
@@ -867,7 +1130,7 @@ def execute_tool_call(
                 "tool_version": spec.version,
                 "idempotency_key": call.idempotency_key,
                 "source_call_id": existing.get("call_id"),
-                "result_sha256": existing.get("result_sha256"),
+                "result_sha256": existing_result_sha256,
             },
         )
         return (
@@ -875,8 +1138,8 @@ def execute_tool_call(
                 call_id=call.call_id,
                 tool_name=call.name,
                 ok=True,
-                result=existing.get("result"),
-                result_sha256=str(existing.get("result_sha256", "")),
+                result=existing_result,
+                result_sha256=existing_result_sha256,
                 source_call_id=str(existing.get("call_id", "")),
             ),
             None,
@@ -955,7 +1218,7 @@ def execute_tool_call(
         try:
             result = _run_handler(
                 handler,
-                dict(call.arguments),
+                json.loads(canonical_arguments),
                 context,
                 spec=spec,
                 clock=clock,
@@ -990,6 +1253,11 @@ def execute_tool_call(
                 rendered = canonical_json(result)
             result_hash = canonical_sha256(result)
             duration_ms = max(0, round((clock.monotonic() - started) * 1_000))
+            evaluate_hooks(
+                "PostToolUse",
+                result=result,
+                result_sha256=result_hash,
+            )
             emitter.emit(
                 "tool.completed",
                 {
@@ -1008,7 +1276,7 @@ def execute_tool_call(
                     "call_id": call.call_id,
                     "tool_name": call.name,
                     "tool_version": spec.version,
-                    "arguments_sha256": canonical_sha256(dict(call.arguments)),
+                    "arguments_sha256": arguments_digest,
                     "result": result,
                     "result_sha256": result_hash,
                 }
@@ -1057,6 +1325,10 @@ def execute_tool_call(
                 },
             )
             continue
+        evaluate_hooks(
+            "PostToolUseFailure",
+            error_code=error.code,
+        )
         emitter.emit(
             "tool.failed",
             {

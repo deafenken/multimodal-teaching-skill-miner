@@ -35,6 +35,12 @@ HARNESS_EVENT_TYPES = frozenset(
         "reasoning.delta",
         "usage.update",
         "tool_call.delta",
+        "approval.requested",
+        "approval.resolved",
+        "hook.started",
+        "hook.effect_started",
+        "hook.completed",
+        "hook.failed",
         "tool.requested",
         "tool.started",
         "tool.effect_started",
@@ -99,6 +105,56 @@ class ToolTransientError(ToolExecutionError):
 
     def __init__(self, message: str, *, code: str = "tool_transient_error") -> None:
         super().__init__(message, code=code, retryable=True)
+
+
+def _json_snapshot(value: Any, *, field_name: str) -> Any:
+    """Return a detached, canonical-JSON-compatible value.
+
+    Provider adapters are an untrusted seam: a planner may retain and mutate
+    dictionaries after returning them.  Recursively rebuilding the value here
+    both rejects non-JSON contracts and ensures later validation, approval,
+    persistence, and execution cannot observe the provider's mutable objects.
+    """
+
+    active: set[int] = set()
+
+    def normalize(item: Any) -> Any:
+        if item is None or isinstance(item, (str, bool, int)):
+            return item
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise HarnessContractError(f"{field_name} must be canonical JSON")
+            return item
+        if isinstance(item, Mapping):
+            identity = id(item)
+            if identity in active:
+                raise HarnessContractError(f"{field_name} must not contain cycles")
+            active.add(identity)
+            try:
+                normalized: dict[str, Any] = {}
+                for key, nested in item.items():
+                    if not isinstance(key, str):
+                        raise HarnessContractError(
+                            f"{field_name} object keys must be strings"
+                        )
+                    normalized[key] = normalize(nested)
+                return normalized
+            finally:
+                active.remove(identity)
+        if isinstance(item, Sequence) and not isinstance(
+            item, (str, bytes, bytearray)
+        ):
+            identity = id(item)
+            if identity in active:
+                raise HarnessContractError(f"{field_name} must not contain cycles")
+            active.add(identity)
+            try:
+                return [normalize(nested) for nested in item]
+            finally:
+                active.remove(identity)
+        raise HarnessContractError(f"{field_name} must be canonical JSON")
+
+    return normalize(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +251,15 @@ class ToolCall:
     arguments: Mapping[str, Any] = field(default_factory=dict)
     idempotency_key: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.arguments, Mapping):
+            raise HarnessContractError("tool call arguments must be an object")
+        object.__setattr__(
+            self,
+            "arguments",
+            _json_snapshot(self.arguments, field_name="tool call arguments"),
+        )
+
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any], *, index: int = 0) -> "ToolCall":
         if not isinstance(value, Mapping):
@@ -216,7 +281,10 @@ class ToolCall:
         return cls(
             call_id=call_id,
             name=name,
-            arguments=dict(arguments),
+            arguments=_json_snapshot(
+                arguments,
+                field_name="tool call arguments",
+            ),
             idempotency_key=key,
         )
 
@@ -224,7 +292,10 @@ class ToolCall:
         value: dict[str, Any] = {
             "call_id": self.call_id,
             "name": self.name,
-            "arguments": dict(self.arguments),
+            "arguments": _json_snapshot(
+                self.arguments,
+                field_name="tool call arguments",
+            ),
         }
         if self.idempotency_key is not None:
             value["idempotency_key"] = self.idempotency_key
@@ -246,31 +317,44 @@ class HarnessModelResponse:
     @classmethod
     def from_value(cls, value: Any) -> "HarnessModelResponse":
         if isinstance(value, cls):
-            return value.validated()
-        if not isinstance(value, Mapping):
+            kind = value.kind
+            raw_calls: Sequence[Any] = value.tool_calls
+            output = value.output
+            reason = value.reason
+            usage = value.usage
+            request_id = value.provider_request_id
+            parallel_tool_calls = value.parallel_tool_calls
+        elif isinstance(value, Mapping):
+            kind = str(value.get("kind", "")).strip()
+            raw_calls = value.get("tool_calls", [])
+            output = value.get("output")
+            reason = str(value.get("reason", "")).strip()
+            usage = value.get("usage", {})
+            request_id = value.get("provider_request_id")
+            parallel_tool_calls = bool(value.get("parallel_tool_calls", False))
+        else:
             raise HarnessContractError("model response must be an object")
-        kind = str(value.get("kind", "")).strip()
-        raw_calls = value.get("tool_calls", [])
         if not isinstance(raw_calls, Sequence) or isinstance(raw_calls, (str, bytes)):
             raise HarnessContractError("model tool_calls must be an array")
         calls = tuple(
-            ToolCall.from_mapping(call, index=index)
+            ToolCall.from_mapping(
+                call.to_dict() if isinstance(call, ToolCall) else call,
+                index=index,
+            )
             for index, call in enumerate(raw_calls)
         )
-        usage = value.get("usage", {})
         if not isinstance(usage, Mapping):
             raise HarnessContractError("model usage must be an object")
-        request_id = value.get("provider_request_id")
         if request_id is not None and not isinstance(request_id, str):
             raise HarnessContractError("provider_request_id must be a string")
         return cls(
             kind=kind,
             tool_calls=calls,
-            output=value.get("output"),
-            reason=str(value.get("reason", "")).strip(),
-            usage=dict(usage),
+            output=_json_snapshot(output, field_name="model output"),
+            reason=str(reason).strip(),
+            usage=_json_snapshot(usage, field_name="model usage"),
             provider_request_id=request_id,
-            parallel_tool_calls=bool(value.get("parallel_tool_calls", False)),
+            parallel_tool_calls=parallel_tool_calls,
         ).validated()
 
     def validated(self) -> "HarnessModelResponse":
