@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/teaching-skill-miner/agent_harness_checkpoint.schema.json",
-  "title": "TeachLab Harness recoverable operation checkpoint",
+  "$id": "https://example.invalid/agent-harness/agent_harness_checkpoint.schema.json",
+  "title": "Agent Harness recoverable operation checkpoint",
   "type": "object",
   "required": [
     "schema",
@@ -23,7 +23,7 @@
     "checkpoint_sha256"
   ],
   "properties": {
-    "schema": {"const": "teaching_skill_miner.agent_harness_checkpoint.v1"},
+    "schema": {"const": "agent_harness.checkpoint.v1"},
     "run_id": {"type": "string", "minLength": 1, "maxLength": 160},
     "turn_id": {"type": "string", "minLength": 1, "maxLength": 160},
     "status": {"enum": ["running", "completed", "cancelled", "failed", "handoff"]},
@@ -73,14 +73,20 @@
     },
     "pendingToolEffect": {
       "type": "object",
-      "required": ["kind", "step", "call", "tool_version", "replay_policy", "arguments_sha256"],
+      "required": ["kind", "step", "call", "tool_version", "replay_policy", "arguments_sha256", "effect_started", "remaining_calls"],
       "properties": {
         "kind": {"const": "tool"},
         "step": {"type": "integer", "minimum": 1},
         "call": {"$ref": "#/$defs/toolCall"},
         "tool_version": {"type": "string", "minLength": 1, "maxLength": 64},
         "replay_policy": {"enum": ["safe", "idempotent", "never"]},
-        "arguments_sha256": {"$ref": "#/$defs/sha256"}
+        "arguments_sha256": {"$ref": "#/$defs/sha256"},
+        "effect_started": {"type": "boolean"},
+        "remaining_calls": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/toolCall"}
+        }
       },
       "additionalProperties": false
     },

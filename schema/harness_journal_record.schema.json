@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/teaching-skill-miner/harness_journal_record.schema.json",
-  "title": "TeachLab Harness hash-chained journal record",
+  "$id": "https://example.invalid/agent-harness/harness_journal_record.schema.json",
+  "title": "Agent Harness hash-chained journal record",
   "type": "object",
   "required": ["schema", "run_id", "turn_id", "sequence", "previous_hash", "event", "record_hash"],
   "properties": {
-    "schema": {"const": "teaching_skill_miner.harness_journal_record.v1"},
+    "schema": {"const": "agent_harness.journal_record.v1"},
     "run_id": {"type": "string", "minLength": 1, "maxLength": 160},
     "turn_id": {"type": "string", "minLength": 1, "maxLength": 160},
     "sequence": {"type": "integer", "minimum": 1},

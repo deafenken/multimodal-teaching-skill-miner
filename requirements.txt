@@ -1,7 +1,0 @@
-# The core now uses cryptography for durable signed/sealed authority records;
-# its supported range is declared in pyproject.toml and the production image
-# resolves it through deploy/production/python-runtime.lock with wheel hashes.
-# Install optional recognition and developer dependencies from pyproject.toml:
-#   python -m pip install -e '.[recognition,dev]'
-# External media tools are installed separately: ffmpeg/ffprobe, Tesseract OCR,
-# and the OpenAI Whisper CLI.

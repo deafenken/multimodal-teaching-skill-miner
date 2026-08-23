@@ -1,24 +1,31 @@
 # Contributing
 
-## Development setup
+Agent Harness is a domain-neutral coding-agent runtime. New changes must preserve:
+
+- one typed, continuous event stream with exactly one terminal event;
+- durable-first journal publication and atomic checkpoints;
+- central tool authorization, schema validation and bounded output;
+- built-in file/patch path confinement and explicit permission profiles;
+- no hidden reasoning, credentials or planner envelopes in user-visible output;
+- no product-domain prompts or application-specific state in the core.
+
+## Local checks
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[recognition,dev]'
-python -m pytest
+python -m pip install -e '.[dev]'
+ruff check agent_harness tests_harness
+pytest -q
+python -m build
 ```
 
-Use Python 3.10–3.13. Keep the standard-library-only core usable without recognition extras.
+Add tests for all lifecycle, security and recovery changes. Provider integrations must
+work through the generic contracts in `agent_harness/core`; do not bypass the tool
+registry or write directly to session files.
 
-## Change requirements
+Security documentation must distinguish authorization metadata from containment.
+`data_scope` controls registry eligibility; it is not a filesystem, network, process or
+memory sandbox. Likewise, session fork is a logical transcript fork, and `full-access`
+shell execution retains the current OS user's host authority.
 
-- Add tests for behavior changes and tamper tests for integrity/security boundaries.
-- Preserve exact sample ordering, identity-disjoint evaluation, nested fitting, and frozen claim contracts.
-- Mark post-selection, transductive, retrospective, synthetic, and human-provided evidence explicitly.
-- Never convert an automatic structure score into a learning-effectiveness claim.
-- Never convert an offline development score into a deployment claim.
-- Do not commit identifiable media, participant-level artifacts, credentials, or absolute local paths.
-- Use `write_json`/`write_text` for atomic generated artifacts.
-
-Before proposing a change, run `sh scripts/verify_project.sh`. Changes to a data importer, feature schema, model, gate, or evaluation protocol must update the relevant schema, documentation, fingerprint, and validation report.
+Do not commit API keys, session journals, private workspaces, build artifacts or legacy
+runtime data.

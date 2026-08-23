@@ -1,20 +1,18 @@
 Academic Evaluation License 1.0
 
-Copyright (c) 2026 Teaching Skill Miner contributors.
+Copyright (c) 2026 Agent Harness contributors.
 
 Permission is granted to use, copy, and modify the source code in this
-repository for academic evaluation, teaching, and non-commercial research,
-provided that this notice and the accompanying attribution and privacy notices
-are retained.
+repository for academic evaluation and non-commercial research, provided that
+this notice and the accompanying attribution, security, and privacy notices are
+retained.
 
 This permission does not grant rights to redistribute third-party datasets,
-videos, transcripts, trademarks, or other materials referenced by the project.
-Those materials remain governed by their original licenses and terms.
+trademarks, or other materials referenced by the project. Those materials
+remain governed by their original licenses and terms.
 
-The software must not be used as the sole basis for grading, discipline,
-admission, employment evaluation, surveillance, or other high-impact decisions
-about students or teachers. Any processing of identifiable classroom media
-requires authorization, minimization, access control, and applicable consent.
+The software must not be used as the sole basis for high-impact decisions about
+individuals, nor to bypass access controls, authorization, or applicable law.
 
 Commercial use, sublicensing, and public deployment require separate written
 permission from the relevant rights holders.

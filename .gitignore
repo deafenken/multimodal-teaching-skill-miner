@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+node_modules/
 .DS_Store
 .pytest_cache/
 .mypy_cache/
@@ -16,35 +17,22 @@ build/
 htmlcov/
 .ruff_cache/
 *.log
+/.agent-harness/
 
-# Local experiment, temporary, and presentation workspaces are intentionally
-# excluded from the public source release. Reviewed public artifacts belong in
-# artifacts/public/ and are allowlisted separately below.
+# Local and legacy runtime data is never part of the source distribution.
 /output/
 /runs/
 /tmp/
 /defense/
 /report/
 /.private/
+/artifacts/
 
-# Real classroom recordings contain identifiable people and must stay local.
+# Preserve only the boundary note; existing operator-owned data remains local.
 data/real/**
 !data/real/README.md
 
-# Generated artifacts are private/transient by default. Only reviewed aggregate
-# receipts and boundary documentation are eligible for the public repository.
-artifacts/*
-!artifacts/release_acceptance_1.2.0.json
-!artifacts/public/
-!artifacts/public/**
-!artifacts/dipser_credible/
-artifacts/dipser_credible/*
-!artifacts/dipser_credible/README.md
-!artifacts/real_classroom/
-artifacts/real_classroom/*
-!artifacts/real_classroom/README.md
-
-# Common credential and large derived-data formats.
+# Credentials, private key material and large generated data.
 *.pem
 *.key
 *.p12
