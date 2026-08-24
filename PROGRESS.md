@@ -1,8 +1,8 @@
 # Agent Harness parity progress
 
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Started**: 2026-08-24 02:49 UTC
-**Last updated**: 2026-08-24 03:54 UTC
+**Last updated**: 2026-08-24 03:55 UTC
 **Current stage**: 6. Run full acceptance, package audit, and GitHub synchronization
 
 ## TODO
@@ -11,7 +11,7 @@
 - [x] 3. Add foreground subagents, worktrees, and TUI visibility
 - [x] 4. Complete provider-neutral attachment release
 - [x] 5. Add stable Python and TypeScript SDKs
-- [ ] 6. Run full acceptance, package audit, and GitHub synchronization
+- [x] 6. Run full acceptance, package audit, and GitHub synchronization
 
 ---
 
@@ -29,3 +29,4 @@ Implemented and adversarially audited stable Python and TypeScript SDKs; 439 Pyt
 
 ### [03:54] 6. Run full acceptance, package audit, and GitHub synchronization
 Starting...
+Full acceptance passed (439 tests, 1 platform skip, 26 subtests; 19 Node tests), wheel/sdist/npm fresh-install audits passed, and GitHub exact SHA f9a595c101b60c0d676a075e99bbe3376a94b78e was verified.
