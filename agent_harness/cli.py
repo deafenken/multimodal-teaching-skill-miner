@@ -22,11 +22,12 @@ from .mcp import (
 )
 from .core.mcp_protocol import McpProtocolError
 from .providers import DeepSeekClientError, DeepSeekConfigurationError
-from .runner import AgentRunner
+from .runner import AgentRunner, default_worktree_home
 from .session import SessionStore, SessionStoreError
 from .toolsets import PERMISSION_PROFILES
 from .tui import run_tui
 from .tui_state import sanitize_terminal_text
+from .worktrees import WorktreeError, WorktreeManager, WorktreeRecord
 
 
 EXIT_COMPLETED = 0
@@ -35,6 +36,7 @@ EXIT_HANDOFF = 3
 EXIT_FAILED = 4
 EXIT_USAGE = 64
 EXIT_CONFIG = 78
+_MAX_AGENT_ARTIFACTS = 256
 
 
 class CliUsageError(ValueError):
@@ -61,6 +63,7 @@ def _runner(args: argparse.Namespace) -> AgentRunner:
         permission_mode=args.permissions or "read-only",
         deadline_seconds=args.deadline,
         max_steps=args.max_steps,
+        worktree_home=args.worktree_home,
     )
 
 
@@ -243,6 +246,93 @@ def _sessions(args: argparse.Namespace, store: SessionStore) -> int:
 
 def _status(runner: AgentRunner) -> int:
     print(_json({"schema": "agent_harness.status.v1", **runner.provider_status}))
+    return 0
+
+
+def _worktree_metadata(
+    record: WorktreeRecord,
+    *,
+    include_path: bool = False,
+) -> dict[str, Any]:
+    """Return content-free lifecycle metadata, optionally with one child path."""
+
+    metadata: dict[str, Any] = {
+        "schema": record.schema,
+        "worktree_id": record.worktree_id,
+        "phase": record.phase,
+        "baseline_commit": record.baseline_commit,
+        "baseline_manifest_sha256": record.baseline_manifest_sha256,
+        "created_at": record.created_at,
+    }
+    if include_path:
+        metadata["worktree_path"] = record.worktree_path
+    return metadata
+
+
+def _agents(args: argparse.Namespace) -> int:
+    """Inspect retained child artifacts without constructing a provider client."""
+
+    if args.path and args.worktree_id is None:
+        raise CliUsageError("--path requires WORKTREE_ID")
+    store = SessionStore(Path(args.cwd), state_home=args.state_home)
+    selected_home = (
+        Path(args.worktree_home).expanduser()
+        if args.worktree_home is not None
+        else default_worktree_home()
+    )
+    manager = WorktreeManager(
+        store.workspace,
+        state_directory=store.root / "worktrees",
+        worktree_home=selected_home,
+    )
+
+    if args.worktree_id is None:
+        records = manager.list_records(limit=_MAX_AGENT_ARTIFACTS)
+        metadata = [_worktree_metadata(record) for record in records]
+        if args.json:
+            print(
+                _json(
+                    {
+                        "schema": "agent_harness.worktree_list.v1",
+                        "worktrees": metadata,
+                    }
+                )
+            )
+            return 0
+        if not metadata:
+            print("No subagent worktrees.")
+            return 0
+        for item in metadata:
+            manifest = item.get("baseline_manifest_sha256")
+            manifest_text = str(manifest)[:12] if manifest else "pending"
+            print(
+                f"{item['worktree_id']}  {item['phase']}  "
+                f"{str(item['baseline_commit'])[:12]}  {manifest_text}  "
+                f"{sanitize_terminal_text(str(item['created_at']))}"
+            )
+        return 0
+
+    record = manager.get(args.worktree_id)
+    metadata = _worktree_metadata(record, include_path=args.path)
+    if args.json:
+        print(
+            _json(
+                {
+                    "schema": "agent_harness.worktree_status.v1",
+                    "worktree": metadata,
+                }
+            )
+        )
+    elif args.path:
+        print(sanitize_terminal_text(record.worktree_path))
+    else:
+        manifest = metadata.get("baseline_manifest_sha256")
+        manifest_text = str(manifest)[:12] if manifest else "pending"
+        print(
+            f"{metadata['worktree_id']}  {metadata['phase']}  "
+            f"{str(metadata['baseline_commit'])[:12]}  {manifest_text}  "
+            f"{sanitize_terminal_text(str(metadata['created_at']))}"
+        )
     return 0
 
 
@@ -548,6 +638,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="active subdirectory inside the workspace for scoped instructions",
     )
     parser.add_argument("--state-home")
+    parser.add_argument(
+        "--worktree-home",
+        help="private directory for isolated subagent worktrees",
+    )
     parser.add_argument("--api-key-file")
     parser.add_argument("--model")
     parser.add_argument(
@@ -574,6 +668,18 @@ def build_parser() -> argparse.ArgumentParser:
     sessions = subparsers.add_parser("sessions", help="list saved sessions")
     sessions.add_argument("--all", action="store_true")
     sessions.add_argument("--json", action="store_true")
+
+    agents = subparsers.add_parser(
+        "agents",
+        help="list retained foreground-subagent worktree artifacts",
+    )
+    agents.add_argument("worktree_id", nargs="?", metavar="WORKTREE_ID")
+    agents.add_argument(
+        "--path",
+        action="store_true",
+        help="include the selected artifact's isolated worktree path",
+    )
+    agents.add_argument("--json", action="store_true")
 
     archive = subparsers.add_parser("archive", help="archive a saved session")
     archive.add_argument("session_id")
@@ -669,6 +775,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _hooks(args)
         if args.command == "mcp":
             return _mcp(args)
+        if args.command == "agents":
+            return _agents(args)
         if args.command in {"sessions", "archive", "fork", "effects", "reconcile"}:
             store = SessionStore(Path(args.cwd), state_home=args.state_home)
             if args.command == "sessions":
@@ -726,6 +834,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         ValueError,
     ) as exc:
         print(f"harness: {exc}", file=sys.stderr)
+        return EXIT_CONFIG
+    except WorktreeError:
+        # Worktree failures may be caused by tampered records.  Do not echo the
+        # original message because it can contain untrusted or private paths.
+        print("harness: isolated worktree state is unavailable", file=sys.stderr)
         return EXIT_CONFIG
     except DeepSeekClientError as exc:
         print(f"harness: provider request failed: {exc}", file=sys.stderr)

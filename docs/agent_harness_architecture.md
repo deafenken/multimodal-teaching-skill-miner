@@ -8,12 +8,14 @@ TUI / headless CLI
 Session Store
         │
 Harness Runtime
- ┌──────┼──────────────────────┐
-Provider Adapter   Tool Registry       Event/Journal
-                 ┌─────┴───────────┐
-        Trusted Hook Broker   Frozen MCP Catalog
-                 │                 │
-                 └──── Workspace Toolset / Seatbelt
+ ┌──────┼─────────────────────────────┐
+Provider Adapter      Tool Registry          Event/Journal
+                 ┌────────┼─────────────┐
+        Trusted Hook   Frozen MCP   Foreground Subagents
+           Broker       Catalog             │
+                 └────────┼────────── isolated worktrees
+                          │
+                 Workspace Toolset / Seatbelt
 ```
 
 The core is domain-neutral. It knows runs, turns, model decisions, tools, permissions,
@@ -43,9 +45,13 @@ events, budgets and recovery; application-domain models stay outside the package
 9. Validate and settle tools centrally. After the final success or failure, synchronously
    run the observe-only `PostToolUse` or `PostToolUseFailure` hook before emitting the final
    tool settlement. Every tool and hook effect has typed lifecycle evidence.
-10. Feed bounded observations to the next model step.
-11. Stream final assistant text, commit one terminal event and atomically checkpoint.
-12. Atomically append the authoritative assistant message and settle the session run.
+10. If the selected tool is `agent.delegate`, approve the exact batch once, atomically reserve
+    the in-process fan-out budget, create one clean-HEAD Git worktree per child behind the
+    repository-common lock, run 1–4 child sessions concurrently, propagate cancellation and
+    join them all. Return only bounded summaries/opaque IDs; never merge child changes.
+11. Feed bounded observations to the next model step.
+12. Stream final assistant text, commit one terminal event and atomically checkpoint.
+13. Atomically append the authoritative assistant message and settle the session run.
 
 ## Invariants
 
@@ -88,6 +94,21 @@ events, budgets and recovery; application-domain models stay outside the package
   retained and each summary is bound to a stable-ID prefix digest and parent digest.
 - A history summary is user data inside the provider JSON envelope, never a system message
   or a new authorization source. Planner and answer receive the same summary and suffix.
+- `agent.delegate` is high-risk, never replayed and never persistently approved. Its child
+  authority is a dynamic subset of the parent and is capped at `workspace-write`; child
+  runners have no host command, MCP, command hooks, persistent approval or nested delegation.
+- One subagent batch is foreground wait-all. Every started child settles or is cancelled and
+  joined before the parent tool settles. Budget counters are per runner process; only Git
+  common-directory mutation locking is cross-process.
+- Child summaries and lifecycle are separate contracts: the provider may see bounded summary
+  evidence, while public progress contains only batch `count`/`depth` and child opaque
+  `agent_id`/`depth`/`ordinal`/`status`. Neither channel contains hidden reasoning, raw exceptions
+  or worktree paths.
+- A worktree can be automatically removed only when clean Git status, no-follow manifest,
+  administrative mapping, exact lock reason and baseline ref all agree. Otherwise any artifact
+  that still exists is preserved. If checkout removal has already succeeded and only ref CAS
+  deletion fails, the branch and `ref_preserved` record remain without a checkout. There is no
+  force/reset/clean/prune or automatic merge/apply/commit/push/PR path.
 
 ## Interfaces
 
@@ -109,6 +130,10 @@ events, budgets and recovery; application-domain models stay outside the package
   catalog state. `mcp trust|disable ... --sha256 DIGEST` records an exact decision,
   `mcp refresh SERVER_ID` freezes a catalog and `mcp revoke SERVER_ID` removes trust. TUI
   `/mcp` is inspection-only and never starts a server.
+- `harness agents [WORKTREE_ID] [--path] [--json]`: inspect preserved child artifacts without
+  constructing a provider. Lists and normal detail are path-free; only one exact ID plus
+  `--path` reveals its worktree path. TUI `/agents` combines content-free live status and
+  retained artifact metadata.
 
 ## Trusted command-hook subset
 
@@ -192,13 +217,51 @@ hashed transiently but never persisted. Only byte count, truncation state and SH
 returned to a local refresh caller. Server instructions/info are represented in the frozen
 catalog by digests, not raw text.
 
+## Foreground subagent and worktree subset
+
+The model-visible surface is one `agent.delegate` tool whose schema accepts 1–4 unique task
+IDs, bounded prompts and a requested `read-only`/`workspace-write` child mode. A thread-safe
+ledger atomically enforces batch, global-active, parent-active, depth and total-per-root
+limits. The shipped configuration has maximum depth one and maximum concurrency/total four.
+The scheduler starts true concurrent workers but returns their results in input order. Parent
+cancellation is fanned out, reconciliation in any child cancels its siblings, and executor
+shutdown waits for every child before the tool can settle.
+
+The runner adapter allocates a fresh child session in a dedicated Git worktree, using the same
+provider/model without inheriting the parent's transcript. It receives the direct delegated
+prompt, bounded prompt/output/path-free lineage metadata (including the validated caller task
+ID), the standard Harness system context and the child's ordinary project-instruction snapshot.
+Executable project hooks, MCP, host commands and further subagents are disabled. Persistent
+approval is globally capped off in the child execution-policy hash. The once-only child broker
+can approve only a patch or sandboxed command that already passed the child's registry,
+permission, scope and schema checks.
+
+`WorktreeManager` accepts only an exact clean committed `HEAD`. It writes a provisional 0600
+record before Git mutation, creates opaque worktree/branch identities with `--no-checkout`,
+performs a controlled checkout with project execution/config extensions disabled, verifies
+the linked-worktree administrative mapping and exact lock reason, then stores a bounded
+no-follow manifest. All Git calls use a trusted absolute executable, direct argv, scrubbed
+environment and a common-Git-directory lock. The state directory, worktree home and source
+repository must be canonical owner-controlled, disjoint paths.
+
+On successful child completion the manager attempts only `remove_if_pristine`. Any modified
+status, manifest, pre-remove ref, mapping, lock or phase preserves artifacts that still exist.
+A post-remove ref race uses compare-and-swap deletion and preserves the branch plus a
+`ref_preserved` record on mismatch, but the checkout has already been removed. The public runner
+projection excludes repository, common Git directory, worktree/Git paths, branch refs and lock
+reason. This is file-collision isolation, not process/credential/network security isolation,
+and it intentionally omits background threads, resume/steer, custom agents, automatic
+integration and teams.
+
 ## Permission profiles
 
-- `read-only`: workspace list/read/search.
+- `read-only`: workspace list/read/search plus high-risk delegation to read-only children.
 - `workspace-write`: read-only tools plus, when macOS Seatbelt is available, unified patch
-  application and `process.exec`. Both patch phases and commands use the same policy class.
+  application and `process.exec`; it may delegate read-only or worktree-write children. Both
+  patch phases and commands use the same policy class.
 - `full-access`: workspace-write plus the separate unsandboxed `process.exec_host` tool and
-  exact-trusted/frozen local MCP tools when their Seatbelt backend is available.
+  exact-trusted/frozen local MCP tools when their Seatbelt backend is available. Delegated
+  children remain capped at `workspace-write` and never inherit those two full-access tools.
 
 `workspace.patch` and the sandboxed command tool are registered only when the macOS Seatbelt
 backend is available; other platforms fail closed instead of substituting an unsafe writer.
@@ -217,8 +280,8 @@ and daemonization can escape the Harness process-group cleanup.
 
 Session resume restores settled transcript state and always defaults back to `read-only`.
 Session fork copies transcript, compaction lineage and metadata only; it does not isolate
-environment variables, provider clients, process memory or worktrees. An unfinished/uncertain run in any session,
-including an archived session, blocks new runs across the whole workspace. `/effects` or
+environment variables, provider clients, process memory or worktrees. An unfinished/uncertain
+run in any session, including an archived session, blocks new runs across the whole workspace. `/effects` or
 `harness effects` lists it; `/reconcile RUN_ID` or `harness reconcile RUN_ID` records the
 operator's acknowledgement and clears the fence as a handoff without verifying the effect.
 
@@ -227,4 +290,6 @@ decisions support once/session/workspace scopes; only the exact tool version and
 argument digest persist. Approval events omit raw arguments, but private checkpoints may
 retain a pending call so safe/idempotent recovery can be evaluated; users should not place
 secrets in command, patch or MCP arguments. Full hooks parity, broader MCP transports/features
-and subagents remain in the staged backlog in `docs/harness_parity_matrix.md`.
+and broader background/configurable agent orchestration remain staged in
+`docs/harness_parity_matrix.md`; the shipped subagent surface is only the bounded foreground
+worktree subset described above.

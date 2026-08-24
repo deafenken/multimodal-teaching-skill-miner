@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.5.0 — Isolated foreground subagents
+
+- Added one provider-visible `agent.delegate` capability for a high-risk, never-replay,
+  foreground wait-all batch of 1–4 child tasks. Child work is truly concurrent, results remain
+  in input order, parent cancellation propagates, reconciliation cancels siblings, and every
+  started child is joined before the parent tool settles.
+- Added atomic in-process batch/global/parent/depth/total budgets. The default depth is one and
+  total/concurrent child limit is four. This does not claim a cross-process global scheduler.
+- Added child sessions with bounded prompt/output/path-free lineage metadata, untrusted-result
+  prompt-injection boundaries and no hidden reasoning channel. Children receive at most
+  `workspace-write` and have no host command, MCP, executable project hooks, nested delegation
+  or persistent approvals.
+- Added a run-level persistent-approval cap bound into the execution-policy/checkpoint digest.
+  The exact parent batch needs one fresh approval; inside that authority, only centrally
+  authorized child patch/sandbox-command requests can receive an automatic once-only allow.
+- Added fail-closed Git worktree management from exact clean committed `HEAD`: opaque
+  branch/path IDs, cross-process common-Git-directory lock, direct absolute Git argv, scrubbed
+  environment/config, provisional durable records, linked-worktree/lock verification and a
+  bounded no-follow baseline manifest.
+- Added pristine-only normal worktree removal plus compare-and-swap ref deletion. Changed,
+  committed, structurally suspicious or uncertain artifacts that still exist are preserved. A
+  post-remove ref race retains the branch and record after the checkout is gone; there is no
+  force/reset/clean/prune or automatic merge/apply/commit/push/PR behavior.
+- Added `harness agents [WORKTREE_ID] [--path] [--json]`, TUI `/agents`, active-agent status and
+  typed public lifecycle projection. Default views omit local paths; one explicit ID plus
+  `--path` is required to reveal a retained worktree path.
+- Explicitly do not claim background/resumable/steerable agent threads, custom agents/model
+  routing, nested delegation, team coordination, automatic integration or full Claude
+  Code/Codex subagent parity.
+
 ## 2.4.0 — Exact-trust local MCP stdio tools
 
 - Added an intentionally narrow MCP tools client subset pinned to protocol version

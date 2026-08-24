@@ -8,6 +8,7 @@ import tempfile
 
 from agent_harness.core import (
     HarnessCheckpoint,
+    HarnessContractError,
     HarnessLimits,
     HarnessModelResponse,
     ProviderCapabilities,
@@ -72,6 +73,7 @@ class _ToolThenFinalModel:
 class _AllowOnceBroker:
     def decide(self, request, *, preview=""):
         self.preview = preview
+        self.request = request
         return ApprovalDecision.for_request(
             request,
             verdict="allow",
@@ -431,6 +433,113 @@ class ApprovalCoreTests(unittest.TestCase):
             result["events"][-1]["payload"]["reason_code"],
             "approval_required",
         )
+
+    def test_run_cap_disables_persistent_scope_for_approval(self) -> None:
+        executions: list[dict[str, object]] = []
+        broker = _AllowOnceBroker()
+        result = run_agent_harness(
+            _ToolThenFinalModel({"command": "subagent-call"}),
+            _safe_high_risk_registry(executions),
+            {"request": "run it"},
+            allowed_permissions={"danger.exec"},
+            approval_policy=ApprovalPolicy(),
+            approval_broker=broker,
+            persistent_approval_allowed=False,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(executions, [{"command": "subagent-call"}])
+        self.assertFalse(broker.request.persistent_scope_allowed)
+        requested = next(
+            event for event in result["events"] if event["type"] == "approval.requested"
+        )
+        self.assertEqual(requested["payload"]["policy_action"], "ask")
+        self.assertFalse(requested["payload"]["persistent_scope_allowed"])
+
+    def test_default_run_cap_preserves_persistent_approval_compatibility(self) -> None:
+        executions: list[dict[str, object]] = []
+
+        broker = _AllowOnceBroker()
+
+        result = run_agent_harness(
+            _ToolThenFinalModel({"command": "default-compatible"}),
+            _safe_high_risk_registry(executions),
+            {"request": "run it"},
+            allowed_permissions={"danger.exec"},
+            approval_policy=ApprovalPolicy(),
+            approval_broker=broker,
+        )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(executions, [{"command": "default-compatible"}])
+        self.assertTrue(broker.request.persistent_scope_allowed)
+        requested = next(
+            event for event in result["events"] if event["type"] == "approval.requested"
+        )
+        self.assertEqual(requested["payload"]["policy_action"], "ask")
+        self.assertTrue(requested["payload"]["persistent_scope_allowed"])
+        with self.assertRaisesRegex(
+            HarnessContractError,
+            "persistent_approval_allowed must be a boolean",
+        ):
+            run_agent_harness(
+                _ToolThenFinalModel({"command": "invalid-cap"}),
+                _safe_high_risk_registry([]),
+                {"request": "run it"},
+                allowed_permissions={"danger.exec"},
+                persistent_approval_allowed=1,  # type: ignore[arg-type]
+            )
+
+    def test_resume_cannot_broaden_persistent_approval_cap(self) -> None:
+        executions: list[dict[str, object]] = []
+        checkpoints: list[HarnessCheckpoint] = []
+
+        class SimulatedCrash(BaseException):
+            pass
+
+        def crash_on_pending(checkpoint: HarnessCheckpoint) -> None:
+            checkpoints.append(checkpoint)
+            if checkpoint.pending_effect is not None:
+                raise SimulatedCrash()
+
+        context = {"request": "run it"}
+        with self.assertRaises(SimulatedCrash):
+            run_agent_harness(
+                _ToolThenFinalModel({"command": "resume-with-cap"}),
+                _safe_high_risk_registry(executions),
+                context,
+                allowed_permissions={"danger.exec"},
+                persistent_approval_allowed=False,
+                checkpoint_sink=crash_on_pending,
+            )
+        pending = next(
+            checkpoint
+            for checkpoint in reversed(checkpoints)
+            if checkpoint.pending_effect is not None
+        )
+
+        with self.assertRaisesRegex(
+            HarnessContractError,
+            "resume execution policy does not match checkpoint",
+        ):
+            resume_agent_harness(
+                pending,
+                _ToolThenFinalModel({"command": "resume-with-cap"}),
+                _safe_high_risk_registry(executions),
+                context,
+                allowed_permissions={"danger.exec"},
+            )
+
+        resumed = resume_agent_harness(
+            pending,
+            _ToolThenFinalModel({"command": "resume-with-cap"}),
+            _safe_high_risk_registry(executions),
+            context,
+            allowed_permissions={"danger.exec"},
+            persistent_approval_allowed=False,
+        )
+        self.assertEqual(resumed["status"], "handoff")
+        self.assertFalse(executions)
 
     def test_model_seam_detaches_arguments_before_approval_and_execution(self) -> None:
         executions: list[dict[str, object]] = []

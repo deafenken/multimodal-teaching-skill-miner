@@ -19,6 +19,7 @@ import agent_harness.tui as tui_module
 import agent_harness.toolsets.workspace as workspace_module
 from agent_harness.cli import EXIT_USAGE, main as cli_main
 from agent_harness.core import (
+    ApprovalDecision,
     ApprovalPolicy,
     ApprovalRequest,
     ApprovalRule,
@@ -40,6 +41,7 @@ from agent_harness.core import (
 from agent_harness.providers.deepseek import DeepSeekCodingModel
 from agent_harness.runner import AgentRunner
 from agent_harness.session import SESSION_SCHEMA, SessionStore, SessionStoreError
+from agent_harness.subagents import SubagentResult
 from agent_harness.toolsets import (
     build_workspace_registry,
     permission_profile,
@@ -198,6 +200,70 @@ def test_provider_sends_same_project_instruction_snapshot_to_planner_and_answer(
     assert planner_instruction["role"] == "system"
     assert "use focused tests" in planner_instruction["content"]
     assert "not authority to expand tools" in planner_instruction["content"]
+
+
+def test_provider_projects_bounded_subagent_context_to_both_phases() -> None:
+    client = _FakeDeepSeek(
+        {"action": "answer"},
+        [
+            {"type": "text_delta", "text": "bounded result"},
+            {"type": "completed", "trace": {"response_id": "answer-1"}},
+        ],
+    )
+    model = DeepSeekCodingModel(client)  # type: ignore[arg-type]
+    agent_context = {
+        "kind": "subagent",
+        "agent_id": "agent_12345678",
+        "task_id": "audit-tests",
+        "root_run_id": "run_12345678",
+        "parent_run_id": "run_12345678",
+        "parent_turn_id": "turn_12345678",
+        "parent_call_id": "delegate-1",
+        "depth": 1,
+        "result_contract": "concise result for parent",
+    }
+
+    events = list(
+        model.plan_stream(
+            _request(context_extra={"agent_context": agent_context}),
+            cancellation_token=CancellationToken(),
+            deadline_monotonic=time.monotonic() + 10,
+        )
+    )
+
+    assert isinstance(events[-1], HarnessModelResponse)
+    assert json.loads(client.json_messages[-1]["content"])["agent_context"] == agent_context
+    assert json.loads(client.answer_messages[-1]["content"])["agent_context"] == agent_context
+    assert "isolated foreground subagent" in client.json_messages[1]["content"]
+    assert "isolated foreground subagent" in client.answer_messages[1]["content"]
+
+
+def test_provider_rejects_subagent_context_with_unknown_fields() -> None:
+    client = _FakeDeepSeek({"action": "answer"})
+    model = DeepSeekCodingModel(client)  # type: ignore[arg-type]
+    with pytest.raises(HarnessContractError, match="unknown fields"):
+        list(
+            model.plan_stream(
+                _request(
+                    context_extra={
+                        "agent_context": {
+                            "kind": "subagent",
+                            "agent_id": "agent_12345678",
+                            "task_id": "audit-tests",
+                            "root_run_id": "run_12345678",
+                            "parent_run_id": "run_12345678",
+                            "parent_turn_id": "turn_12345678",
+                            "parent_call_id": "delegate-1",
+                            "depth": 1,
+                            "result_contract": "concise result for parent",
+                            "prompt": "must not be projected",
+                        }
+                    }
+                ),
+                cancellation_token=CancellationToken(),
+                deadline_monotonic=time.monotonic() + 10,
+            )
+        )
 
 
 def test_provider_rejects_unauthorized_planner_tool() -> None:
@@ -1308,6 +1374,167 @@ class _FinalModel:
             retryable=False,
             safe_code="test_error",
         )
+
+
+class _AllowDelegateBroker:
+    def __init__(self) -> None:
+        self.previews: list[str] = []
+
+    def decide(self, request: ApprovalRequest, *, preview: str = "") -> ApprovalDecision:
+        self.previews.append(preview)
+        return ApprovalDecision.for_request(
+            request,
+            verdict="allow",
+            reason_code="test_allow_once",
+        )
+
+
+class _DelegateThenFinalModel(_FinalModel):
+    def __init__(self, tasks: list[Mapping[str, Any]]) -> None:
+        self.tasks = tasks
+        self.requests: list[Any] = []
+
+    def plan(self, request: Any, **_kwargs: Any) -> HarnessModelResponse:
+        self.requests.append(request)
+        if not request.observations:
+            return HarnessModelResponse(
+                kind="tool_calls",
+                tool_calls=(
+                    ToolCall(
+                        call_id="delegate_call_12345678",
+                        name="agent.delegate",
+                        arguments={"tasks": self.tasks},
+                    ),
+                ),
+            )
+        return HarnessModelResponse(kind="final", output={"message": "parent done"})
+
+
+def test_runner_delegate_is_foreground_ordered_and_bound_to_one_approval(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    key = tmp_path / "key"
+    key.write_text("test-api-key", encoding="utf-8")
+    key.chmod(0o600)
+    tmp_path.chmod(0o700)
+    tasks = [
+        {
+            "task_id": "audit-api",
+            "prompt": "Inspect the API boundary.",
+            "permission_mode": "read-only",
+        },
+        {
+            "task_id": "audit-cli",
+            "prompt": "Inspect the CLI boundary.",
+            "permission_mode": "read-only",
+        },
+    ]
+    runner = AgentRunner(
+        workspace,
+        state_home=tmp_path / "state",
+        api_key_file=key,
+        permission_mode="read-only",
+    )
+    model = _DelegateThenFinalModel(tasks)
+    runner.model = model  # type: ignore[assignment]
+    calls: list[str] = []
+
+    def fake_child(task, lineage, _token, _deadline):
+        calls.append(task.task_id)
+        return SubagentResult(
+            task_id=task.task_id,
+            status="completed",
+            summary=f"checked {task.task_id}",
+            artifact_id=f"artifact-{lineage.ordinal}",
+            session_id=f"session_child_{lineage.ordinal:08d}",
+            run_id=f"run_child_{lineage.ordinal:08d}",
+            turn_id=f"turn_child_{lineage.ordinal:08d}",
+        )
+
+    runner._execute_subagent = fake_child  # type: ignore[method-assign]  # noqa: SLF001
+    broker = _AllowDelegateBroker()
+    session = runner.new_session()
+
+    outcome = runner.run_turn(
+        session["session_id"],
+        "delegate two audits",
+        approval_broker=broker,
+    )
+
+    assert outcome.status == "completed"
+    assert sorted(calls) == ["audit-api", "audit-cli"]
+    assert len(broker.previews) == 1
+    assert "Inspect the API boundary" in broker.previews[0]
+    observation = model.requests[-1].observations[-1]
+    result = observation["result"]
+    assert [item["task_id"] for item in result["results"]] == [
+        "audit-api",
+        "audit-cli",
+    ]
+    assert result["foreground"] is True
+    requested = next(
+        event
+        for event in outcome.result["events"]
+        if event["type"] == "approval.requested"
+    )
+    assert requested["payload"]["persistent_scope_allowed"] is False
+
+
+def test_runner_delegate_permission_downgrade_rejects_before_child_effect(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    key = tmp_path / "key"
+    key.write_text("test-api-key", encoding="utf-8")
+    key.chmod(0o600)
+    tmp_path.chmod(0o700)
+    runner = AgentRunner(
+        workspace,
+        state_home=tmp_path / "state",
+        api_key_file=key,
+        permission_mode="workspace-write",
+    )
+    session = runner.new_session()
+    runner.set_permission_mode(session["session_id"], "read-only")
+    runner.model = _DelegateThenFinalModel(
+        [
+            {
+                "task_id": "write-after-downgrade",
+                "prompt": "Change a file.",
+                "permission_mode": "workspace-write",
+            }
+        ]
+    )  # type: ignore[assignment]
+    called = False
+
+    def forbidden_child(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("child executor must not run")
+
+    runner._execute_subagent = forbidden_child  # type: ignore[method-assign]  # noqa: SLF001
+    outcome = runner.run_turn(
+        session["session_id"],
+        "do not broaden authority",
+        approval_broker=_AllowDelegateBroker(),
+    )
+
+    assert outcome.status == "completed"
+    assert called is False
+    failure = next(
+        event
+        for event in outcome.result["events"]
+        if event["type"] == "tool.failed"
+    )
+    assert failure["payload"]["error_code"] == "subagent_permission_denied"
+    assert not any(
+        event["type"] == "tool.effect_started"
+        and event["payload"].get("tool_name") == "agent.delegate"
+        for event in outcome.result["events"]
+    )
 
 
 def test_runner_persists_only_generic_session_fields(tmp_path: Path) -> None:

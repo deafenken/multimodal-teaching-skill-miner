@@ -737,6 +737,16 @@ def _approval_preview(spec: ToolSpec, arguments: Mapping[str, Any]) -> str:
                 if len(paths) >= 12:
                     break
             return "patch: " + (", ".join(paths) if paths else "workspace changes")
+    if spec.name == "agent.delegate":
+        tasks = arguments.get("tasks")
+        if isinstance(tasks, list):
+            preview = json.dumps(
+                _redacted_approval_value({"tasks": tasks}),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            return ("isolated foreground subagents:\n" + preview)[:20_000]
     if spec.name.startswith("mcp."):
         preview = json.dumps(
             _redacted_approval_value(arguments),
@@ -765,6 +775,7 @@ def execute_tool_call(
     effect_started_sink: Callable[[], None] | None = None,
     approval_policy: ApprovalPolicy | None = None,
     approval_broker: ApprovalBroker | None = None,
+    persistent_approval_allowed: bool = True,
     tool_hook_broker: ToolHookBroker | None = None,
     hook_effect_started_sink: Callable[[], None] | None = None,
 ) -> tuple[ToolExecutionResult, dict[str, Any] | None]:
@@ -778,6 +789,10 @@ def execute_tool_call(
         approval_policy = ApprovalPolicy()
     elif not isinstance(approval_policy, ApprovalPolicy):
         raise HarnessContractError("approval_policy must be an ApprovalPolicy")
+    if type(persistent_approval_allowed) is not bool:
+        raise HarnessContractError(
+            "persistent_approval_allowed must be a boolean"
+        )
     if tool_hook_broker is not None and not isinstance(
         tool_hook_broker, ToolHookBroker
     ):
@@ -1090,6 +1105,7 @@ def execute_tool_call(
         risk=spec.risk,
         persistent_scope_allowed=(
             spec.persistent_approval_allowed
+            and persistent_approval_allowed
             and pre_hook_decision.action != "ask"
         ),
     )

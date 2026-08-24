@@ -49,6 +49,52 @@ def _required_integer(
         raise HarnessContractError(f"{field} is invalid for this event")
 
 
+_SUBAGENT_PROGRESS_FIELDS: dict[str, tuple[str, ...]] = {
+    "subagent.batch_started": ("count", "depth"),
+    "subagent.child_started": ("agent_id", "depth", "ordinal"),
+    "subagent.child_finished": ("agent_id", "depth", "ordinal", "status"),
+    "subagent.batch_finished": ("count", "depth"),
+}
+
+
+def _validate_subagent_progress(payload: Mapping[str, Any]) -> None:
+    """Keep delegated-agent lifecycle metadata content-free and typed."""
+
+    progress_kind = str(payload.get("progress_kind", ""))
+    expected = _SUBAGENT_PROGRESS_FIELDS.get(progress_kind)
+    if expected is None:
+        return
+    if payload.get("tool_name") != "agent.delegate":
+        raise HarnessContractError("subagent progress requires agent.delegate")
+    progress = payload.get("progress")
+    if not isinstance(progress, Mapping) or set(progress) != set(expected):
+        raise HarnessContractError("subagent progress fields are invalid")
+    if "count" in expected:
+        _required_integer(progress, "count", minimum=1)
+        if int(progress["count"]) > 4:
+            raise HarnessContractError("subagent progress count is invalid")
+    _required_integer(progress, "depth", minimum=1)
+    if int(progress["depth"]) > 8:
+        raise HarnessContractError("subagent progress depth is invalid")
+    if "ordinal" in expected:
+        _required_integer(progress, "ordinal", minimum=0)
+        if int(progress["ordinal"]) > 255:
+            raise HarnessContractError("subagent progress ordinal is invalid")
+    if "agent_id" in expected:
+        agent_id = progress.get("agent_id")
+        if (
+            not isinstance(agent_id, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", agent_id) is None
+        ):
+            raise HarnessContractError("subagent progress agent_id is invalid")
+    if "status" in expected and progress.get("status") not in {
+        "completed",
+        "failed",
+        "cancelled",
+    }:
+        raise HarnessContractError("subagent progress status is invalid")
+
+
 def _validate_event_payload(event_type: str, payload: Mapping[str, Any]) -> None:
     """Validate the semantic payload contract before durable persistence.
 
@@ -240,6 +286,7 @@ def _validate_event_payload(event_type: str, payload: Mapping[str, Any]) -> None
             _required_integer(payload, "attempt", minimum=1)
         if event_type == "tool.progress":
             _required_text(payload, "progress_kind", limit=80)
+            _validate_subagent_progress(payload)
         if event_type in {"tool.failed", "tool.rejected"}:
             _required_text(payload, "error_code", limit=128)
         if event_type == "tool.completed":
@@ -596,6 +643,21 @@ def public_event_projection(event: Mapping[str, Any]) -> dict[str, Any]:
         source = {}
     allowed = _PUBLIC_PAYLOAD_FIELDS.get(event_type, ())
     payload = {name: deepcopy(source[name]) for name in allowed if name in source}
+    progress_kind = payload.get("progress_kind")
+    expected = (
+        _SUBAGENT_PROGRESS_FIELDS.get(progress_kind)
+        if isinstance(progress_kind, str)
+        else None
+    )
+    raw_progress = source.get("progress")
+    if expected is not None and isinstance(raw_progress, Mapping):
+        # These fields are deliberately content-free. Prompts, child output,
+        # worktree paths, and raw exceptions never enter the public trace.
+        payload["progress"] = {
+            name: deepcopy(raw_progress[name])
+            for name in expected
+            if name in raw_progress
+        }
     return {
         "schema": event.get("schema"),
         "event_id": event.get("event_id"),

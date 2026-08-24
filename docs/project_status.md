@@ -1,7 +1,7 @@
 # Project status
 
 Status: **engineering preview**
-Version: **2.4.0**
+Version: **2.5.0**
 
 ## Implemented
 
@@ -28,6 +28,13 @@ Version: **2.4.0**
   diagnostics;
 - stable message identities, append-only transcripts, provider-generated summary lineage,
   active-context projection, manual `/compact` and bounded 80%→60% automatic compaction;
+- one bounded foreground `agent.delegate` batch: 1–4 concurrent child sessions, parent
+  cancellation and wait-all settlement, dynamic read-only/workspace-write child cap, no child
+  host/MCP/hooks/nesting/persistent approval, and typed content-free lifecycle status;
+- exact clean-HEAD Git worktree isolation with opaque durable records, cross-process
+  common-directory mutation locking, direct trusted Git execution, pristine-only non-force
+  cleanup, conservative artifact preservation (with an explicit post-remove ref-race exception),
+  and path-redacted CLI/TUI artifact inspection;
 - curses TUI and headless text/JSONL commands;
 - macOS double-click launcher;
 - unit, contract, security, persistence and reducer tests.
@@ -50,7 +57,12 @@ Version: **2.4.0**
   environment values;
 - containment of an MCP server allowed to fork and then daemonize outside the Harness process
   group; descendants retain the Seatbelt/network authority explicitly granted to that server;
-- `CLAUDE.md` compatibility or subagents;
+- `CLAUDE.md` compatibility;
+- complete Claude Code/Codex subagent parity: no background/resume/steer or agent-thread
+  switching, custom agent definitions/model routing, nested delegation, team coordination,
+  automatic merge/apply/commit/push/PR, or cross-process global fan-out budget;
+- worktree isolation as a process, credential, OS-principal, host-read, IPC or network security
+  boundary; it isolates checkout writes and shares the Git object database/refs;
 - full Claude Code/Codex hooks parity: only the three synchronous tool lifecycle events are
   implemented, with no async hooks, input rewriting or other run/session/model events;
 - a provider-neutral compaction implementation beyond the current DeepSeek adapter;

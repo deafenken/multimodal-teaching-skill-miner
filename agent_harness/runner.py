@@ -5,14 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
+import sys
+from threading import Lock
 import time
 from typing import Any, Callable, Mapping
+from urllib.parse import quote
 from uuid import uuid4
 
 from .core import (
+    ApprovalDecision,
     ApprovalBroker,
     ApprovalPolicy,
+    ApprovalRequest,
     CancellationToken,
+    HarnessCancelled,
+    HarnessDeadlineExceeded,
     HarnessJournal,
     HarnessLimits,
     RetryPolicy,
@@ -35,12 +43,21 @@ from .mcp import (
 )
 from .providers import DeepSeekClient, DeepSeekCodingModel, DeepSeekConfig
 from .session import SessionStore, SessionStoreError
+from .subagents import (
+    SubagentLimits,
+    SubagentLineage,
+    SubagentResult,
+    SubagentScheduler,
+    SubagentTask,
+    register_subagent_tool,
+)
 from .toolsets import (
     PERMISSION_PROFILES,
     build_workspace_registry,
     permission_profile,
     workspace_sandbox_status,
 )
+from .worktrees import WorktreeError, WorktreeManager
 
 
 EventSink = Callable[[Mapping[str, Any]], None]
@@ -50,6 +67,73 @@ _CONTEXT_SAFETY_MARGIN_TOKENS = 512
 _AUTO_COMPACTION_TRIGGER_RATIO = 0.80
 _AUTO_COMPACTION_TARGET_RATIO = 0.60
 _MAX_COMPACTION_PASSES = 8
+_SUBAGENT_ARTIFACT_SCHEMA = "agent_harness.subagent_artifacts.v1"
+_MAX_SUBAGENT_ARTIFACTS = 256
+
+
+class _DelegatedChildApprovalBroker:
+    """One-run authority granted by the approved, isolated delegate call."""
+
+    _ALLOWED_TOOLS = frozenset({"workspace.patch", "process.exec"})
+
+    def decide(
+        self,
+        request: ApprovalRequest,
+        *,
+        preview: str = "",
+    ) -> ApprovalDecision:
+        del preview
+        if request.tool_name not in self._ALLOWED_TOOLS or request.persistent_scope_allowed:
+            return ApprovalDecision.for_request(
+                request,
+                verdict="deny",
+                reason_code="subagent_authority_denied",
+            )
+        return ApprovalDecision.for_request(
+            request,
+            verdict="allow",
+            reason_code="parent_delegate_allowed_once",
+        )
+
+
+def default_worktree_home() -> Path:
+    configured = os.getenv("AGENT_HARNESS_WORKTREE_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "AgentHarnessWorktrees"
+    return Path.home() / ".cache" / "agent-harness-worktrees"
+
+
+def _redact_private_paths(text: str, paths: tuple[str | Path, ...]) -> str:
+    """Remove known local path spellings from one bounded child summary."""
+
+    spellings: set[str] = set()
+    for raw in paths:
+        value = os.fspath(raw)
+        if len(value) <= 1:
+            continue
+        spellings.add(value)
+        spellings.add(quote(value, safe="/:"))
+        try:
+            path = Path(value)
+            resolved = os.fspath(path.resolve(strict=False))
+            spellings.add(resolved)
+            spellings.add(quote(resolved, safe="/:"))
+            if path.is_absolute():
+                spellings.add(path.as_uri())
+                spellings.add(Path(resolved).as_uri())
+        except (OSError, RuntimeError, ValueError):
+            continue
+    redacted = text
+    for spelling in sorted(spellings, key=len, reverse=True):
+        redacted = re.sub(
+            re.escape(spelling),
+            "<isolated-worktree>",
+            redacted,
+            flags=re.IGNORECASE,
+        )
+    return redacted
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,9 +177,7 @@ def _remote_content_enabled() -> bool:
         return True
     if value in _FALSE_VALUES:
         return False
-    raise ValueError(
-        "HARNESS_ALLOW_REMOTE_CONTENT must be one of 1/0, true/false, yes/no, on/off"
-    )
+    raise ValueError("HARNESS_ALLOW_REMOTE_CONTENT must be one of 1/0, true/false, yes/no, on/off")
 
 
 class AgentRunner:
@@ -112,15 +194,32 @@ class AgentRunner:
         permission_mode: str = "read-only",
         deadline_seconds: float = 180.0,
         max_steps: int = 12,
+        subagents_enabled: bool = True,
+        subagent_limits: SubagentLimits | None = None,
+        worktree_home: str | Path | None = None,
+        project_extensions_enabled: bool = True,
+        agent_context: Mapping[str, Any] | None = None,
     ) -> None:
         if permission_mode not in PERMISSION_PROFILES:
             raise ValueError(f"unknown permission mode: {permission_mode}")
+        if type(subagents_enabled) is not bool:
+            raise ValueError("subagents_enabled must be a boolean")
+        if type(project_extensions_enabled) is not bool:
+            raise ValueError("project_extensions_enabled must be a boolean")
+        if agent_context is not None and not isinstance(agent_context, Mapping):
+            raise ValueError("agent_context must be an object")
+        if agent_context is not None:
+            if permission_mode not in {"read-only", "workspace-write"}:
+                raise ValueError("delegated agents support only read-only or workspace-write")
+            # Child identity is itself a privilege boundary.  Do not depend on
+            # every caller remembering the companion isolation flags.
+            subagents_enabled = False
+            project_extensions_enabled = False
         self.store = SessionStore(workspace, state_home=state_home)
         self.workspace = self.store.workspace
+        self._state_home = self.store.root.parent.parent
         raw_active = (
-            self.workspace
-            if active_directory is None
-            else Path(active_directory).expanduser()
+            self.workspace if active_directory is None else Path(active_directory).expanduser()
         )
         if not raw_active.is_absolute():
             raw_active = self.workspace / raw_active
@@ -143,7 +242,27 @@ class AgentRunner:
         )
         self.client = DeepSeekClient(config)
         self.model = DeepSeekCodingModel(self.client)
-        self.registry = build_workspace_registry(self.workspace)
+        self._api_key_file = selected_key_file
+        self._project_extensions_enabled = project_extensions_enabled
+        self._agent_context = dict(agent_context) if agent_context is not None else None
+        self._subagents_enabled = subagents_enabled
+        self._subagent_limits = subagent_limits or SubagentLimits()
+        self._worktree_home = Path(worktree_home or default_worktree_home()).expanduser()
+        self._worktree_manager_instance: WorktreeManager | None = None
+        self._worktree_manager_lock = Lock()
+        self._subagent_scheduler: SubagentScheduler | None = None
+        if self._subagents_enabled:
+            self._subagent_scheduler = SubagentScheduler(
+                lambda task, lineage, child_token, deadline: self._execute_subagent(
+                    task,
+                    lineage,
+                    child_token,
+                    deadline,
+                ),
+                limits=self._subagent_limits,
+                permission_authorizer=self._authorize_subagent_task,
+            )
+        self.registry = self._fresh_workspace_registry()
         self._mcp_registry_active = False
         self.permission_mode = permission_mode
         self.limits = HarnessLimits(
@@ -162,6 +281,353 @@ class AgentRunner:
             backoff_multiplier=2.0,
             max_backoff_seconds=2.0,
         ).validated()
+
+    def _fresh_workspace_registry(self):
+        registry = build_workspace_registry(self.workspace)
+        if self._subagent_scheduler is not None:
+            register_subagent_tool(registry, self._subagent_scheduler)
+        return registry
+
+    def _authorize_subagent_task(self, task: SubagentTask) -> bool:
+        if not self._subagents_enabled:
+            return False
+        if task.permission_mode == "read-only":
+            return True
+        return self.permission_mode in {"workspace-write", "full-access"}
+
+    def _worktree_manager(self) -> WorktreeManager:
+        if not self._subagents_enabled:
+            raise WorktreeError("subagents are disabled")
+        with self._worktree_manager_lock:
+            if self._worktree_manager_instance is None:
+                self._worktree_manager_instance = WorktreeManager(
+                    self.workspace,
+                    state_directory=self.store.root / "worktrees",
+                    worktree_home=self._worktree_home,
+                )
+            return self._worktree_manager_instance
+
+    def subagent_artifacts(
+        self,
+        reveal_paths: bool = False,
+    ) -> dict[str, Any]:
+        """Return a bounded, content-free snapshot of retained child artifacts.
+
+        Local paths are absent by default.  The explicit path-reveal mode adds
+        only the isolated worktree path; repository, Git-admin, branch, and
+        state paths remain private.
+        """
+
+        if type(reveal_paths) is not bool:
+            raise ValueError("reveal_paths must be a boolean")
+        state_directory = self.store.root / "worktrees"
+        with self._worktree_manager_lock:
+            manager = self._worktree_manager_instance
+            if manager is None:
+                # Inspection should be side-effect free for the common case of
+                # a non-Git workspace with no retained artifacts.
+                if not os.path.lexists(state_directory):
+                    return {
+                        "schema": _SUBAGENT_ARTIFACT_SCHEMA,
+                        "artifacts": [],
+                    }
+                manager = WorktreeManager(
+                    self.workspace,
+                    state_directory=state_directory,
+                    worktree_home=self._worktree_home,
+                )
+                self._worktree_manager_instance = manager
+        records = manager.list_records(limit=_MAX_SUBAGENT_ARTIFACTS)
+        artifacts: list[dict[str, str]] = []
+        for record in records:
+            item = {
+                "artifact_id": record.worktree_id,
+                "phase": record.phase,
+                "created_at": record.created_at,
+            }
+            if reveal_paths:
+                item["worktree_path"] = record.worktree_path
+            artifacts.append(item)
+        return {
+            "schema": _SUBAGENT_ARTIFACT_SCHEMA,
+            "artifacts": artifacts,
+        }
+
+    def _execute_subagent(
+        self,
+        task: SubagentTask,
+        lineage: SubagentLineage,
+        cancellation_token: CancellationToken,
+        deadline_monotonic: float,
+    ) -> SubagentResult:
+        """Run one child in a dedicated worktree and never merge it implicitly."""
+
+        cancellation_token.raise_if_cancelled()
+        if time.monotonic() >= deadline_monotonic:
+            raise HarnessDeadlineExceeded("subagent deadline expired before setup")
+        if not self._authorize_subagent_task(task):
+            return SubagentResult(
+                task_id=task.task_id,
+                status="failed",
+                summary="Subagent authority was revoked before allocation.",
+                error_code="subagent_permission_denied",
+            )
+        try:
+            manager = self._worktree_manager()
+            record = manager.create(
+                cancellation_token=cancellation_token,
+                deadline_monotonic=deadline_monotonic,
+            )
+        except HarnessCancelled:
+            raise
+        except WorktreeError as exc:
+            return SubagentResult(
+                task_id=task.task_id,
+                status="failed",
+                summary=(
+                    "Isolated worktree setup became uncertain and requires inspection."
+                    if exc.worktree_id is not None
+                    else "Isolated worktree setup was rejected before creation."
+                ),
+                changed=exc.worktree_id is not None,
+                requires_reconciliation=exc.worktree_id is not None,
+                error_code=str(exc.code)[:128],
+                artifact_id=exc.worktree_id,
+            )
+        artifact_id: str | None = record.worktree_id
+        child_session_id: str | None = None
+        child: AgentRunner | None = None
+        child_outcome: TurnOutcome | None = None
+        requires_reconciliation = False
+        cleanup_removed = False
+
+        def child_is_uncertain() -> bool:
+            if child is None or child_session_id is None:
+                return False
+            try:
+                return bool(child.store.unresolved_workspace_runs())
+            except Exception:
+                return True
+
+        def clean_artifact(
+            *,
+            cleanup_deadline: float,
+            token: CancellationToken | None,
+        ) -> tuple[bool, bool]:
+            """Return ``(removed, structurally_uncertain)`` without forcing."""
+
+            try:
+                cleanup = manager.remove_if_pristine(
+                    record.worktree_id,
+                    cancellation_token=token,
+                    deadline_monotonic=cleanup_deadline,
+                )
+            except Exception:
+                return False, True
+            return cleanup.removed, False
+
+        try:
+            cancellation_token.raise_if_cancelled()
+            if time.monotonic() >= deadline_monotonic:
+                raise HarnessDeadlineExceeded("subagent deadline expired before provider execution")
+            if not self._authorize_subagent_task(task):
+                removed, cleanup_uncertain = clean_artifact(
+                    cleanup_deadline=time.monotonic() + 1.0,
+                    token=None,
+                )
+                return SubagentResult(
+                    task_id=task.task_id,
+                    status="failed",
+                    summary="Subagent authority was revoked before execution.",
+                    changed=not removed,
+                    requires_reconciliation=cleanup_uncertain,
+                    error_code="subagent_permission_denied",
+                    artifact_id=None if removed else artifact_id,
+                )
+            child_root = Path(record.worktree_path)
+            active_relative = self.active_directory.relative_to(self.workspace)
+            child_active = child_root / active_relative
+            if not child_active.is_dir():
+                child_active = child_root
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining < 0.05:
+                raise HarnessDeadlineExceeded("subagent deadline expired before provider execution")
+            child = AgentRunner(
+                child_root,
+                active_directory=child_active,
+                state_home=self._state_home,
+                api_key_file=self._api_key_file,
+                model=self.client.config.model,
+                permission_mode=task.permission_mode,
+                deadline_seconds=max(
+                    0.05,
+                    min(remaining, self.limits.deadline_seconds),
+                ),
+                max_steps=self.limits.max_steps,
+                subagents_enabled=False,
+                subagent_limits=self._subagent_limits,
+                worktree_home=self._worktree_home,
+                project_extensions_enabled=False,
+                agent_context={
+                    "kind": "subagent",
+                    "agent_id": lineage.agent_id,
+                    "task_id": lineage.task_id,
+                    "root_run_id": lineage.root_run_id,
+                    "parent_run_id": lineage.parent_run_id,
+                    "parent_turn_id": lineage.parent_turn_id,
+                    "parent_call_id": lineage.parent_call_id,
+                    "depth": lineage.depth,
+                    "result_contract": "concise result for parent",
+                },
+            )
+            session = child.new_session(title=f"Subagent {task.task_id}"[:160])
+            child_session_id = str(session["session_id"])
+            child_outcome = child.run_turn(
+                child_session_id,
+                task.prompt,
+                cancellation_token=cancellation_token,
+                approval_broker=_DelegatedChildApprovalBroker(),
+            )
+            stored = child.store.load(child_session_id)
+            child_run = next(
+                (
+                    item
+                    for item in stored.get("runs", [])
+                    if item.get("run_id") == child_outcome.run_id
+                ),
+                {},
+            )
+            requires_reconciliation = child_run.get("requires_reconciliation") is True
+            cancellation_token.raise_if_cancelled()
+            if time.monotonic() >= deadline_monotonic:
+                raise HarnessDeadlineExceeded("subagent exceeded the shared deadline")
+            if not self._authorize_subagent_task(task):
+                if not requires_reconciliation:
+                    cleanup_removed, cleanup_uncertain = clean_artifact(
+                        cleanup_deadline=deadline_monotonic,
+                        token=cancellation_token,
+                    )
+                    requires_reconciliation = cleanup_uncertain
+                    if cleanup_removed:
+                        artifact_id = None
+                return SubagentResult(
+                    task_id=task.task_id,
+                    status="failed",
+                    summary="Subagent authority was revoked during execution.",
+                    changed=not cleanup_removed,
+                    requires_reconciliation=requires_reconciliation,
+                    error_code="subagent_permission_denied",
+                    artifact_id=artifact_id,
+                    session_id=child_outcome.session_id,
+                    run_id=child_outcome.run_id,
+                    turn_id=child_outcome.turn_id,
+                )
+            if not requires_reconciliation:
+                cleanup_removed, cleanup_uncertain = clean_artifact(
+                    cleanup_deadline=deadline_monotonic,
+                    token=cancellation_token,
+                )
+                requires_reconciliation = cleanup_uncertain
+                if cleanup_removed:
+                    artifact_id = None
+                elif cleanup_uncertain:
+                    return SubagentResult(
+                        task_id=task.task_id,
+                        status="failed",
+                        summary=(
+                            "Subagent cleanup could not be proven safe; its isolated "
+                            "worktree was preserved."
+                        ),
+                        changed=True,
+                        requires_reconciliation=True,
+                        error_code="subagent_cleanup_uncertain",
+                        artifact_id=artifact_id,
+                        session_id=child_outcome.session_id,
+                        run_id=child_outcome.run_id,
+                        turn_id=child_outcome.turn_id,
+                    )
+        except (HarnessCancelled, HarnessDeadlineExceeded) as exc:
+            requires_reconciliation = child_is_uncertain()
+            cleanup_uncertain = False
+            if not requires_reconciliation:
+                cleanup_removed, cleanup_uncertain = clean_artifact(
+                    cleanup_deadline=time.monotonic() + 1.0,
+                    token=None,
+                )
+                if cleanup_removed:
+                    artifact_id = None
+            if requires_reconciliation or cleanup_uncertain or not cleanup_removed:
+                is_cancelled = isinstance(exc, HarnessCancelled)
+                return SubagentResult(
+                    task_id=task.task_id,
+                    status="cancelled" if is_cancelled else "failed",
+                    summary=(
+                        "Subagent was cancelled and its isolated worktree was preserved."
+                        if is_cancelled
+                        else "Subagent exceeded its deadline; its isolated worktree was preserved."
+                    ),
+                    changed=True,
+                    requires_reconciliation=(requires_reconciliation or cleanup_uncertain),
+                    error_code=(
+                        "subagent_cancelled" if is_cancelled else "subagent_deadline_exceeded"
+                    ),
+                    artifact_id=artifact_id,
+                    session_id=child_session_id,
+                )
+            raise
+        except Exception:
+            requires_reconciliation = child_is_uncertain()
+            cleanup_uncertain = False
+            if not requires_reconciliation:
+                cleanup_removed, cleanup_uncertain = clean_artifact(
+                    cleanup_deadline=time.monotonic() + 1.0,
+                    token=None,
+                )
+                if cleanup_removed:
+                    artifact_id = None
+            requires_reconciliation = requires_reconciliation or cleanup_uncertain
+            return SubagentResult(
+                task_id=task.task_id,
+                status="failed",
+                summary="Subagent execution failed; its isolated worktree was preserved.",
+                changed=not cleanup_removed,
+                requires_reconciliation=requires_reconciliation,
+                error_code="subagent_execution_failed",
+                artifact_id=artifact_id,
+                session_id=child_session_id,
+            )
+
+        assert child_outcome is not None
+        summary = (child_outcome.message or child_outcome.reason or "").strip()
+        if not summary:
+            summary = "Subagent completed without a textual report."
+        private_paths: list[str | Path] = [
+            record.worktree_path,
+            record.common_git_dir,
+            record.repository,
+            self._worktree_home,
+            self._state_home,
+        ]
+        if child is not None:
+            private_paths.extend((child.workspace, child.store.root))
+        summary = _redact_private_paths(summary, tuple(private_paths))
+        summary = summary[: self._subagent_limits.max_summary_chars]
+        status = child_outcome.status
+        if status not in {"completed", "failed", "cancelled"}:
+            status = "failed"
+        error_code = None if status == "completed" else f"subagent_{child_outcome.status}"
+        return SubagentResult(
+            task_id=task.task_id,
+            status=status,
+            summary=summary,
+            changed=not cleanup_removed,
+            requires_reconciliation=requires_reconciliation,
+            error_code=error_code,
+            artifact_id=artifact_id,
+            session_id=child_outcome.session_id,
+            run_id=child_outcome.run_id,
+            turn_id=child_outcome.turn_id,
+        )
 
     @property
     def provider_status(self) -> dict[str, Any]:
@@ -197,6 +663,16 @@ class AgentRunner:
             "workspace_sandbox": workspace_sandbox_status(),
             "project_hooks": hooks,
             "project_mcp": mcp,
+            "subagents": {
+                "enabled": self._subagents_enabled,
+                "mode": "foreground-wait-all" if self._subagents_enabled else "disabled",
+                "isolation": "git-worktree" if self._subagents_enabled else "none",
+                "max_batch_size": self._subagent_limits.max_batch_size,
+                "max_concurrency": self._subagent_limits.max_global_active,
+                "max_depth": self._subagent_limits.max_depth,
+                "background_supported": False,
+                "automatic_merge_supported": False,
+            },
             "approval_defaults": {
                 "low": "allow",
                 "medium": "ask",
@@ -334,19 +810,13 @@ class AgentRunner:
         spec = self.model.model_spec
         available = max(
             1,
-            spec.context_window_tokens
-            - spec.maximum_output_tokens
-            - _CONTEXT_SAFETY_MARGIN_TOKENS,
+            spec.context_window_tokens - spec.maximum_output_tokens - _CONTEXT_SAFETY_MARGIN_TOKENS,
         )
         return {
             "estimated_input_tokens_upper_bound": estimated,
             "available_input_tokens": available,
-            "automatic_trigger_tokens": max(
-                1, int(available * _AUTO_COMPACTION_TRIGGER_RATIO)
-            ),
-            "automatic_target_tokens": max(
-                1, int(available * _AUTO_COMPACTION_TARGET_RATIO)
-            ),
+            "automatic_trigger_tokens": max(1, int(available * _AUTO_COMPACTION_TRIGGER_RATIO)),
+            "automatic_target_tokens": max(1, int(available * _AUTO_COMPACTION_TARGET_RATIO)),
             "context_window_tokens": spec.context_window_tokens,
             "maximum_output_tokens": spec.maximum_output_tokens,
             "view": view,
@@ -447,9 +917,7 @@ class AgentRunner:
             "summary_chars": status["summary_chars"],
             "active_message_count": status["active_message_count"],
             "transcript_message_count": status["transcript_message_count"],
-            "estimated_input_tokens_upper_bound": status[
-                "estimated_input_tokens_upper_bound"
-            ],
+            "estimated_input_tokens_upper_bound": status["estimated_input_tokens_upper_bound"],
         }
 
     def compact_session(
@@ -507,8 +975,7 @@ class AgentRunner:
             unfinished = [
                 item
                 for item in session.get("runs", [])
-                if item.get("status") == "running"
-                or item.get("requires_reconciliation") is True
+                if item.get("status") == "running" or item.get("requires_reconciliation") is True
             ]
             if unfinished:
                 run_id = str(unfinished[-1].get("run_id", "unknown"))
@@ -590,33 +1057,40 @@ class AgentRunner:
         unresolved = [
             item
             for item in existing.get("runs", [])
-            if item.get("status") == "running"
-            or item.get("requires_reconciliation") is True
+            if item.get("status") == "running" or item.get("requires_reconciliation") is True
         ]
         if unresolved:
             raise SessionStoreError(
                 "session has an unfinished or uncertain run; inspect its journal "
                 "before archiving it or starting a new session"
             )
-        hook_snapshot = self.hook_snapshot()
-        hook_trust_state = self.store.hook_trust_state()
-        # This resolves every project proposal and verifies sandbox support
-        # before automatic compaction can make a provider request.
-        hook_runner = TrustedHookRunner(hook_snapshot, hook_trust_state)
-        mcp_snapshot = self.mcp_snapshot()
-        mcp_catalog = TrustedMcpCatalog(
-            mcp_snapshot,
-            self.store.mcp_trust_state(),
-            self.store.mcp_catalog_state(),
-        )
-        if mcp_catalog.tool_count:
-            run_registry = build_workspace_registry(self.workspace)
-            mcp_catalog.register_tools(run_registry)
-            self.registry = run_registry
-            self._mcp_registry_active = True
-        elif self._mcp_registry_active:
-            self.registry = build_workspace_registry(self.workspace)
-            self._mcp_registry_active = False
+        hook_runner = None
+        mcp_catalog = None
+        mcp_policy_material: Mapping[str, Any] = {
+            "schema": "agent_harness.mcp_policy.v1",
+            "servers": [],
+        }
+        if self._project_extensions_enabled:
+            hook_snapshot = self.hook_snapshot()
+            hook_trust_state = self.store.hook_trust_state()
+            # This resolves every project proposal and verifies sandbox support
+            # before automatic compaction can make a provider request.
+            hook_runner = TrustedHookRunner(hook_snapshot, hook_trust_state)
+            mcp_snapshot = self.mcp_snapshot()
+            mcp_catalog = TrustedMcpCatalog(
+                mcp_snapshot,
+                self.store.mcp_trust_state(),
+                self.store.mcp_catalog_state(),
+            )
+            mcp_policy_material = mcp_catalog.policy_material
+            if mcp_catalog.tool_count:
+                run_registry = self._fresh_workspace_registry()
+                mcp_catalog.register_tools(run_registry)
+                self.registry = run_registry
+                self._mcp_registry_active = True
+            elif self._mcp_registry_active:
+                self.registry = self._fresh_workspace_registry()
+                self._mcp_registry_active = False
         permissions = permission_profile(mode)
         scopes = {"internal", "user_input", "workspace_read"}
         if (
@@ -627,12 +1101,12 @@ class AgentRunner:
             scopes.add("workspace_write")
         if "process.exec.host" in permissions:
             scopes.add("host_access")
-        if mcp_catalog.tool_count and "mcp.external" in permissions:
+        if mcp_catalog is not None and mcp_catalog.tool_count and "mcp.external" in permissions:
             scopes.update({"external_service", "remote_consent"})
         approval_policy = ApprovalPolicy(
             rules=(
                 self.store.approval_rules(session_id)
-                if mode != "read-only"
+                if mode != "read-only" and self._agent_context is None
                 else ()
             )
         )
@@ -642,10 +1116,7 @@ class AgentRunner:
             snapshot=instruction_snapshot,
             prospective_prompt=content,
         )
-        if (
-            budget["estimated_input_tokens_upper_bound"]
-            >= budget["automatic_trigger_tokens"]
-        ):
+        if budget["estimated_input_tokens_upper_bound"] >= budget["automatic_trigger_tokens"]:
             self._compact_locked(
                 session_id,
                 trigger="automatic",
@@ -692,63 +1163,69 @@ class AgentRunner:
             checkpoint_path=checkpoint_path,
         )
         try:
-            result = run_agent_harness(
-                self.model,
-                self.registry,
-                {
-                    "messages": [
-                        {"role": item["role"], "content": item["content"]}
-                        for item in context_view["messages"]
-                    ],
-                    "workspace": ".",
-                    "active_directory": instruction_snapshot.active_relative_path,
-                    "permission_mode": mode,
-                    "project_instructions": (
-                        instruction_snapshot.to_model_content()
-                        if instruction_snapshot.documents
-                        else ""
-                    ),
-                    "instruction_snapshot": instruction_snapshot.metadata(),
-                    "mcp_snapshot": mcp_catalog.policy_material,
-                    "history_summary": history_summary,
-                    "context_lineage": context_lineage,
-                    "settled_effects": [
-                        {
-                            "run_id": run.get("run_id"),
-                            **effect,
-                        }
-                        for run in session.get("runs", [])
-                        for effect in run.get("effects", [])
-                    ][-64:],
-                    "safety_notices": list(session.get("risk_notices", []))[-8:],
-                },
-                run_id=run_id,
-                turn_id=turn_id,
-                limits=self.limits,
-                retry_policy=self.retry_policy,
-                allowed_permissions=permissions,
-                cancellation_token=token,
-                event_sink=event_sink,
-                journal=journal,
-                principal_id="local-user",
-                session_id=session_id,
-                trusted_data_scopes=scopes,
-                approval_policy=approval_policy,
-                approval_broker=approval_broker,
-                tool_hook_broker=hook_runner,
-            )
-        except Exception:
-            # Unknown failures may happen after an external effect but before
-            # its settlement can be inspected. Leave the run as `running` so
-            # every future entry point fails closed instead of replaying it.
-            raise
+            try:
+                result = run_agent_harness(
+                    self.model,
+                    self.registry,
+                    {
+                        "messages": [
+                            {"role": item["role"], "content": item["content"]}
+                            for item in context_view["messages"]
+                        ],
+                        "workspace": ".",
+                        "active_directory": instruction_snapshot.active_relative_path,
+                        "permission_mode": mode,
+                        "project_instructions": (
+                            instruction_snapshot.to_model_content()
+                            if instruction_snapshot.documents
+                            else ""
+                        ),
+                        "instruction_snapshot": instruction_snapshot.metadata(),
+                        "mcp_snapshot": mcp_policy_material,
+                        "agent_context": self._agent_context,
+                        "history_summary": history_summary,
+                        "context_lineage": context_lineage,
+                        "settled_effects": [
+                            {
+                                "run_id": run.get("run_id"),
+                                **effect,
+                            }
+                            for run in session.get("runs", [])
+                            for effect in run.get("effects", [])
+                        ][-64:],
+                        "safety_notices": list(session.get("risk_notices", []))[-8:],
+                    },
+                    run_id=run_id,
+                    turn_id=turn_id,
+                    limits=self.limits,
+                    retry_policy=self.retry_policy,
+                    allowed_permissions=permissions,
+                    cancellation_token=token,
+                    event_sink=event_sink,
+                    journal=journal,
+                    principal_id="local-user",
+                    session_id=session_id,
+                    trusted_data_scopes=scopes,
+                    approval_policy=approval_policy,
+                    approval_broker=approval_broker,
+                    persistent_approval_allowed=self._agent_context is None,
+                    tool_hook_broker=hook_runner,
+                )
+            except Exception:
+                # Unknown failures may happen after an external effect but before
+                # its settlement can be inspected. Leave the run as `running` so
+                # every future entry point fails closed instead of replaying it.
+                raise
+        finally:
+            # The scheduler contract joins every started child before returning
+            # or raising.  Clear the lifetime spawn charge on every root exit,
+            # including unknown runtime failures, so stale run IDs cannot leak
+            # budget state in a long-lived Runner.
+            if self._subagent_scheduler is not None:
+                self._subagent_scheduler.budget_ledger.finish_root(run_id)
         status = str(result.get("status", "failed"))
         output = result.get("output")
-        message = (
-            str(output.get("message", "")).strip()
-            if isinstance(output, Mapping)
-            else ""
-        )
+        message = str(output.get("message", "")).strip() if isinstance(output, Mapping) else ""
         durable_events = journal.replay()
         usage = _event_usage(durable_events)
         requested: dict[str, Mapping[str, Any]] = {}
@@ -787,12 +1264,16 @@ class AgentRunner:
             if event_type == "hook.effect_started":
                 hook_effect_calls.add(call_id)
                 continue
-            if event_type in {
-                "tool.completed",
-                "tool.failed",
-                "tool.rejected",
-                "tool.replayed",
-            } and call_id in hook_effect_calls:
+            if (
+                event_type
+                in {
+                    "tool.completed",
+                    "tool.failed",
+                    "tool.rejected",
+                    "tool.replayed",
+                }
+                and call_id in hook_effect_calls
+            ):
                 hook_guarded_settlements.add(call_id)
             entry = self.registry.get(tool_name)
             if entry is None or entry[0].replay_policy == "safe":
@@ -845,9 +1326,7 @@ class AgentRunner:
                 "runtime effect ledger does not match its authoritative terminal"
             )
         stored_status = (
-            status
-            if status in {"completed", "failed", "cancelled", "handoff"}
-            else "failed"
+            status if status in {"completed", "failed", "cancelled", "handoff"} else "failed"
         )
         self.store.finish_run(
             session_id,
@@ -871,4 +1350,4 @@ class AgentRunner:
         )
 
 
-__all__ = ["AgentRunner", "EventSink", "TurnOutcome"]
+__all__ = ["AgentRunner", "EventSink", "TurnOutcome", "default_worktree_home"]

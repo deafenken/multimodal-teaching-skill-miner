@@ -25,6 +25,8 @@ harness                         # TUI
 harness exec "检查当前改动"     # 流式 headless
 harness exec --jsonl "运行测试" # JSONL 事件流
 harness sessions
+harness agents                    # 列出保留的子任务 worktree（默认不显示路径）
+harness agents WORKTREE_ID --path # 明确查看一个保留 worktree 的本机路径
 harness resume [SESSION_ID]
 harness effects                  # 查看当前 workspace 的未决 run
 harness reconcile RUN_ID         # 人工检查后确认并清除 fence
@@ -71,6 +73,9 @@ TUI 中使用 `/permissions workspace-write` 切换当前会话权限。
   assistant 消息与 run 终态分别原子落盘；fork 复制 transcript、摘要血缘和 session 元数据，
   不创建新进程、容器或 worktree，也不隔离环境变量、provider client 或当前进程堆中的秘密。
 - curses TUI：流式正文、工具状态、Ctrl+C 取消、后续输入队列、token/cache 状态栏。
+- 单次高风险审批后的前台 `agent.delegate`：1–4 个独立上下文并发执行、等待全部完成，
+  每个子任务使用从当前 clean committed HEAD 创建的独立 Git worktree；TUI 显示有界状态，
+  保留产物可用 `/agents` 或 `harness agents` 检查。
 - Headless JSONL：稳定事件 schema、session/run/turn identity 和退出码。
 
 与 Claude Code、Codex 的逐项对表见
@@ -78,11 +83,11 @@ TUI 中使用 `/permissions workspace-write` 切换当前会话权限。
 
 ## 权限模型
 
-| 模式 | 文件读/检索 | 应用补丁 | 命令工具 | 本地 MCP tools |
-|---|---:|---:|---|---:|
-| `read-only` | 是 | 否 | 无 | 否 |
-| `workspace-write` | 是 | macOS Seatbelt 可用时是 | `process.exec`：macOS Seatbelt 可用时注册 | 否 |
-| `full-access` | 是 | macOS Seatbelt 可用时是 | 沙箱 `process.exec`（可用时）和显式主机级 `process.exec_host` | exact trust + frozen catalog + Seatbelt 可用时是 |
+| 模式 | 文件读/检索 | 应用补丁 | 命令工具 | 前台子任务 | 本地 MCP tools |
+|---|---:|---:|---|---:|---:|
+| `read-only` | 是 | 否 | 无 | 只读子任务 | 否 |
+| `workspace-write` | 是 | macOS Seatbelt 可用时是 | `process.exec`：macOS Seatbelt 可用时注册 | 只读或 worktree 写子任务 | 否 |
+| `full-access` | 是 | macOS Seatbelt 可用时是 | 沙箱 `process.exec`（可用时）和显式主机级 `process.exec_host` | 只读或 worktree 写子任务 | exact trust + frozen catalog + Seatbelt 可用时是 |
 
 内建 list/read/search 工具拒绝绝对路径、`..`、符号链接和 `.git`、`.private`、
 `.agent-harness`。在 macOS 上，`workspace.patch` 的检查与实际应用以及 `process.exec`
@@ -225,7 +230,7 @@ digest、身份、时长、动作和安全错误码，不写入原始 hook stdin
 
 ## 本地 MCP stdio tools client 子集
 
-Harness 2.4.0 实现的是 **exact-digest trusted local stdio MCP tools client subset**，协议
+Harness 自 2.4.0 起实现 **exact-digest trusted local stdio MCP tools client subset**，协议
 基线固定为 `2025-06-18`，不是完整 MCP 平台。项目定义位于 `.agent-harness/mcp.json`；
 配置存在不会自动启动 server。最小示例：
 
@@ -306,6 +311,45 @@ MCP 原始输入和规范化结果遵循普通工具的 owner-only journal/check
 下一轮 provider observation。server stderr 原文只在进程运行期间被持续 drain，不写入 journal、
 checkpoint 或 catalog；CLI 最多返回 byte count、truncated 标志和 SHA-256。
 
+## 前台子任务与隔离 worktree
+
+模型可通过中央 `agent.delegate` 工具提交 1–4 个有界任务。Harness 只实现
+**foreground wait-all**：子任务真实并发，但父工具等待每个已启动子任务结束；父取消会
+级联，所有子任务在父调用结算前都必须 join。返回给父模型的是有界最终摘要、状态、任务顺序/
+层级、是否改动、失败码（如有）和不透明关联 ID，不包含子任务推理过程。子任务摘要与普通工具
+observation 一样是不可信证据，其中嵌入的指令不能扩大父任务或权限。
+
+委派是 high-risk、never-replay、不可保存持久放行的一次性审批。审批预览显示整批任务及其
+请求的 `read-only` 或 `workspace-write` 模式。只读父任务不能委派写任务；父任务即使是
+`full-access`，子任务也最多得到 `workspace-write`。子 runner 不向模型暴露或授权 host
+command、MCP、project hooks 或再次委派；受批次审批约束的 `workspace.patch` / 沙箱 `process.exec` 可以在
+子任务内执行，但不会建立 session/workspace persistent approval。
+
+每个子任务从当前仓库精确的 committed `HEAD` 建立独立、不透明分支和 Git worktree。源仓库
+必须 clean（包括没有非 ignored 的 untracked 文件）；Harness 不会把父工作区未提交内容
+猜测性复制进去，ignored 本机文件也不会被复制。
+Git 通过受信绝对路径和清理后的环境直接执行，禁用项目 hooks、includes、filters、fsmonitor
+与 external diff。worktree 隔离文件写冲突，但**不是**进程、内存、provider credential、
+主机读取或网络隔离证明；真正的写边界仍由子 runner 的 permission 与 macOS Seatbelt 提供。
+
+只有 Git status、分支 baseline 和 no-follow 内容 manifest 都精确不变时，Harness 才会用普通
+非 force Git 操作自动移除 worktree。存在改动、额外 commit、结构异常或创建/清理不确定性时，
+Harness 会保留仍存在的 worktree/分支及相应记录供人工检查；若 checkout 已正常移除、仅 ref 的
+compare-and-swap 删除失败，则保留的是分支和 `ref_preserved` 记录。不会自动 merge、apply、
+commit、push、reset、clean、prune 或强制删除。默认列表不暴露本机路径：
+
+```bash
+harness agents
+harness agents WORKTREE_ID
+harness agents WORKTREE_ID --path  # 只有显式指定一个 ID 才显示路径
+```
+
+默认 worktree 根为 macOS 的 `~/Library/Caches/AgentHarnessWorktrees`，其他平台为
+`~/.cache/agent-harness-worktrees`；可在子命令前用 `--worktree-home ABSOLUTE_PATH` 或环境变量
+`AGENT_HARNESS_WORKTREE_HOME` 设置私有目录。当前没有后台运行、恢复/steer 子任务、agent
+thread 切换、自定义 agent profile、自动合并或 agent team；这不是 Claude Code/Codex 的完整
+subagent parity。
+
 ## 上下文压缩
 
 Harness 始终保留完整原始消息；压缩只生成一个单独、append-only 的有损摘要，并让后续模型
@@ -342,6 +386,7 @@ Harness 始终保留完整原始消息；压缩只生成一个单独、append-on
 /instructions
 /hooks
 /mcp
+/agents
 /context
 /compact
 /approvals
@@ -365,7 +410,10 @@ Generic Session Store
 Harness Runtime ── Event reducer / Journal / Checkpoint
    │          │
 Provider   Tool Registry ─┬─ Trusted Hook Broker
-                         └─ Frozen MCP Catalog / stdio Client
+                         ├─ Frozen MCP Catalog / stdio Client
+                         └─ Foreground Subagent Scheduler
+                                  │
+                       isolated Git worktrees
                                   │
                 path checks / Seatbelt / explicit host shell
 ```
@@ -380,6 +428,8 @@ Provider   Tool Registry ─┬─ Trusted Hook Broker
 - `agent_harness/hooks.py`：项目 hook 的安全发现、exact-digest 信任绑定与沙箱执行。
 - `agent_harness/mcp.py`：本地 MCP 定义、exact-digest trust、冻结 catalog 与 stdio bridge。
 - `agent_harness/core/mcp_protocol.py`：固定 `2025-06-18` 的严格有界 MCP tools 协议子集。
+- `agent_harness/subagents.py`：前台批处理、并发/深度预算、取消传播与结果契约。
+- `agent_harness/worktrees.py`：clean HEAD worktree 创建、持久记录和保守清理。
 - `agent_harness/tui.py`：终端 UI。
 - `agent_harness/cli.py`：TUI/headless 入口。
 

@@ -7,6 +7,7 @@ import curses
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Empty, Queue
+import re
 import sys
 from threading import Event, Thread
 import time
@@ -33,6 +34,8 @@ from .tui_state import (
 
 _MAX_FOLLOWUPS = 32
 _MAX_FOLLOWUP_CHARS = 100_000
+_OPAQUE_ARTIFACT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_ARTIFACT_PHASE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 @dataclass(slots=True)
@@ -304,6 +307,39 @@ class HarnessTui:
             raise ValueError("hook status must be an object")
         return dict(status)
 
+    def _subagent_artifacts(self) -> tuple[tuple[str, str], ...]:
+        """Load only opaque artifact IDs and phases through the public seam."""
+
+        loader = getattr(self.runner, "subagent_artifacts", None)
+        if not callable(loader):
+            raise ValueError("subagent artifact inventory is unavailable")
+        raw = loader(reveal_paths=False)
+        if not isinstance(raw, Mapping):
+            raise ValueError("subagent artifact inventory is invalid")
+        entries = raw.get("artifacts")
+        if not isinstance(entries, list) or len(entries) > 64:
+            raise ValueError("subagent artifact inventory is invalid")
+        artifacts: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for item in entries:
+            if not isinstance(item, Mapping):
+                raise ValueError("subagent artifact inventory is invalid")
+            artifact_id = item.get("artifact_id", item.get("worktree_id"))
+            phase = item.get("phase", item.get("status", "unknown"))
+            if (
+                not isinstance(artifact_id, str)
+                or _OPAQUE_ARTIFACT_ID.fullmatch(artifact_id) is None
+                or artifact_id in seen
+                or not isinstance(phase, str)
+                or _ARTIFACT_PHASE.fullmatch(phase) is None
+            ):
+                raise ValueError("subagent artifact inventory is invalid")
+            # Unknown fields (including any accidental path/ref/content field)
+            # are never copied, formatted, or retained by the TUI.
+            seen.add(artifact_id)
+            artifacts.append((artifact_id, phase))
+        return tuple(sorted(artifacts))
+
     def command(self, raw: str) -> None:
         command, _, argument = raw.strip().partition(" ")
         command = command.casefold()
@@ -317,7 +353,8 @@ class HarnessTui:
             self.state.notice(
                 "/new /sessions /resume ID /fork /archive /effects "
                 "/reconcile RUN_ID /status /model /permissions MODE /tools "
-                "/instructions /hooks /mcp /context /compact /approvals /clear /quit"
+                "/agents /instructions /hooks /mcp /context /compact "
+                "/approvals /clear /quit"
             )
         elif command == "/new":
             if self.busy:
@@ -410,6 +447,40 @@ class HarnessTui:
             allowed = permission_profile(self.runner.permission_mode)
             names = [spec.name for spec in self.runner.registry.specs() if spec.permission in allowed]
             self.state.notice("可用工具：" + ", ".join(names))
+        elif command == "/agents":
+            if argument:
+                self.state.notice("用法：/agents（仅显示不含路径的活动与 artifact 元数据）")
+                return
+            activities = self.state.ordered_agents()
+            self.state.notice(
+                f"前台 Agents：{self.state.running_agent_count} running · "
+                f"{self.state.settled_agent_count} settled · {len(activities)} total"
+            )
+            for activity in activities[-12:]:
+                artifact = activity.artifact_id or "none"
+                changed = (
+                    "unknown"
+                    if activity.changed is None
+                    else ("yes" if activity.changed else "no")
+                )
+                self.state.notice(
+                    f"{activity.agent_id} · {activity.status} · "
+                    f"depth={activity.depth} · ordinal={activity.ordinal} · "
+                    f"artifact={artifact} · changed={changed}"
+                )
+            try:
+                artifacts = self._subagent_artifacts()
+            except Exception:
+                # Exception text can contain a worktree path. Keep this boundary
+                # content-free and bounded even when an adapter misbehaves.
+                self.state.notice("Agent artifact 清单不可用")
+            else:
+                if not artifacts:
+                    self.state.notice("保留 artifacts：0")
+                else:
+                    self.state.notice(f"保留 artifacts：{len(artifacts)}")
+                    for artifact_id, phase in artifacts[-12:]:
+                        self.state.notice(f"artifact={artifact_id} · phase={phase}")
         elif command == "/instructions":
             try:
                 snapshot = self.runner.instruction_snapshot()
@@ -685,6 +756,17 @@ class HarnessTui:
             for tool in list(self.state.tools.values())[-8:]:
                 detail = f" · {tool.detail}" if tool.detail else ""
                 lines.append(f"  [{tool.phase}] {tool.name}{detail}")
+        if self.state.agents:
+            lines.append("")
+            lines.append(
+                f"  Foreground Agents · {self.state.running_agent_count} running · "
+                f"{self.state.settled_agent_count} settled"
+            )
+            for activity in self.state.ordered_agents()[-8:]:
+                lines.append(
+                    f"  [{activity.status}] {activity.agent_id} · "
+                    f"depth {activity.depth} · #{activity.ordinal + 1}"
+                )
         if self.state.notices:
             lines.append("")
             lines.extend(f"  ! {notice}" for notice in self.state.notices[-8:])
@@ -716,7 +798,8 @@ class HarnessTui:
             screen.refresh()
             return
         header = (
-            f" Agent Harness  {self.runner.client.config.model}  "
+            f" Agent Harness  fg-agents {self.state.running_agent_count}/"
+            f"{len(self.state.agents)}  {self.runner.client.config.model}  "
             f"{self.runner.permission_mode}  {self.runner.workspace.name} "
         )
         self._add(screen, 0, 0, header.ljust(columns - 1), columns - 1, curses.A_REVERSE)
@@ -790,9 +873,15 @@ class HarnessTui:
         cache = f"cache {round(cache_hit * 100 / cache_total)}%" if cache_total else "cache —"
         queue_label = f" · queued {len(self.followups)}" if self.followups else ""
         approval_label = " · approval waiting" if self.pending_approval else ""
+        agents_label = (
+            f" · fg-agents {self.state.running_agent_count} running/"
+            f"{self.state.settled_agent_count} settled"
+            if self.state.agents
+            else " · fg-agents 0"
+        )
         status = (
-            f" {self.state.status} · {total} tokens · {cache}{queue_label}"
-            f"{approval_label} "
+            f" {self.state.status}{agents_label} · {total} tokens · {cache}"
+            f"{queue_label}{approval_label} "
         )
         self._add(screen, rows - 4, 0, status.ljust(columns - 1), columns - 1, curses.A_REVERSE)
         self._add(screen, rows - 3, 0, "─" * (columns - 1), columns - 1, curses.A_DIM)

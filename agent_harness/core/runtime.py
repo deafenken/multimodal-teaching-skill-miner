@@ -283,6 +283,7 @@ def _execution_policy_material(
     trusted_data_scopes: frozenset[str],
     tool_execution_manifests: tuple[Mapping[str, Any], ...],
     approval_policy: ApprovalPolicy | None,
+    persistent_approval_allowed: bool,
     tool_hooks: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     """Return every execution knob which must remain fixed on resume."""
@@ -301,6 +302,7 @@ def _execution_policy_material(
         "approval_policy": (
             approval_policy.material() if approval_policy is not None else None
         ),
+        "persistent_approval_allowed": persistent_approval_allowed,
         "tool_hooks": dict(tool_hooks) if tool_hooks is not None else None,
     }
 
@@ -645,6 +647,7 @@ def _execute_call(
     trusted_data_scopes: frozenset[str],
     approval_policy: ApprovalPolicy | None,
     approval_broker: ApprovalBroker | None,
+    persistent_approval_allowed: bool,
     tool_hook_broker: ToolHookBroker | None,
     remaining_calls: tuple[ToolCall, ...] = (),
 ) -> ToolExecutionResult:
@@ -732,6 +735,7 @@ def _execute_call(
         effect_started_sink=mark_effect_started,
         approval_policy=approval_policy,
         approval_broker=approval_broker,
+        persistent_approval_allowed=persistent_approval_allowed,
         tool_hook_broker=tool_hook_broker,
         hook_effect_started_sink=mark_effect_started,
     )
@@ -1177,6 +1181,7 @@ def run_agent_harness(
     trusted_data_scopes: frozenset[str] | set[str] = DEFAULT_TRUSTED_DATA_SCOPES,
     approval_policy: ApprovalPolicy | None = None,
     approval_broker: ApprovalBroker | None = None,
+    persistent_approval_allowed: bool = True,
     tool_hook_broker: ToolHookBroker | None = None,
     _resume_checkpoint: HarnessCheckpoint | None = None,
 ) -> dict[str, Any]:
@@ -1216,6 +1221,10 @@ def run_agent_harness(
         approval_policy = ApprovalPolicy()
     elif not isinstance(approval_policy, ApprovalPolicy):
         raise HarnessContractError("approval_policy must be an ApprovalPolicy")
+    if type(persistent_approval_allowed) is not bool:
+        raise HarnessContractError(
+            "persistent_approval_allowed must be a boolean"
+        )
     hook_policy_material: dict[str, Any] | None = None
     if tool_hook_broker is not None:
         try:
@@ -1245,6 +1254,7 @@ def run_agent_harness(
             trusted_data_scopes=trusted_data_scopes,
             tool_execution_manifests=tool_execution_manifests,
             approval_policy=approval_policy,
+            persistent_approval_allowed=persistent_approval_allowed,
             tool_hooks=hook_policy_material,
         )
     )
@@ -1527,6 +1537,7 @@ def run_agent_harness(
                     trusted_data_scopes=trusted_data_scopes,
                     approval_policy=approval_policy,
                     approval_broker=approval_broker,
+                    persistent_approval_allowed=persistent_approval_allowed,
                     tool_hook_broker=tool_hook_broker,
                     remaining_calls=recovery.remaining_calls[index + 1 :],
                 )
@@ -1602,6 +1613,7 @@ def run_agent_harness(
                     trusted_data_scopes=trusted_data_scopes,
                     approval_policy=approval_policy,
                     approval_broker=approval_broker,
+                    persistent_approval_allowed=persistent_approval_allowed,
                     tool_hook_broker=tool_hook_broker,
                     remaining_calls=recovery_calls[index + 1 :],
                 )
@@ -1798,6 +1810,7 @@ def run_agent_harness(
                     trusted_data_scopes=trusted_data_scopes,
                     approval_policy=approval_policy,
                     approval_broker=approval_broker,
+                    persistent_approval_allowed=persistent_approval_allowed,
                     tool_hook_broker=tool_hook_broker,
                     remaining_calls=calls[index + 1 :],
                 )

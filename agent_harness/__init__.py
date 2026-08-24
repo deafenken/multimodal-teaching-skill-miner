@@ -1,6 +1,6 @@
 """Agent Harness: a recoverable, provider-neutral coding-agent runtime."""
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 from .core import *  # noqa: F401,F403
 from .core import __all__ as _core_all
@@ -12,6 +12,22 @@ from .session import (
     SessionStore,
     SessionStoreError,
 )
+from .subagents import (
+    SUBAGENT_BATCH_SCHEMA,
+    SubagentBudgetLedger,
+    SubagentLimits,
+    SubagentLineage,
+    SubagentResult,
+    SubagentScheduler,
+    SubagentTask,
+)
+from .worktrees import (
+    WORKTREE_RECORD_SCHEMA,
+    WorktreeCleanupResult,
+    WorktreeError,
+    WorktreeManager,
+    WorktreeRecord,
+)
 
 __all__ = [
     *_core_all,
@@ -20,8 +36,20 @@ __all__ = [
     "ContextCompactionPlan",
     "ContextCompactionResult",
     "SESSION_SCHEMA",
+    "SUBAGENT_BATCH_SCHEMA",
     "SessionStore",
     "SessionStoreError",
+    "SubagentBudgetLedger",
+    "SubagentLimits",
+    "SubagentLineage",
+    "SubagentResult",
+    "SubagentScheduler",
+    "SubagentTask",
     "TurnOutcome",
+    "WORKTREE_RECORD_SCHEMA",
+    "WorktreeCleanupResult",
+    "WorktreeError",
+    "WorktreeManager",
+    "WorktreeRecord",
     "__version__",
 ]

@@ -156,6 +156,58 @@ truncation state and SHA-256 metadata can be returned to the local CLI. Non-text
 not rendered and is reduced to content-free type/length/MIME/digest metadata before normal
 tool persistence.
 
+### Foreground subagents and Git worktrees
+
+`agent.delegate` is a deliberately narrow high-risk, `never`-replay operation. It accepts one
+batch of 1–4 bounded tasks, requires a fresh once-only parent approval, crosses the durable
+effect boundary before allocating children, and cannot create a session/workspace persistent
+allow. A headless run without an approval broker hands off before creating a worktree. Parent
+cancellation propagates to every child and the foreground call joins all started children
+before settlement; background, detach, resume and steer are not implemented.
+
+The requested child authority is only `read-only` or `workspace-write`. It must be no broader
+than the parent's live permission, and a `full-access` parent cannot give a child host-command
+or MCP authority. Child runners do not expose/authorize project command hooks, MCP, host
+commands or nested delegation, and persistent approvals are disabled. After the parent approves the exact batch, the child approval broker
+can allow only the child's centrally authorized `workspace.patch` and sandboxed
+`process.exec`; every other approval request is denied. This once-only delegated authority is
+bound into the child run policy and cannot survive resume as a broader policy.
+
+Each child gets a separate Git worktree created from the exact committed local `HEAD`. The
+source repository must be Git-backed, non-unborn and clean including non-ignored untracked
+files; dirty parent state is rejected rather than copied, and ignored local files are not
+copied. Git is invoked without a shell through a trusted
+absolute executable and a scrubbed environment. Project hooks, config includes, executable
+filters, fsmonitor and external diff are disabled/rejected. Repository-common Git mutations
+are serialized by a cross-process lock keyed to the canonical common Git directory, while
+subagent concurrency and total-spawn budgets are only in-process controls.
+
+Worktree isolation prevents concurrent child file edits from directly sharing a checkout. It
+is **not** a container, VM, separate OS principal, provider credential boundary, process-heap
+boundary, complete host-read boundary or independent network sandbox. A child uses the same
+configured provider/model and the ordinary workspace tool/Seatbelt boundary. The worktree
+also shares the repository's Git object database and refs; the Harness therefore treats its
+branch and administrative mapping as control-plane state, not as an adversarial Git tenancy
+boundary.
+
+Automatic removal is permitted only when the record is active, the `.git`/administrative
+mapping and exact lock reason still match, Git status is clean, a no-follow bounded content
+manifest equals the baseline, and the opaque branch still points to the baseline commit.
+Removal uses normal unlock/remove plus compare-and-swap ref deletion. The manager exposes no
+force, reset, clean or prune operation. Changed, structurally suspicious or uncertain artifacts
+that still exist are preserved for operator inspection. If checkout removal succeeds but the
+subsequent ref compare-and-swap loses a race, only the branch and a `ref_preserved` record remain;
+the checkout is already gone. No child change is merged, applied, committed, pushed or opened as
+a PR automatically.
+
+Default `harness agents` and TUI `/agents` views expose only bounded lifecycle metadata and
+opaque artifact identities. An absolute local worktree path is disclosed only by the explicit
+`harness agents WORKTREE_ID --path` form. Child summaries are untrusted model/tool data; the
+parent provider prompt explicitly forbids treating embedded instructions as authority. The
+public lifecycle projection includes only typed batch `count`/`depth` and child opaque
+`agent_id`/`depth`/`ordinal`/`status` metadata, never prompts, child output, raw exceptions,
+worktree paths or hidden reasoning.
+
 ## Provider credentials
 
 Use `DEEPSEEK_API_KEY` or `HARNESS_DEEPSEEK_API_KEY_FILE`. Key files must be private regular
@@ -177,6 +229,13 @@ atomic replace.
 Normal sessions can be resumed and forked. A fork is a logical copy of transcript and
 session metadata; it does not create a fresh process, container, worktree, environment or
 heap, and therefore does not isolate credentials or other in-memory secrets.
+
+Subagent child sessions use the same private workspace-hash session-store contract, while
+worktree lifecycle records live below that workspace's private `worktrees/` state. The
+separate worktree root must be owner-controlled and non-overlapping with the source
+repository/state directory. Changed or uncertain artifacts are intentionally retained until
+the operator inspects them; there is no automatic retention deadline or destructive cleanup
+command in this version.
 
 If any session, including an archived one, has a run still marked active or requiring
 effect reconciliation, a workspace-wide fence blocks every new run in that workspace.

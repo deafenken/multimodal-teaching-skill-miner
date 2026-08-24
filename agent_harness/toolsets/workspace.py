@@ -26,9 +26,14 @@ from ..core import (
 
 
 PERMISSION_PROFILES: dict[str, frozenset[str]] = {
-    "read-only": frozenset({"workspace.read"}),
+    "read-only": frozenset({"workspace.read", "agent.delegate"}),
     "workspace-write": frozenset(
-        {"workspace.read", "workspace.write", "process.exec.sandboxed"}
+        {
+            "workspace.read",
+            "workspace.write",
+            "process.exec.sandboxed",
+            "agent.delegate",
+        }
     ),
     "full-access": frozenset(
         {
@@ -37,6 +42,7 @@ PERMISSION_PROFILES: dict[str, frozenset[str]] = {
             "process.exec.sandboxed",
             "process.exec.host",
             "mcp.external",
+            "agent.delegate",
         }
     ),
 }

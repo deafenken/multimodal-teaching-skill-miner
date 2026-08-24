@@ -16,6 +16,10 @@ Agent Harness stores only the data needed for local multi-turn operation and rec
 | MCP definitions and frozen catalog | `.agent-harness/mcp.json` plus 0600 trust/catalog files below the private workspace state | Definitions/catalog metadata are local; accepted tool schemas and digests may enter the provider-visible tool list/run policy, but server instructions and stderr text do not |
 | MCP tool input and normalized result | Owner-only per-run journal/checkpoint; normalized result also becomes a bounded tool observation | Input is sent to the explicitly trusted local server; the normalized result may be sent to the selected model provider on the next step |
 | Raw MCP stderr | Transient local drain only | Never persisted or sent; the CLI can receive only byte count, truncation state and SHA-256 metadata |
+| Subagent task and child transcript | Parent run checkpoint plus the child workspace-hash session namespace | The bounded delegated prompt and child conversation are sent to the selected provider; the child's final bounded summary may be sent again as a parent tool observation |
+| Subagent lifecycle metadata | Parent journal/public trace and private child/worktree records | Only typed count/depth/ordinal/status and opaque IDs enter public lifecycle views; no prompt, child output, hidden reasoning or local path is sent as lifecycle metadata |
+| Isolated worktree content | Owner-controlled worktree root outside the repository/state tree | Child workspace tools can expose bounded file content to the provider under the same rules as a normal turn; changed or uncertain worktrees may remain locally after the run |
+| Worktree control records | Private `worktrees/` directory below the parent workspace state | Never sent by the worktree subsystem; records locally contain absolute repository/worktree/Git paths, baseline identifiers and digests, while default CLI/TUI views redact paths |
 
 The TUI never renders hidden reasoning text. It records only a character count for
 provider reasoning deltas. Planner JSON is also internal and never becomes an assistant
@@ -35,6 +39,38 @@ can read permitted workspace content, while `process.exec_host` in `full-access`
 deliberately read a secret from the workspace or host and print it; the bounded observation
 can then be transmitted to the provider. Review the workspace and command before granting
 these modes.
+
+## Subagent and worktree data
+
+One approved `agent.delegate` call stores its exact task array in the ordinary private parent
+run/checkpoint contract. Each child then creates a normal local session under the state
+namespace derived from that child's worktree path. Removing a pristine worktree does not
+delete that child session record; this preserves audit/recovery evidence and means subagent
+transcripts can outlive the checkout. There is no automatic child-session retention policy in
+this version.
+
+Child prompts, workspace reads, command output and final text use the same remote-model data
+path as a normal Harness turn. A final bounded child summary becomes an untrusted parent tool
+observation and may therefore be transmitted to the provider once more on the parent's next
+model step. Hidden planner/reasoning content is never returned as the child result. The
+child's local absolute workspace label remains `.` in provider context, but file contents or a
+tool/command's textual output can still mention paths and sensitive data.
+
+Worktree lifecycle records are local control-plane files and include the canonical source
+repository, common Git directory, isolated path, opaque branch, baseline commit/manifest,
+lock reason and phase. They are mode-0600 files below an owner-only state directory. The
+worktree root is a separate owner-controlled directory; checked-out files retain normal Git
+file modes but are enclosed by that private root. Default `harness agents` and TUI `/agents`
+views project only opaque identity and bounded lifecycle data. The operator must provide one
+exact artifact ID and `--path` to print its absolute local path.
+
+Pristine worktrees and their lifecycle records are removed only after exact status/manifest/
+ref checks. Changed, structurally suspicious or uncertain artifacts that still exist are kept
+without an automatic expiry so an operator can inspect them. If checkout removal succeeds but
+ref compare-and-swap deletion loses a race, the branch and a `ref_preserved` record remain while
+the checkout does not. Harness never auto-merges or uploads those changes. Worktree separation
+prevents direct checkout collisions; it does not separate process memory, provider credentials,
+OS identity, shared Git objects/refs or every host read/IPC channel.
 
 ## Project hook data
 

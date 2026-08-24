@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-harness"
-version = "2.4.0"
+version = "2.5.0"
 description = "Auditable, provider-neutral coding-agent harness with CLI and TUI"
 readme = "README.md"
 authors = [{name = "Agent Harness contributors"}]
