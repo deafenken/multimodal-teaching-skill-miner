@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-harness/agent_harness_exec_result.schema.json",
+  "title": "Agent Harness headless execution result",
+  "type": "object",
+  "required": [
+    "schema",
+    "session_id",
+    "run_id",
+    "turn_id",
+    "status",
+    "reason",
+    "usage"
+  ],
+  "properties": {
+    "schema": {"const": "agent_harness.exec_result.v1"},
+    "session_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{7,159}$"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^run_[0-9a-f]{32}$"
+    },
+    "turn_id": {
+      "type": "string",
+      "pattern": "^turn_[0-9a-f]{32}$"
+    },
+    "status": {
+      "enum": ["completed", "cancelled", "handoff", "failed"]
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "usage": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 120
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "additionalProperties": false
+}

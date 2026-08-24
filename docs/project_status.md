@@ -1,7 +1,7 @@
 # Project status
 
 Status: **engineering preview**
-Version: **2.6.0**
+Version: **2.7.0**
 
 ## Implemented
 
@@ -17,6 +17,16 @@ Version: **2.6.0**
   context accounting and pre-run provider-capability validation; standard DeepSeek models
   accept strict UTF-8 text, while PNG/JPEG require an explicitly selected
   `deepseek-v4-flash-vision-exp` model and a 16-item/24-MiB active-request bound;
+- typed in-process Python SDK over `AgentRunner`: sync/async clients and immutable thread/run/
+  event/result values, persisted start/resume/fork, run/event streams, attachment ingestion,
+  cooperative cancellation, explicit optional approval broker, and client-wide serialization
+  that reapplies each thread's authority before every turn;
+- dependency-free Node.js 18+ strict-ESM TypeScript SDK package: lazy start/resume,
+  per-thread ordered run/stream, attachments, per-turn permissions and `AbortSignal`, backed by
+  `harness exec --jsonl` with `shell: false`, bounded canonical UTF-8 parsing, exact
+  event/result/identity/exit-code agreement, pre-spawn signal registration, a bounded
+  pre-result transport timeout, post-result process-close watchdog, async observer rejection
+  isolation and stderr redaction;
 - list/read/search tools, macOS Seatbelt-enforced patch/command writers, and a separately
   named host command behind explicit permission profiles;
 - per-call approval before sensitive effects, fail-closed headless behavior and private
@@ -47,6 +57,14 @@ Version: **2.6.0**
 ## Deliberately not claimed
 
 - feature parity with Claude Code or Codex;
+- full Claude Agent SDK or Codex SDK parity: the Python SDK is an in-process Harness facade,
+  while the TypeScript SDK is a subprocess/JSONL client rather than Codex app-server JSON-RPC;
+  the TypeScript surface has no thread fork or approval broker, and neither surface adds the
+  broader SDK-specific tools/hooks/MCP/subagent/custom-transport APIs of those products;
+- publication of `@agent-harness/sdk` to a public registry; this repository contains a
+  publishable package and validates its local pack artifact only;
+- executable content pinning by the TypeScript SDK: a bare `harness` name trusts `PATH`, and an
+  absolute `harnessPath` is checked as executable but not digest-attested;
 - automatic model switching, DeepSeek Files API upload, or PDF understanding/extraction; the
   current DeepSeek adapter rejects PDF before run creation, and PDF ingestion checks only the
   `%PDF-`/`%%EOF` envelope and size boundary;
@@ -92,6 +110,9 @@ ruff check agent_harness tests_harness
 pytest -q
 python -m build --outdir "$(mktemp -d)"
 python -m agent_harness --cwd . status
+npm --prefix sdk/typescript ci --ignore-scripts
+npm --prefix sdk/typescript test
+npm pack ./sdk/typescript --dry-run --json
 zsh -n '打开Agent Harness.command'
 ```
 

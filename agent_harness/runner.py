@@ -1447,7 +1447,20 @@ class AgentRunner:
             # budget state in a long-lived Runner.
             if self._subagent_scheduler is not None:
                 self._subagent_scheduler.budget_ledger.finish_root(run_id)
-        status = str(result.get("status", "failed"))
+        runtime_status = str(result.get("status", "failed"))
+        status = {
+            "completed": "completed",
+            "cancelled": "cancelled",
+            "handoff": "handoff",
+            "failed": "failed",
+            # The kernel keeps a specific deadline disposition in its internal
+            # result, while the authoritative durable terminal is run.failed.
+            # Public Runner/CLI/SDK status must follow that terminal contract;
+            # callers retain the detail in ``reason`` and ``result.status``.
+            "deadline_exceeded": "failed",
+        }.get(runtime_status)
+        if status is None:
+            raise SessionStoreError("runtime returned an unsupported terminal status")
         output = result.get("output")
         message = str(output.get("message", "")).strip() if isinstance(output, Mapping) else ""
         durable_events = journal.replay()
@@ -1524,7 +1537,6 @@ class AgentRunner:
             "cancelled": "run.cancelled",
             "handoff": "run.handoff",
             "failed": "run.failed",
-            "deadline_exceeded": "run.failed",
         }.get(status)
         if expected_terminal != terminal_type:
             raise SessionStoreError(
@@ -1549,14 +1561,11 @@ class AgentRunner:
             raise SessionStoreError(
                 "runtime effect ledger does not match its authoritative terminal"
             )
-        stored_status = (
-            status if status in {"completed", "failed", "cancelled", "handoff"} else "failed"
-        )
         self.store.finish_run(
             session_id,
             run_id=run_id,
             turn_id=turn_id,
-            status=stored_status,
+            status=status,
             assistant_content=message or None,
             usage=usage,
             effects=effects,

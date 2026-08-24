@@ -1,5 +1,43 @@
 # Changelog
 
+## 2.7.0 — Stable Python and TypeScript SDKs
+
+- Added a typed, zero-dependency in-process Python SDK with synchronous and asynchronous
+  clients, persisted thread start/resume/fork, direct and streamed turns, immutable event and
+  result views, explicit attachments and caller-supplied approval brokers.
+- Serialized the complete Python authority transition, attachment import, turn and conservative
+  cleanup at client scope. Each invocation reapplies the immutable thread permission mode;
+  callback-driven re-entry is rejected so concurrent handles cannot borrow another turn's
+  authority. Observer callback failures cannot revoke a durable run.
+- Added cooperative stream and task cancellation that joins its worker before settling, rather
+  than abandoning an in-process Runner after the caller is cancelled. Async start, resume and
+  both fork entry points likewise wait for their durable lifecycle mutation to settle before
+  propagating task cancellation. The SDK does not invent an approval broker or auto-approve
+  medium/high effects. Stream consumption is single-owner and fails fast on concurrent blocking
+  consumers; every concurrent close waiter observes final worker settlement. A fatal application
+  cancellation callback is re-raised only after all cleanup callbacks run and sync/async workers
+  have settled.
+- Added the publishable dependency-free `@agent-harness/sdk` ESM package for Node.js 18+ with
+  first-party TypeScript declarations. It invokes a pinned/configurable `harness` executable with
+  `shell: false`, sends prompts through stdin, supports lazy start/resume, repeated attachments,
+  ordered per-thread turns, typed async event streams and `AbortSignal` cancellation.
+- Bound the TypeScript transport to strict, size-limited UTF-8 JSONL: exact event envelopes,
+  contiguous sequences, one terminal event, identifiers, final status and process exit must
+  agree. Child stderr is drained but never copied into SDK errors, hidden reasoning is not
+  promoted to `finalResponse`, and a verified committed result wins a late cancellation race.
+  Abort listener registration happens before spawn, and a child that lingers after its result is
+  terminated under a bounded close watchdog and reported as a protocol failure. A capped
+  pre-result transport timeout and immediate EOF-without-result termination close earlier hang
+  paths; rejected async observers and signal-listener thenables are consumed without becoming
+  unhandled host-process failures. Every watchdog/protocol stop requests cooperative SIGINT
+  first and retains a bounded SIGKILL fallback.
+- Canonicalized deadline exhaustion to the public `failed` status used by the authoritative
+  `run.failed` event and CLI exit code, while retaining `deadline_exceeded` as the reason and in
+  the internal runtime result.
+- Published `agent_harness.exec_result.v1` as a JSON Schema and added the PEP 561 `py.typed`
+  marker. The TypeScript package is a subprocess/JSONL SDK, not an app-server transport or a
+  claim of complete Claude Agent SDK/Codex SDK parity.
+
 ## 2.6.0 — Immutable local attachments
 
 - Added a provider-neutral `agent_harness.attachment.v1` descriptor and owner-private,

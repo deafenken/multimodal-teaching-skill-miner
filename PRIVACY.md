@@ -5,6 +5,8 @@ Agent Harness stores only the data needed for local multi-turn operation and rec
 | Data | Location | Remote transmission |
 |---|---|---|
 | Session messages | `~/.agent-harness/workspaces/<hash>/sessions/` | Sent to the selected model provider during a turn |
+| Python SDK values | Embedding Python process memory plus the ordinary session/journal/attachment locations below | No additional transport; prompts, attachments and tool observations follow the same selected-provider path as `AgentRunner` |
+| TypeScript SDK subprocess data | Node process memory, transient child stdin/stdout pipes and CLI-owned private state | Prompt is sent locally to `harness` over stdin; validated JSONL/model/tool output returns to the Node caller, while the CLI uses the ordinary selected-provider path |
 | Tool observations | Private per-run journal | Bounded observations may be sent on the next model step |
 | Event/checkpoint state | `~/.agent-harness/workspaces/<hash>/runs/` | No, except fields included in the next provider request |
 | API credentials | Environment or configured private file | Authorization header only; never session/journal content |
@@ -41,6 +43,41 @@ can read permitted workspace content, while `process.exec_host` in `full-access`
 deliberately read a secret from the workspace or host and print it; the bounded observation
 can then be transmitted to the provider. Review the workspace and command before granting
 these modes.
+
+## SDK data
+
+The Python SDK runs `AgentRunner` inside the embedding process. It adds no separate wire
+protocol or SDK-specific persistent database: session messages, journals, attachment blobs and
+worktree records use the same private paths documented above. Prompts, imported attachment
+content and bounded tool observations are sent to the selected model under the same turn rules.
+Typed results and event objects remain in application memory for as long as the caller retains
+them. An `on_event` callback receives public event payloads, which can include assistant text or
+ordinary tool output. An explicitly supplied approval broker also receives a transient bounded
+human preview in addition to digest-bound request metadata. Those callbacks and brokers are
+application code; they may log, persist or transmit what they receive outside Harness control.
+
+Python streaming uses in-memory queues and non-daemon worker threads. Closing or cancelling a
+stream joins the worker but does not erase already delivered events, remove referenced
+attachments, roll back effects or clear durable recovery evidence. The async facade uses worker
+threads around the same in-process runner rather than a remote service.
+
+The TypeScript SDK starts the configured `harness` executable with direct argv and
+`shell: false`. Prompt text is written to child stdin and is not placed in argv. Attachment
+source paths are normalized to absolute paths and passed as repeated `--attach` arguments, so
+the path spellings can be visible transiently to same-user process inspection even though the
+attachment subsystem does not retain them in descriptors/events after import. The child gets a
+snapshot of the Node process environment plus explicit `env` overrides; configured credentials
+therefore cross into the local CLI process.
+
+Child stdout carries the canonical JSONL event stream and final exec-result record. The SDK
+parses it under line/record/total/response bounds, exposes immutable events to `onEvent` and the
+async iterator, and constructs `finalResponse` from non-internal message deltas. Protocol
+validation is not content redaction: model text and normal tool output may include source,
+attachment content, paths or secrets the run was authorized to read. The SDK itself does not
+persist this stream, but the embedding application may do so. Child stderr is drained and
+discarded; only generic errors, exit code and signal are exposed. Cancellation does not wipe
+Node/child memory or CLI-owned durable state, and a run interrupted after an effect can leave the
+ordinary unresolved-effect fence.
 
 ## Attachment data
 

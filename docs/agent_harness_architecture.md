@@ -3,20 +3,22 @@
 ## Layers
 
 ```text
-TUI / headless CLI
-   │             │
-Session Store   Immutable Attachment Store
-   └──────┬──────┘
+TUI / headless CLI ───── TypeScript SDK (bounded JSONL subprocess)
           │
-Harness Runtime
- ┌──────┼─────────────────────────────┐
-Provider Adapter      Tool Registry          Event/Journal
-                 ┌────────┼─────────────┐
-        Trusted Hook   Frozen MCP   Foreground Subagents
-           Broker       Catalog             │
-                 └────────┼────────── isolated worktrees
-                          │
-                 Workspace Toolset / Seatbelt
+Python SDK (in process)
+          │
+Session Store ────────── Immutable Attachment Store
+          └──────┬──────┘
+                 │
+         Harness Runtime ─┬─ Provider Adapter
+                          ├─ Event / Journal
+                          └─ Tool Registry ─┬─ Trusted Hook Broker
+                                           ├─ Frozen MCP Catalog
+                                           └─ Foreground Subagents
+                                                      │
+                                               isolated worktrees
+                                                      │
+                                           Workspace Toolset / Seatbelt
 ```
 
 The core is domain-neutral. It knows runs, turns, model decisions, tools, permissions,
@@ -127,9 +129,26 @@ events, budgets and recovery; application-domain models stay outside the package
   that still exists is preserved. If checkout removal has already succeeded and only ref CAS
   deletion fails, the branch and `ref_preserved` record remain without a checkout. There is no
   force/reset/clean/prune or automatic merge/apply/commit/push/PR path.
+- A Python SDK thread carries one explicit immutable permission mode. One client-wide operation
+  lock covers permission reapplication, attachment import, execution and conservative cleanup,
+  so concurrently held thread objects cannot borrow each other's authority. Resume and logical
+  fork default back to `read-only` unless the application explicitly selects another mode.
+- The TypeScript SDK is a bounded consumer of the CLI JSONL contract, not another runtime
+  implementation. It accepts a lazy new-thread identity only from a fully validated exec-result
+  record, serializes runs on one thread, and requires contiguous events, one matching terminal,
+  invariant run/turn/session identity and the matching process exit code. It never reconstructs
+  hidden reasoning as an answer.
 
 ## Interfaces
 
+- `agent_harness.sdk`: typed in-process Python sync/async clients. They support persisted
+  start/resume/fork threads, run/event-stream methods, immutable attachment snapshots, cooperative
+  cancellation and an optional caller-supplied approval broker while preserving `AgentRunner`
+  storage and execution policy.
+- `@agent-harness/sdk` below `sdk/typescript/`: dependency-free Node.js 18+ strict-ESM client
+  for `harness exec --jsonl`. It supports lazy start, resume, run/event stream, repeated
+  attachments, explicit permission mode and `AbortSignal`; it does not implement thread fork or
+  an approval broker.
 - `harness`: interactive TUI when stdin/stdout are terminals.
 - `harness exec`: streaming headless output.
 - `harness exec --jsonl`: canonical event envelopes plus one exec-result record.
@@ -153,6 +172,68 @@ events, budgets and recovery; application-domain models stay outside the package
   constructing a provider. Lists and normal detail are path-free; only one exact ID plus
   `--path` reveals its worktree path. TUI `/agents` combines content-free live status and
   retained artifact metadata.
+
+## SDK boundaries
+
+The Python SDK is an authority-preserving facade over one in-process `AgentRunner`, not a
+remote protocol. `HarnessClient.start_thread`, `resume_thread` and `fork_thread` return typed
+handles; a handle can `run`, `run_stream` or perform its logical `fork`. `AsyncHarnessClient`
+and `AsyncHarnessThread` place the same blocking runner behind non-abandoning worker-thread
+boundaries. Async task cancellation first cancels the Harness token and waits for the worker to
+settle, so it is not represented as proof that an already-started external effect was rolled
+back. A sync/async event stream must be exhausted or explicitly closed; close cancels and joins
+its non-daemon worker. Each stream permits one blocking consumer operation at a time and rejects
+concurrent consumers instead of allowing them to compete for the terminal sentinel. Concurrent
+close callers all wait for the same worker settlement. Cancellation runs every registered
+cleanup callback; an application callback's fatal `BaseException` is retained and propagated
+only after the synchronous or asynchronous worker boundary has settled.
+
+One Python client deliberately serializes all thread operations because `AgentRunner` has a
+mutable live permission field. Before every run it reapplies the thread's immutable explicit
+permission, then imports that turn's attachments and performs conservative unreferenced-blob
+cleanup on failure under the same lock. Start can select a permission; resume and fork default
+to `read-only`. A supplied `ApprovalBroker` executes in the embedding process and is the only
+SDK route that can answer an interactive approval. Without one, the ordinary headless policy
+remains fail closed. Event callbacks receive detached immutable event values and are observers,
+not an authorization channel.
+
+The TypeScript SDK does not import Python or `AgentRunner`. It uses Node's `spawn()` with
+`shell: false`, sends the prompt through stdin, passes repeated attachments as absolute
+`--attach` values and consumes stdout as canonical bounded UTF-8 JSONL. Configurable line,
+record, total-output and reconstructed-response limits are capped. It validates exact event
+envelopes, contiguous sequence, invariant run/turn identity, one terminal event, the final
+`agent_harness.exec_result.v1`, session identity and the expected exit code. `finalResponse`
+concatenates only non-internal `message.delta` values. Stderr is drained and discarded; errors
+retain only safe process/protocol metadata.
+
+`startThread()` in TypeScript is intentionally lazy: its ID is `null` until the first valid
+exec-result establishes a durable session. `resumeThread()` accepts a syntactically bounded ID;
+the CLI/session store remains authoritative when the next run opens it. Runs on one handle are
+serialized in submission order, while different handles can spawn concurrent processes. The
+SDK has no `forkThread` and no headless approval broker. Per-run permission override and
+`AbortSignal` are explicit application choices; SIGINT followed by bounded SIGKILL fallback is
+lifecycle control, not effect rollback or containment. Signal listener registration completes
+before spawn. After a syntactically valid exec-result, a separate bounded watchdog requires the
+child to close; timeout terminates it and fails the run as a protocol error even if its result
+record otherwise matched. Before the result, a capped transport timer is derived from the
+Harness deadline unless explicitly narrowed; stdout EOF without a result makes further protocol
+progress impossible and triggers bounded termination. Observation-only callback and listener
+thenables have their rejections consumed so they cannot become unhandled host-process failures.
+All of these lifecycle paths request cooperative CLI cancellation with SIGINT before the bounded
+SIGKILL fallback; they do not use SIGTERM to bypass Runner child/effect settlement.
+
+Public terminal status is the four-value contract `completed`, `cancelled`, `handoff` or
+`failed`. Internal deadline exhaustion therefore appears publicly as `failed`, matching the
+authoritative `run.failed` event and exit code, while `deadline_exceeded` remains available as
+the detailed reason and internal runtime status.
+
+The executable is part of the TypeScript trust boundary. A bare `harness` name is resolved by
+the child-process environment's `PATH`; an absolute path is checked to resolve to an executable
+file but is not content-digest pinned by the SDK. Deployments must review and version-pin the
+binary/package and protect its path and `PATH` from less-trusted writers. The child inherits a
+snapshot of the Node process environment plus explicit overrides. This interface is not the
+Codex app-server JSON-RPC protocol and does not claim full API parity with the Claude Agent SDK
+or either Codex SDK.
 
 ## Immutable attachment boundary
 

@@ -41,6 +41,61 @@ Security fixes target the current `2.x` Agent Harness line.
   an uncertain crash boundary. Cancellation after such an effect begins settles as an
   explicit handoff.
 
+### SDK embedding boundaries
+
+The Python SDK is an in-process facade over `AgentRunner`. It preserves the Runner's session,
+permission, approval, tool, sandbox, journal and unresolved-effect rules, but it does not
+sandbox the embedding Python application. The application, its imports, event callbacks and
+any caller-supplied `ApprovalBroker` already run with the host Python process's OS authority
+and can read objects and credentials available in that process. Only pass a broker whose code
+is trusted to inspect approval requests and make decisions; a broker can answer a central ask
+but cannot turn a central schema, permission, scope or sandbox denial into authority.
+
+A Python thread stores an explicit immutable permission mode. Resume and fork default to
+`read-only`; selecting `workspace-write` or `full-access` is an application authority decision
+and must not be derived directly from a prompt, attachment or other untrusted model content.
+One client serializes its thread operations while it reapplies that mode, imports attachments,
+runs and conservatively cleans up. This prevents authority races inside that client, not across
+independent clients/processes and not against code already controlling the process. Event
+callbacks receive detached event payloads that may contain model or ordinary tool output.
+Streaming workers are non-daemon; callers must exhaust or close streams so cancellation and
+join can finish. Application cancellation callbacks that raise `BaseException` are not treated
+as successful cleanup: the SDK completes every registered cleanup and worker join first, then
+re-raises the fatal callback exception to the caller.
+
+The TypeScript SDK executes a separate `harness` binary. `harnessPath` is therefore executable
+code trust, not data. The default bare name is resolved through the inherited `PATH`; an
+absolute path is checked for an executable file but is not opened no-follow, digest-attested or
+locked against later replacement. Production callers should use an absolute path to a
+reviewed/version-pinned installation, protect every writable path component and avoid an
+untrusted `PATH`. The SDK snapshots the Node process environment and applies requested
+overrides before spawn; child-process credentials and loader controls present there remain part
+of the launch authority.
+
+Node uses direct argv and `shell: false`; the prompt is written to stdin rather than the process
+argument list. Absolute attachment source paths are still passed as repeated `--attach`
+arguments and can be visible to same-user process inspection before the CLI imports them. The
+SDK validates bounded canonical UTF-8 JSONL, exact event types and identity, contiguous
+sequence, one terminal, the exec-result record and exit-code agreement. These are protocol and
+memory bounds, not confidentiality filtering: event callbacks and `finalResponse` can contain
+model text or normal tool output, including sensitive content the run was authorized to read.
+Child stderr is drained and discarded and only safe process metadata is exposed in SDK errors.
+
+The TypeScript surface has no approval broker. It passes the explicit permission mode to the
+headless CLI; an unresolved medium/high approval becomes handoff under the normal policy rather
+than being silently accepted. Cancellation, transport and protocol watchdogs send cooperative
+SIGINT first and, after a bounded grace period, SIGKILL. Abort listener registration is
+completed before spawn so a rejected signal cannot
+leave an untracked child. Protocol failure similarly terminates the child best-effort, and a
+valid exec-result is followed by a bounded close watchdog so a lingering child cannot hold the
+SDK promise indefinitely. A separate capped transport timeout bounds the period before that
+record, and stdout EOF without a result triggers bounded termination immediately. Async event
+callback and signal-listener rejections are consumed as observation failures rather than
+becoming unhandled host-process rejections. Neither outcome proves
+that an already-started external effect was undone; an unresolved session/workspace fence may
+remain and must be inspected through the normal durable evidence. This subprocess/JSONL SDK is
+not an app-server protocol or a containment boundary.
+
 ### Immutable attachment imports
 
 An attachment pathname is an untrusted import source, not an authorization grant. The loader

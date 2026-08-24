@@ -60,6 +60,7 @@ class CancellationToken:
             self._event.set()
             callbacks = tuple(self._callbacks.values())
             self._callbacks.clear()
+        fatal_callback_error: BaseException | None = None
         for callback in callbacks:
             try:
                 callback()
@@ -67,6 +68,14 @@ class CancellationToken:
                 # Cancellation must remain monotonic even when one transport
                 # cleanup hook has already lost its underlying connection.
                 continue
+            except BaseException as exc:
+                # KeyboardInterrupt/SystemExit-like application callbacks are
+                # still propagated, but only after every registered transport
+                # cleanup has had its chance to settle.
+                if fatal_callback_error is None:
+                    fatal_callback_error = exc
+        if fatal_callback_error is not None:
+            raise fatal_callback_error
         return True
 
     @contextmanager

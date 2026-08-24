@@ -41,6 +41,21 @@ jobs:
           with tarfile.open(sdists[0], "r:gz") as archive:
               sdist_names = archive.getnames()
           assert any(name.startswith("agent_harness/") for name in wheel_names)
+          required_wheel_members = {
+              "agent_harness/py.typed",
+              "agent_harness/sdk.py",
+          }
+          assert required_wheel_members <= set(wheel_names), (
+              required_wheel_members - set(wheel_names)
+          )
+          required_data_suffixes = {
+              "/share/agent-harness/schema/agent_harness_attachment.schema.json",
+              "/share/agent-harness/schema/agent_harness_exec_result.schema.json",
+          }
+          assert all(
+              any(name.endswith(suffix) for name in wheel_names)
+              for suffix in required_data_suffixes
+          ), required_data_suffixes
           wheel_roots = {name.split("/", 1)[0] for name in wheel_names}
           assert all(
               root == "agent_harness" or root.startswith("agent_harness-")
@@ -77,3 +92,18 @@ jobs:
           python -m pip install --force-reinstall --no-deps dist-ci/*.whl
           harness --help
           harness --cwd . status
+
+  typescript-sdk:
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 22]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm --prefix sdk/typescript ci --ignore-scripts
+      - run: npm --prefix sdk/typescript test
+      - run: npm pack ./sdk/typescript --dry-run --json

@@ -91,6 +91,20 @@ class HarnessSchemaTests(unittest.TestCase):
         self._validate("agent_harness_attachment.schema.json", text.to_dict())
         self._validate("agent_harness_attachment.schema.json", image.to_dict())
 
+    def test_headless_exec_result_matches_the_public_schema(self) -> None:
+        self._validate(
+            "agent_harness_exec_result.schema.json",
+            {
+                "schema": "agent_harness.exec_result.v1",
+                "session_id": "session_" + "1" * 32,
+                "run_id": "run_" + "2" * 32,
+                "turn_id": "turn_" + "3" * 32,
+                "status": "completed",
+                "reason": "completed",
+                "usage": {"input_tokens": 12, "output_tokens": 4},
+            },
+        )
+
     def test_journal_record_and_checkpoint_envelope_match_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "run.jsonl"

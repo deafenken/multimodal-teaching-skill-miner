@@ -47,6 +47,82 @@ harness --permissions full-access
 
 TUI 中使用 `/permissions workspace-write` 切换当前会话权限。
 
+## SDK
+
+Python SDK 是 `AgentRunner` 上的进程内、类型化封装，复用同一套 session、附件、权限、
+审批、journal 和恢复边界；它不启动另一个 `harness` 进程。同步与异步客户端都支持
+start/resume/fork、普通 run、事件流、附件和协作取消：
+
+```python
+from agent_harness.sdk import (
+    HarnessClient,
+    HarnessClientOptions,
+    HarnessRunOptions,
+    HarnessThreadOptions,
+)
+
+client = HarnessClient(HarnessClientOptions(workspace="."))
+thread = client.start_thread(
+    HarnessThreadOptions(permission_mode="read-only")
+)
+stream = thread.run_stream(
+    "检查这份设计",
+    HarnessRunOptions(attachments=("DESIGN.md",)),
+)
+for event in stream:
+    if event.type == "message.delta":
+        print(event.payload["delta"], end="")
+result = stream.result()
+
+resumed = client.resume_thread(result.session_id)  # 默认重新收窄为 read-only
+forked = thread.fork()                             # 逻辑 transcript fork
+```
+
+异步程序使用 `AsyncHarnessClient` / `AsyncHarnessThread`。Python thread 的权限是显式、
+不可变的；同一 client 会串行化 runner 操作以避免并发 thread 借用另一条 thread 的权限。
+同一个事件流只允许一个阻塞消费操作；并发消费会立即失败，并发 close 则都会等到 worker
+真正结束后再返回。
+只有调用方显式传入 `HarnessRunOptions(approval_broker=...)` 才能在 SDK 内回答交互审批；
+省略时保持 headless fail-closed 行为。
+
+`sdk/typescript/` 是可独立打包的 `@agent-harness/sdk`：Node.js 18+、严格 ESM、零运行时
+依赖。它通过 `shell: false` 子进程调用另行安装的 `harness exec --jsonl`，因此不是
+Python 进程内绑定，也不是 app-server transport。仓库内可直接安装：
+
+```bash
+npm install ./sdk/typescript
+```
+
+```ts
+import { HarnessClient } from "@agent-harness/sdk";
+
+const client = new HarnessClient({
+  harnessPath: "/absolute/pinned/bin/harness",
+  cwd: "/work/project",
+});
+const thread = client.startThread(); // lazy：首次有效 run 才取得 session ID
+const stream = thread.runStream("检查失败测试", {
+  attachments: ["failure.md"],
+  permissionMode: "read-only",
+});
+for await (const event of stream) {
+  // 消费类型化、已校验的 agent_harness.event.v1 事件
+}
+const result = await stream.result;
+const resumed = client.resumeThread(result.sessionId);
+```
+
+TypeScript 当前支持 start/resume，不提供 fork；取消使用 `AbortSignal`。stdout 会经过
+UTF-8、单行/总量、事件序列、终态、identity、exec-result 和退出码的有界一致性校验，
+有效 exec-result 后子进程也必须在有界宽限期内退出，否则会被终止并按协议错误处理。
+结果前另有从 Harness deadline 推导的可配置 transport timeout；stdout 在没有结果时提前
+关闭，也会立即进入有界终止路径。
+但 JSONL 仍可能包含模型正文与普通工具输出。SDK 不内置 headless approval broker；
+未被中央策略或既有精确规则解决的 medium/high 审批会 handoff。生产嵌入应使用已审查、
+固定版本的绝对 `harnessPath`；默认裸命令名依赖调用进程的 `PATH`，不是可执行文件完整性证明。
+更完整的 Node 示例和边界见
+[`sdk/typescript/README.md`](sdk/typescript/README.md)。
+
 ## 当前能力
 
 - 有界、可取消的 model/tool loop，包含 retry、deadline、step 和 tool-call budget。
@@ -81,6 +157,8 @@ TUI 中使用 `/permissions workspace-write` 切换当前会话权限。
   每个子任务使用从当前 clean committed HEAD 创建的独立 Git worktree；TUI 显示有界状态，
   保留产物可用 `/agents` 或 `harness agents` 检查。
 - Headless JSONL：稳定事件 schema、session/run/turn identity 和退出码。
+- 稳定 Python/TypeScript SDK：Python 进程内 start/resume/fork、同步/异步 run 与事件流；
+  TypeScript Node 18+ dependency-free subprocess/JSONL start/resume、run/stream、附件和取消。
 
 与 Claude Code、Codex 的逐项对表见
 [docs/harness_parity_matrix.md](docs/harness_parity_matrix.md)。
