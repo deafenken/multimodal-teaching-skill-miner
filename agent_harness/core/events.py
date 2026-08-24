@@ -64,6 +64,7 @@ def _validate_event_payload(event_type: str, payload: Mapping[str, Any]) -> None
         for field in (
             "instructions_sha256",
             "hooks_sha256",
+            "mcp_sha256",
             "source_messages_sha256",
             "summary_sha256",
             "active_context_sha256",
@@ -80,6 +81,8 @@ def _validate_event_payload(event_type: str, payload: Mapping[str, Any]) -> None
             "hook_count",
             "trusted_hook_count",
             "disabled_hook_count",
+            "mcp_server_count",
+            "mcp_tool_count",
             "source_message_count",
             "active_message_count",
         ):
@@ -440,6 +443,9 @@ _PUBLIC_PAYLOAD_FIELDS: dict[str, tuple[str, ...]] = {
         "hook_count",
         "trusted_hook_count",
         "disabled_hook_count",
+        "mcp_sha256",
+        "mcp_server_count",
+        "mcp_tool_count",
         "compaction_id",
         "source_message_count",
         "source_messages_sha256",

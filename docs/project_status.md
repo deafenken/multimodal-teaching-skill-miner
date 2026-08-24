@@ -1,7 +1,7 @@
 # Project status
 
 Status: **engineering preview**
-Version: **2.3.0**
+Version: **2.4.0**
 
 ## Implemented
 
@@ -21,6 +21,11 @@ Version: **2.3.0**
   `PostToolUseFailure`; project hooks are monotonic, post hooks are observe-only, execution
   uses a dedicated read-only/no-network macOS sandbox with no unsupported-host fallback,
   and events omit raw hook I/O;
+- exact-digest trusted local stdio MCP tools client subset pinned to protocol `2025-06-18`:
+  explicit trust/disable and catalog refresh, frozen/run-bound tool surface, live-catalog
+  revalidation, strict bounded JSON-RPC/schema/result handling, `full-access` high-risk
+  once-only approval, never replay, read-only macOS Seatbelt execution and digest-only stderr
+  diagnostics;
 - stable message identities, append-only transcripts, provider-generated summary lineage,
   active-context projection, manual `/compact` and bounded 80%→60% automatic compaction;
 - curses TUI and headless text/JSONL commands;
@@ -37,7 +42,15 @@ Version: **2.3.0**
 - cleanup or containment of an unsandboxed `process.exec_host` command that daemonizes
   outside its initial process group;
 - confidentiality isolation between a session and its fork;
-- MCP, `CLAUDE.md` compatibility or subagents;
+- MCP HTTP transport, OAuth, resources, prompts, sampling, elicitation, tasks, input-required/
+  task results, active-run dynamic catalogs, full JSON Schema, binary rendering or MCP server
+  mode; the implemented surface is only the exact-trusted local stdio tools client subset;
+- transitive integrity for MCP dependencies: the exact digest binds the direct executable and
+  launch definition, not interpreter-argument scripts, libraries, packages, runtime files or
+  environment values;
+- containment of an MCP server allowed to fork and then daemonize outside the Harness process
+  group; descendants retain the Seatbelt/network authority explicitly granted to that server;
+- `CLAUDE.md` compatibility or subagents;
 - full Claude Code/Codex hooks parity: only the three synchronous tool lifecycle events are
   implemented, with no async hooks, input rewriting or other run/session/model events;
 - a provider-neutral compaction implementation beyond the current DeepSeek adapter;

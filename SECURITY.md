@@ -87,6 +87,75 @@ cancellation after that boundary is handled by the same conservative unresolved-
 as other uncertain effects. The Harness does not automatically replay a hook that may already
 have acted.
 
+### Exact-trust local MCP stdio tools
+
+`.agent-harness/mcp.json` is untrusted repository content. Merely opening a workspace or
+running `harness mcp` does not start a server. Each configured server must first receive an
+exact `trust` or `disable` decision in the 0600 state directory outside the repository. A
+trusted server must then be started explicitly by `harness mcp refresh SERVER_ID` to negotiate
+protocol `2025-06-18` and freeze a bounded tools catalog. New runs fail closed when a proposal
+is unresolved or a trusted catalog is missing/stale; an active run never adopts a changed
+catalog dynamically. Before every call the client revalidates the direct executable, performs
+a fresh handshake/list, and rejects a changed or list-changed catalog.
+
+The definition digest binds exact config bytes, server ID, transport, the resolved direct
+executable's bytes and file identity, argv, cwd, allowed environment-variable names,
+network/fork flags, timeouts and sandbox-policy version. This is **not transitive dependency
+integrity** or a code signature. In particular, it does not bind a script named only in an
+interpreter argument, imported packages, shared libraries, runtime configuration, environment
+variable values or files the server reads later. Rechecking the direct executable cannot
+detect those changes. Trust therefore means the operator reviewed and accepts the entire
+server/dependency chain; the Harness only enforces the narrower digest it reports.
+
+To close the path-replacement window between verification and `exec`, each user-owned direct
+executable is copied byte-for-byte into a mode-0500 file inside that connection's mode-0700
+private runtime and the copy is executed. Its `argv[0]` (and a script's usual `__file__`) thus
+points at the transient runtime copy, so servers that locate resources relative to their
+executable directory must account for that behavior. A macOS system executable is left at its
+canonical platform path only when the executable and every ancestor are root-owned and both
+mode and ACL-aware current-user checks show no write authority; copied platform binaries may
+otherwise be non-executable on macOS.
+
+MCP processes have a read-only workspace, protected `.git`/`.private`/`.agent-harness` reads
+denied, writes limited to a private runtime HOME/TMP plus `/dev`, and known external user-data
+and credential-service denials. Network and process fork are denied by default; setting
+`network_access` or `allow_process_fork` grants that authority and changes the exact definition
+digest. Reserved provider credentials and `HARNESS_*` names cannot be selected through
+`pass_env`. Harness/sandbox environment controls and common runtime code-loading controls such
+as `DYLD_*`, `LD_*`, `PYTHONPATH` and `NODE_OPTIONS` are also rejected. Other explicitly named
+values are disclosed to the local server and are not digest bound.
+
+This MCP boundary is an allow-default macOS Seatbelt host policy, **not a container, VM,
+portable sandbox or complete host-read/IPC/confidentiality boundary**. There is no unsandboxed
+or unsupported-host fallback. When fork is disabled the profile denies child creation. When
+fork is explicitly enabled, descendants ordinarily inherit the Seatbelt profile, but
+`setsid`, double-forking or daemonization can escape the Harness process group and survive its
+best-effort timeout/cancellation cleanup. Such a descendant can continue exercising whatever
+filesystem, IPC and network authority the exact server definition granted; process-group
+reaping is not containment.
+
+Frozen MCP tools are registered only in `full-access` with the separate `mcp.external`
+permission and external-service/remote-consent scopes. Every call is high-risk, serial,
+`never` replay and crosses a durable effect boundary before the server starts. It requires a
+fresh once-only approval; existing or newly requested session/workspace persistent allow
+rules cannot bypass that challenge. A crash or cancellation after the boundary is fenced for
+manual inspection rather than replayed.
+
+The protocol implementation is a strict bounded client subset pinned to `2025-06-18`:
+initialize/initialized, paginated `tools/list`, `tools/call`, cancellation, server ping
+responses and tools-list-changed invalidation. It does not implement HTTP, OAuth, resources,
+prompts, sampling, elicitation, tasks, input-required/task results, active-run dynamic
+catalogs, full JSON Schema, binary rendering or MCP server mode. Non-`ping` server requests
+receive method-not-supported. Unsupported schema keywords/tools fail closed or are excluded
+from the explicit frozen catalog rather than weakening local validation.
+
+Tool arguments and normalized text/structured results follow the ordinary owner-only
+journal/checkpoint persistence contract and results may later be sent to the model provider.
+Raw server stderr is drained and hashed transiently but is not persisted; only byte count,
+truncation state and SHA-256 metadata can be returned to the local CLI. Non-text content is
+not rendered and is reduced to content-free type/length/MIME/digest metadata before normal
+tool persistence.
+
 ## Provider credentials
 
 Use `DEEPSEEK_API_KEY` or `HARNESS_DEEPSEEK_API_KEY_FILE`. Key files must be private regular

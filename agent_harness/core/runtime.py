@@ -1369,6 +1369,28 @@ def run_agent_harness(
                 ),
             }
         )
+    raw_mcp_snapshot = context.get("mcp_snapshot")
+    if isinstance(raw_mcp_snapshot, Mapping):
+        mcp_schema = raw_mcp_snapshot.get("schema")
+        raw_servers = raw_mcp_snapshot.get("servers", [])
+        if (
+            mcp_schema == "agent_harness.mcp_policy.v1"
+            and isinstance(raw_servers, list)
+            and all(isinstance(item, Mapping) for item in raw_servers)
+        ):
+            run_started_payload.update(
+                {
+                    "mcp_sha256": canonical_sha256(dict(raw_mcp_snapshot)),
+                    "mcp_server_count": len(raw_servers),
+                    "mcp_tool_count": sum(
+                        int(item.get("tool_count", 0))
+                        for item in raw_servers
+                        if isinstance(item.get("tool_count", 0), int)
+                        and not isinstance(item.get("tool_count", 0), bool)
+                        and int(item.get("tool_count", 0)) >= 0
+                    ),
+                }
+            )
     raw_instruction_snapshot = context.get("instruction_snapshot")
     if isinstance(raw_instruction_snapshot, Mapping):
         snapshot_sha256 = raw_instruction_snapshot.get("snapshot_sha256")

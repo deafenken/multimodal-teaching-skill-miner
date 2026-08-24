@@ -36,6 +36,7 @@ PERMISSION_PROFILES: dict[str, frozenset[str]] = {
             "workspace.write",
             "process.exec.sandboxed",
             "process.exec.host",
+            "mcp.external",
         }
     ),
 }
@@ -286,6 +287,7 @@ def _macos_workspace_sandbox_profile(
     workspace_writable: bool = True,
     deny_process_fork: bool = False,
     deny_git_read: bool = False,
+    network_allowed: bool = False,
 ) -> str:
     """Build a deny-overlay Seatbelt profile for workspace tools.
 
@@ -336,7 +338,7 @@ def _macos_workspace_sandbox_profile(
         (
             "(version 1)",
             "(allow default)",
-            "(deny network*)",
+            *(("(deny network*)",) if not network_allowed else ()),
             "(deny signal)",
             *process_rules,
             # Keychain APIs normally cross one of these Mach service families.
@@ -364,6 +366,96 @@ def _macos_workspace_sandbox_profile(
             '(deny file-write* (regex #"(?i).*/[.](git|private|agent-harness)(/.*)?$"))',
         )
     )
+
+
+def mcp_stdio_sandbox_launch(
+    root: os.PathLike[str] | str,
+    runtime_directory: os.PathLike[str] | str,
+    command: list[str],
+    *,
+    network_allowed: bool,
+    allow_process_fork: bool,
+    environment_overrides: Mapping[str, str] | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """Build the exact Seatbelt launch used by trusted stdio MCP servers.
+
+    MCP servers receive a read-only workspace, no access to protected project
+    metadata or known user-data roots outside the workspace, and a private
+    writable HOME/TMP directory. Network and child-process authority are
+    explicit digest-bound configuration fields rather than implicit defaults.
+    """
+
+    if not _workspace_sandbox_available():
+        raise ToolExecutionError(
+            "MCP stdio requires the macOS Seatbelt sandbox on this host",
+            code="sandbox_unavailable",
+        )
+    workspace = Path(root).expanduser().resolve(strict=True)
+    runtime = Path(runtime_directory).expanduser().resolve(strict=True)
+    if not workspace.is_dir() or not runtime.is_dir():
+        raise ToolExecutionError(
+            "MCP sandbox directories are invalid",
+            code="sandbox_setup_failed",
+        )
+    if not command or any(
+        not isinstance(item, str) or not item or "\x00" in item
+        for item in command
+    ):
+        raise ToolExecutionError(
+            "MCP command is invalid",
+            code="sandbox_setup_failed",
+        )
+    environment = _safe_process_environment(private_home=runtime)
+    protected_environment = frozenset(
+        {
+            "AGENT_HARNESS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_OPTIONAL_LOCKS",
+            "GIT_TERMINAL_PROMPT",
+            "HOME",
+            "PATH",
+            "TMPDIR",
+            "XDG_CACHE_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "ZDOTDIR",
+        }
+    )
+    for name, value in dict(environment_overrides or {}).items():
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in protected_environment
+            or not isinstance(value, str)
+            or "\x00" in name
+            or "\x00" in value
+        ):
+            raise ToolExecutionError(
+                "MCP environment override is invalid or reserved by the sandbox",
+                code="sandbox_setup_failed",
+            )
+        environment[name] = value
+    profile = _macos_workspace_sandbox_profile(
+        workspace,
+        runtime,
+        workspace_writable=False,
+        deny_process_fork=not allow_process_fork,
+        deny_git_read=True,
+        network_allowed=network_allowed,
+    )
+    return [
+        _MACOS_SANDBOX_BINARY,
+        "-p",
+        profile,
+        *command,
+    ], environment
+
+
+def terminate_managed_process_group(process: subprocess.Popen[bytes]) -> bool:
+    """Terminate and reap one Harness-owned subprocess group."""
+
+    return _terminate_process_group(process)
 
 
 def _patch_path(raw: str, *, strip_git_prefix: bool) -> Path | None:
@@ -768,6 +860,7 @@ class WorkspaceToolset:
         deny_process_fork: bool = False,
         strict_utf8_output: bool = False,
         deny_git_read: bool = False,
+        network_allowed: bool = False,
     ) -> dict[str, Any]:
         """Run one subprocess under the workspace Seatbelt policy.
 
@@ -794,6 +887,7 @@ class WorkspaceToolset:
                 workspace_writable=workspace_writable,
                 deny_process_fork=deny_process_fork,
                 deny_git_read=deny_git_read,
+                network_allowed=network_allowed,
             )
             return self._run_process(
                 [
@@ -1169,6 +1263,8 @@ __all__ = [
     "PERMISSION_PROFILES",
     "WorkspaceToolset",
     "build_workspace_registry",
+    "mcp_stdio_sandbox_launch",
     "permission_profile",
+    "terminate_managed_process_group",
     "workspace_sandbox_status",
 ]

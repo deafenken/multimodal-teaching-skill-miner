@@ -10,10 +10,10 @@ Session Store
 Harness Runtime
  ┌──────┼──────────────────────┐
 Provider Adapter   Tool Registry       Event/Journal
-                       │
-              Trusted Hook Broker
-                       │
-                Workspace Toolset
+                 ┌─────┴───────────┐
+        Trusted Hook Broker   Frozen MCP Catalog
+                 │                 │
+                 └──── Workspace Toolset / Seatbelt
 ```
 
 The core is domain-neutral. It knows runs, turns, model decisions, tools, permissions,
@@ -21,22 +21,25 @@ events, budgets and recovery; application-domain models stay outside the package
 
 ## Run protocol
 
-1. Validate the session fence, securely snapshot project instructions and project hook
-   definitions, and require an exact trust or disable decision for every hook digest.
+1. Validate the session fence; securely snapshot project instructions, hook definitions and
+   local MCP definitions; require an exact trust/disable decision for every executable
+   proposal and a current explicitly refreshed catalog for every trusted MCP server.
 2. Estimate the prospective active context; when it crosses the 80% threshold, append one
    or more bounded provider summaries until it approaches 60% or cannot advance safely.
 3. Create fresh run/turn identities and atomically append both the user message and the
    unresolved run record. A crash after this commit therefore leaves a visible fence.
-4. Create the 0600 hash-chain journal and bind instruction, hook-policy and context-lineage
-   digests.
+4. Create the 0600 hash-chain journal and bind instruction, hook-policy, frozen MCP-policy/
+   catalog and context-lineage digests.
 5. Build the provider-visible tool list from the active permission profile and data-scope
-   metadata. A scope label authorizes a handler; OS isolation is enforced separately.
+   metadata. Trusted frozen MCP tools join it only in `full-access`; a scope label authorizes
+   a handler while OS isolation is enforced separately.
 6. Ask the provider adapter for either central tool calls, a final answer or a handoff.
 7. Validate schema/replay first, then synchronously run matching `PreToolUse` hooks. Their
    aggregate can preserve the central policy, require approval or deny; it cannot allow a
    call that central policy would otherwise ask for or deny.
 8. Resolve approval before `tool.started` and the durable tool effect boundary. Approval
-   events contain digests, not raw command or patch text.
+   events contain digests, not raw command or patch text. MCP calls are always high-risk,
+   once-only approvals and cannot inherit or create a persistent allow.
 9. Validate and settle tools centrally. After the final success or failure, synchronously
    run the observe-only `PostToolUse` or `PostToolUseFailure` hook before emitting the final
    tool settlement. Every tool and hook effect has typed lifecycle evidence.
@@ -63,6 +66,13 @@ events, budgets and recovery; application-domain models stay outside the package
 - Project hook configuration is executable policy only after a private trust record matches
   the exact definition digest. A modified definition blocks new runs until it is explicitly
   trusted or disabled again.
+- Project MCP configuration is executable only after a private record matches the exact
+  server-definition digest and an explicit refresh has frozen a bounded `2025-06-18` tools
+  catalog. The run policy binds both definition and catalog digests. A live catalog change is
+  rejected; it never changes the active run's tool surface implicitly.
+- MCP tools are `full-access`, external-service, high-risk, serial and `never` replay. They
+  require fresh user consent for every call and cross the durable effect boundary before the
+  stdio process starts.
 - Hooks are monotonic. `PreToolUse` can return only `pass`, `ask` or `deny`, ordered
   `deny > ask > pass`; post-tool hooks are observe-only. No hook can grant authority,
   replace tool input, weaken scope/approval rules or select a less restrictive sandbox.
@@ -95,10 +105,14 @@ events, budgets and recovery; application-domain models stay outside the package
 - `harness hooks [--json]`: inspect content-free hook definitions, exact digests and trust
   status. `hooks trust|disable ... --sha256 DIGEST` records an exact decision and
   `hooks revoke HOOK_ID` removes it. TUI `/hooks` is inspection-only.
+- `harness mcp [--json]`: inspect exact stdio launch definitions, authority flags, trust and
+  catalog state. `mcp trust|disable ... --sha256 DIGEST` records an exact decision,
+  `mcp refresh SERVER_ID` freezes a catalog and `mcp revoke SERVER_ID` removes trust. TUI
+  `/mcp` is inspection-only and never starts a server.
 
 ## Trusted command-hook subset
 
-The only executable project source is `.agent-harness/hooks.json`. It can declare synchronous
+The only project hook source is `.agent-harness/hooks.json`. It can declare synchronous
 `PreToolUse`, `PostToolUse` and `PostToolUseFailure` commands whose entrypoints stay below
 `.agent-harness/hooks/`. This is a narrow tool-lifecycle subset, not full Claude Code or Codex
 hooks parity: there are no other run/session/model lifecycle hooks, asynchronous hooks,
@@ -129,12 +143,62 @@ follow the same bounded, fail-closed event policy. A crash after `hook.effect_st
 treated conservatively by the existing unresolved-effect fence; the Harness does not
 automatically replay a hook that may already have acted.
 
+## Exact-trust local MCP stdio tools subset
+
+`.agent-harness/mcp.json` proposes local stdio server definitions; proposal discovery and
+status inspection never start a process. The implementation is a tools-only MCP client subset
+pinned to protocol `2025-06-18`. Every definition must be exactly trusted or disabled in the
+0600 private workspace state. Trusted definitions are still inactive until an explicit
+`harness mcp refresh SERVER_ID` starts the server, initializes it and stores a canonical,
+bounded tool catalog outside the repository.
+
+A definition digest binds the exact config bytes, server ID, stdio transport, direct
+executable bytes and stat identity, argv, workspace-confined cwd, allowed environment names,
+network/fork flags, startup/tool timeouts and sandbox-policy version. The direct executable is
+revalidated before refresh and call. This does not attest transitive integrity: scripts named
+only in interpreter arguments, imports, packages, shared libraries, runtime files,
+environment values and files opened later are outside that digest.
+
+The protocol engine accepts strict, bounded newline-delimited JSON-RPC objects. It implements
+initialize/initialized, paginated `tools/list`, `tools/call`, cancellation, server `ping`
+responses and `notifications/tools/list_changed` invalidation. It freezes canonical accepted
+tool definitions and content-free rejected-tool records. At call time it performs a fresh
+handshake/list and requires the live catalog digest to equal the stored catalog, so catalog
+change fails closed instead of mutating an active registry.
+
+Remote input/output schemas must be object-root schemas using only the Harness-supported
+local validation keywords. Text and object-shaped `structuredContent` are normalized;
+non-text content is reduced to type/length/MIME/digest metadata and is not rendered. Remote
+`isError` is a settled tool result. Unsupported keywords/tools are excluded during explicit
+refresh. HTTP, OAuth, resources, prompts, sampling, elicitation, tasks, input-required/task
+results, active-run dynamic catalogs, full JSON Schema, binary rendering and MCP server mode
+are outside this version.
+
+The stdio process runs under a read-only macOS Seatbelt profile with protected project reads
+denied and writes limited to a private runtime HOME/TMP and `/dev`. Network and process fork
+default to denied and are enabled only by exact-digest-bound flags. There is no unsandboxed or
+unsupported-host fallback. This remains an allow-default host policy, not a container or
+complete host confidentiality boundary. With fork enabled, daemonization may escape
+best-effort process-group cleanup while retaining the granted Seatbelt/network authority.
+
+Accepted MCP tools are registered only in `full-access` with `mcp.external`, external-service
+and remote-consent scope. Each is high-risk, nonparallel and `never` replay, and requires a
+fresh once-only approval that cannot be replaced by a session/workspace allow rule. The
+durable tool effect boundary is crossed before the stdio process starts.
+
+Raw MCP arguments and normalized results use the ordinary owner-only checkpoint/journal
+contract; the result may become a later provider observation. Raw stderr is drained and
+hashed transiently but never persisted. Only byte count, truncation state and SHA-256 may be
+returned to a local refresh caller. Server instructions/info are represented in the frozen
+catalog by digests, not raw text.
+
 ## Permission profiles
 
 - `read-only`: workspace list/read/search.
 - `workspace-write`: read-only tools plus, when macOS Seatbelt is available, unified patch
   application and `process.exec`. Both patch phases and commands use the same policy class.
-- `full-access`: workspace-write plus the separate unsandboxed `process.exec_host` tool.
+- `full-access`: workspace-write plus the separate unsandboxed `process.exec_host` tool and
+  exact-trusted/frozen local MCP tools when their Seatbelt backend is available.
 
 `workspace.patch` and the sandboxed command tool are registered only when the macOS Seatbelt
 backend is available; other platforms fail closed instead of substituting an unsafe writer.
@@ -162,5 +226,5 @@ The private approval policy can add tool-wide deny/ask rules and exact allow rul
 decisions support once/session/workspace scopes; only the exact tool version and canonical
 argument digest persist. Approval events omit raw arguments, but private checkpoints may
 retain a pending call so safe/idempotent recovery can be evaluated; users should not place
-secrets in command or patch arguments. Full hooks parity, MCP and subagents remain in the
-staged backlog in `docs/harness_parity_matrix.md`.
+secrets in command, patch or MCP arguments. Full hooks parity, broader MCP transports/features
+and subagents remain in the staged backlog in `docs/harness_parity_matrix.md`.

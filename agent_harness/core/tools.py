@@ -48,6 +48,11 @@ from .schema import validate_schema, validate_schema_definition
 _TOOL_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _PERMISSION = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_APPROVAL_SECRET_FIELD = re.compile(
+    r"password|passwd|secret|token|api[_-]?key|authorization|cookie|credential|"
+    r"private[_-]?key|access[_-]?key|session[_-]?key",
+    re.IGNORECASE,
+)
 _DATA_SCOPES = frozenset(
     {
         "internal",
@@ -101,6 +106,7 @@ class ToolSpec:
     trusted_inline_reason: str | None = None
     data_scope: str = "internal"
     requires_user_consent: bool = False
+    persistent_approval_allowed: bool = True
     retry_policy: RetryPolicy = field(
         default_factory=lambda: RetryPolicy(max_attempts=1)
     )
@@ -148,6 +154,10 @@ class ToolSpec:
             raise HarnessContractError("tool data_scope is invalid")
         if not isinstance(self.requires_user_consent, bool):
             raise HarnessContractError("tool requires_user_consent is invalid")
+        if not isinstance(self.persistent_approval_allowed, bool):
+            raise HarnessContractError(
+                "tool persistent_approval_allowed is invalid"
+            )
         if not 0.01 <= float(self.timeout_seconds) <= 86_400:
             raise HarnessContractError("tool timeout_seconds is invalid")
         # Validate schema syntax with representative empty objects when the
@@ -665,6 +675,49 @@ def _run_handler(
     return _run_isolated_handler(handler, arguments, context, clock=clock)
 
 
+def _redacted_approval_value(
+    value: Any,
+    *,
+    field_name: str = "",
+    depth: int = 0,
+) -> Any:
+    """Build a bounded transient preview without echoing likely credentials."""
+
+    if field_name and _APPROVAL_SECRET_FIELD.search(field_name):
+        return "<redacted>"
+    if depth >= 6:
+        return "<depth-limit>"
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        items = sorted(value.items(), key=lambda item: str(item[0]))
+        for raw_key, child in items[:24]:
+            key = _CONTROL.sub("�", str(raw_key))[:120]
+            result[key] = _redacted_approval_value(
+                child,
+                field_name=key,
+                depth=depth + 1,
+            )
+        if len(items) > 24:
+            result["<truncated-fields>"] = len(items) - 24
+        return result
+    if isinstance(value, (list, tuple)):
+        result = [
+            _redacted_approval_value(item, depth=depth + 1)
+            for item in value[:16]
+        ]
+        if len(value) > 16:
+            result.append(f"<truncated-items:{len(value) - 16}>")
+        return result
+    if isinstance(value, str):
+        cleaned = _CONTROL.sub("�", value)
+        if len(cleaned) > 500:
+            return f"{cleaned[:500]}… <{len(cleaned)} chars>"
+        return cleaned
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return f"<{type(value).__name__}>"
+
+
 def _approval_preview(spec: ToolSpec, arguments: Mapping[str, Any]) -> str:
     """Return bounded local UI context without placing it in durable events."""
 
@@ -684,6 +737,14 @@ def _approval_preview(spec: ToolSpec, arguments: Mapping[str, Any]) -> str:
                 if len(paths) >= 12:
                     break
             return "patch: " + (", ".join(paths) if paths else "workspace changes")
+    if spec.name.startswith("mcp."):
+        preview = json.dumps(
+            _redacted_approval_value(arguments),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        return ("external MCP arguments:\n" + preview)[:20_000]
     return "arguments: " + ", ".join(sorted(str(key)[:80] for key in arguments))
 
 
@@ -1000,7 +1061,11 @@ def execute_tool_call(
             None,
         )
     effective_approval_policy = approval_policy
-    if pre_hook_decision.action == "ask":
+    force_once_only_approval = (
+        pre_hook_decision.action == "ask"
+        or not spec.persistent_approval_allowed
+    )
+    if force_once_only_approval:
         effective_approval_policy = ApprovalPolicy(
             rules=(
                 ApprovalRule(
@@ -1023,7 +1088,10 @@ def execute_tool_call(
         arguments=arguments_snapshot,
         policy=effective_approval_policy,
         risk=spec.risk,
-        persistent_scope_allowed=pre_hook_decision.action != "ask",
+        persistent_scope_allowed=(
+            spec.persistent_approval_allowed
+            and pre_hook_decision.action != "ask"
+        ),
     )
     approval_action = effective_approval_policy.action_for(
         tool_name=spec.name,

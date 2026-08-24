@@ -26,6 +26,13 @@ from .hooks import (
     load_project_hooks,
 )
 from .instructions import InstructionSnapshot, load_project_instructions
+from .mcp import (
+    McpLoadError,
+    McpSnapshot,
+    TrustedMcpCatalog,
+    load_project_mcp,
+    mcp_status as project_mcp_status,
+)
 from .providers import DeepSeekClient, DeepSeekCodingModel, DeepSeekConfig
 from .session import SessionStore, SessionStoreError
 from .toolsets import (
@@ -137,6 +144,7 @@ class AgentRunner:
         self.client = DeepSeekClient(config)
         self.model = DeepSeekCodingModel(self.client)
         self.registry = build_workspace_registry(self.workspace)
+        self._mcp_registry_active = False
         self.permission_mode = permission_mode
         self.limits = HarnessLimits(
             max_steps=max_steps,
@@ -172,6 +180,14 @@ class AgentRunner:
                 "status": "invalid",
                 "error_code": "hook_configuration_invalid",
             }
+        try:
+            mcp = self.mcp_status()
+        except (McpLoadError, SessionStoreError):
+            mcp = {
+                "schema": "agent_harness.mcp_status.v1",
+                "status": "invalid",
+                "error_code": "mcp_configuration_invalid",
+            }
         return {
             **provider,
             "workspace": str(self.workspace),
@@ -180,6 +196,7 @@ class AgentRunner:
             "available_permission_modes": list(PERMISSION_PROFILES),
             "workspace_sandbox": workspace_sandbox_status(),
             "project_hooks": hooks,
+            "project_mcp": mcp,
             "approval_defaults": {
                 "low": "allow",
                 "medium": "ask",
@@ -192,6 +209,31 @@ class AgentRunner:
         """Freeze the exact project hook definitions proposed for the next run."""
 
         return load_project_hooks(self.workspace)
+
+    def mcp_snapshot(self) -> McpSnapshot:
+        """Freeze project MCP server launch proposals without starting them."""
+
+        return load_project_mcp(self.workspace)
+
+    def mcp_status(self) -> dict[str, Any]:
+        """Return content-free MCP trust and frozen-catalog diagnostics."""
+
+        status = project_mcp_status(self.store, self.mcp_snapshot())
+        if status["pending_server_count"]:
+            state = "review_required"
+        elif status["refresh_required_count"]:
+            state = "refresh_required"
+        elif status["ready_server_count"]:
+            state = "ready"
+        elif status["server_count"]:
+            state = "disabled"
+        else:
+            state = "none"
+        return {
+            **status,
+            "schema": "agent_harness.mcp_status.v1",
+            "status": state,
+        }
 
     def hook_status(self) -> dict[str, Any]:
         """Return content-free hook definitions and exact trust status."""
@@ -561,6 +603,20 @@ class AgentRunner:
         # This resolves every project proposal and verifies sandbox support
         # before automatic compaction can make a provider request.
         hook_runner = TrustedHookRunner(hook_snapshot, hook_trust_state)
+        mcp_snapshot = self.mcp_snapshot()
+        mcp_catalog = TrustedMcpCatalog(
+            mcp_snapshot,
+            self.store.mcp_trust_state(),
+            self.store.mcp_catalog_state(),
+        )
+        if mcp_catalog.tool_count:
+            run_registry = build_workspace_registry(self.workspace)
+            mcp_catalog.register_tools(run_registry)
+            self.registry = run_registry
+            self._mcp_registry_active = True
+        elif self._mcp_registry_active:
+            self.registry = build_workspace_registry(self.workspace)
+            self._mcp_registry_active = False
         permissions = permission_profile(mode)
         scopes = {"internal", "user_input", "workspace_read"}
         if (
@@ -571,6 +627,8 @@ class AgentRunner:
             scopes.add("workspace_write")
         if "process.exec.host" in permissions:
             scopes.add("host_access")
+        if mcp_catalog.tool_count and "mcp.external" in permissions:
+            scopes.update({"external_service", "remote_consent"})
         approval_policy = ApprovalPolicy(
             rules=(
                 self.store.approval_rules(session_id)
@@ -651,6 +709,7 @@ class AgentRunner:
                         else ""
                     ),
                     "instruction_snapshot": instruction_snapshot.metadata(),
+                    "mcp_snapshot": mcp_catalog.policy_material,
                     "history_summary": history_summary,
                     "context_lineage": context_lineage,
                     "settled_effects": [

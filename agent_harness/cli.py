@@ -12,6 +12,15 @@ from typing import Any, Mapping, Sequence
 from .core import CancellationToken, HarnessCancelled
 from .hooks import HookDefinition, HookLoadError, HookSnapshot, load_project_hooks
 from .instructions import InstructionLoadError, load_project_instructions
+from .mcp import (
+    McpLoadError,
+    McpServerDefinition,
+    McpSnapshot,
+    load_project_mcp,
+    mcp_status,
+    refresh_mcp_catalog,
+)
+from .core.mcp_protocol import McpProtocolError
 from .providers import DeepSeekClientError, DeepSeekConfigurationError
 from .runner import AgentRunner
 from .session import SessionStore, SessionStoreError
@@ -419,6 +428,110 @@ def _hooks(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mcp_definition(snapshot: McpSnapshot, server_id: str) -> McpServerDefinition:
+    return snapshot.server(server_id)
+
+
+def _mcp(args: argparse.Namespace) -> int:
+    """Inspect, trust and refresh project MCP servers without a provider."""
+
+    store = SessionStore(Path(args.cwd), state_home=args.state_home)
+    action = args.mcp_action
+    server_id = str(args.server_id).strip() if action is not None else ""
+    if action == "revoke":
+        removed = store.revoke_mcp_trust(server_id)
+        result = {
+            "schema": "agent_harness.mcp_trust_update.v1",
+            "server_id": server_id,
+            "action": "revoked",
+            "removed": removed,
+        }
+        if args.json:
+            print(_json(result))
+        elif removed:
+            print(f"revoked {sanitize_terminal_text(server_id)}")
+        else:
+            print(f"no trust decision for {sanitize_terminal_text(server_id)}")
+        return 0
+
+    snapshot = load_project_mcp(store.workspace)
+    if action is None:
+        metadata = mcp_status(store, snapshot)
+        if args.json:
+            print(_json(metadata))
+            return 0
+        if not snapshot.config_present:
+            print("No project MCP servers.")
+            return 0
+        print(
+            f"mcp {snapshot.snapshot_sha256[:12]} · "
+            f"{metadata['server_count']} configured · "
+            f"{metadata['trusted_server_count']} trusted · "
+            f"{metadata['disabled_server_count']} disabled · "
+            f"{metadata['pending_server_count']} review-required · "
+            f"{metadata['ready_server_count']} ready"
+        )
+        for item in metadata["servers"]:
+            argv = json.dumps(
+                [item["command"], *item["args"]],
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+            env_names = ",".join(str(value) for value in item["pass_env"]) or "-"
+            print(
+                f"{sanitize_terminal_text(item['server_id'])}  "
+                f"{item['trust_status']}/{item['catalog_status']}  "
+                f"{item['definition_sha256']}  argv={argv}  "
+                f"cwd={sanitize_terminal_text(item['cwd'])}  env={env_names}  "
+                f"network={str(item['network_access']).lower()}  "
+                f"fork={str(item['allow_process_fork']).lower()}"
+            )
+        return 0
+
+    definition = _mcp_definition(snapshot, server_id)
+    if action == "refresh":
+        result = refresh_mcp_catalog(store, snapshot, server_id)
+        if args.json:
+            print(_json(result))
+        else:
+            print(
+                f"refreshed {sanitize_terminal_text(server_id)} "
+                f"{result['catalog_sha256']} · {len(result['tools'])} tools · "
+                f"{len(result['rejected_tools'])} rejected"
+            )
+        return 0
+
+    supplied_digest = str(args.sha256).strip().casefold()
+    if len(supplied_digest) != 64 or any(
+        character not in "0123456789abcdef" for character in supplied_digest
+    ):
+        raise CliUsageError("--sha256 must be a 64-character hexadecimal digest")
+    if supplied_digest != definition.definition_sha256:
+        raise ValueError(
+            "MCP digest does not match the current definition; run `harness mcp` again"
+        )
+    confirmed = _mcp_definition(load_project_mcp(store.workspace), server_id)
+    if confirmed.definition_sha256 != definition.definition_sha256:
+        raise McpLoadError("MCP server definition changed while recording trust")
+    trust_action = "trusted" if action == "trust" else "disabled"
+    store.set_mcp_trust(
+        server_id,
+        confirmed.definition_sha256,
+        action=trust_action,
+    )
+    result = {
+        "schema": "agent_harness.mcp_trust_update.v1",
+        "server_id": server_id,
+        "action": trust_action,
+        "definition_sha256": confirmed.definition_sha256,
+    }
+    if args.json:
+        print(_json(result))
+    else:
+        print(f"{trust_action} {sanitize_terminal_text(server_id)} {confirmed.definition_sha256}")
+    return 0
+
+
 class _HarnessArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         raise CliUsageError(message)
@@ -504,6 +617,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="remove a saved trust or disable decision",
     )
     revoke.add_argument("hook_id")
+    mcp = subparsers.add_parser(
+        "mcp",
+        help="inspect, trust or refresh project MCP stdio servers",
+    )
+    mcp.add_argument("--json", action="store_true")
+    mcp_actions = mcp.add_subparsers(dest="mcp_action")
+    for action, help_text in (
+        ("trust", "trust one exact current MCP server definition"),
+        ("disable", "disable one exact current MCP server definition"),
+    ):
+        update = mcp_actions.add_parser(action, help=help_text)
+        update.add_argument("server_id")
+        update.add_argument(
+            "--sha256",
+            required=True,
+            help="exact definition digest shown by `harness mcp`",
+        )
+    refresh = mcp_actions.add_parser(
+        "refresh",
+        help="start one trusted server and freeze its bounded tool catalog",
+    )
+    refresh.add_argument("server_id")
+    revoke_mcp = mcp_actions.add_parser(
+        "revoke",
+        help="remove a saved MCP trust or disable decision",
+    )
+    revoke_mcp.add_argument("server_id")
     context = subparsers.add_parser(
         "context",
         help="show active-context and compaction diagnostics without content",
@@ -527,6 +667,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _instructions(args)
         if args.command == "hooks":
             return _hooks(args)
+        if args.command == "mcp":
+            return _mcp(args)
         if args.command in {"sessions", "archive", "fork", "effects", "reconcile"}:
             store = SessionStore(Path(args.cwd), state_home=args.state_home)
             if args.command == "sessions":
@@ -578,6 +720,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         DeepSeekConfigurationError,
         HookLoadError,
         InstructionLoadError,
+        McpLoadError,
+        McpProtocolError,
         SessionStoreError,
         ValueError,
     ) as exc:

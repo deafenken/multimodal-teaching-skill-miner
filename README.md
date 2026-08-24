@@ -32,6 +32,7 @@ harness instructions             # 查看本轮会加载的项目指令摘要
 harness context SESSION_ID       # 查看活动上下文预算和摘要血缘（不输出正文）
 harness compact SESSION_ID       # 手动压缩旧轮次，保留完整原始 transcript
 harness hooks                    # 查看项目 hook 的摘要、digest 与信任状态
+harness mcp                      # 查看本地 stdio MCP、exact digest 与 catalog 状态
 ```
 
 默认从 `read-only` 开始。需要修改文件时显式切换：
@@ -58,6 +59,9 @@ TUI 中使用 `/permissions workspace-write` 切换当前会话权限。
 - 可信 command hooks：同步支持 `PreToolUse`、`PostToolUse` 和
   `PostToolUseFailure`。项目定义必须经过 exact digest 授信；pre hook 只能要求审批或拒绝，
   post hook 只能观察，任何 hook 都不能授予权限或改写工具参数。
+- exact-digest trusted local MCP tools client 子集：固定协议基线 `2025-06-18`，只支持
+  stdio、显式 catalog refresh 和冻结工具面；MCP 工具只在 `full-access` 中出现，按 high-risk、
+  once-only approval、never-replay 执行。
 - 稳定 message ID、append-only 原始 transcript、可验证摘要血缘和 active-context view；
   `/compact` 手动压缩，接近输入预算时自动分段压缩，`/context` 只显示计数与 digest。
 - 每次 run 使用 0600 hash-chain journal 和原子 checkpoint。任一 session 留下未完成或
@@ -74,11 +78,11 @@ TUI 中使用 `/permissions workspace-write` 切换当前会话权限。
 
 ## 权限模型
 
-| 模式 | 文件读/检索 | 应用补丁 | 命令工具 |
-|---|---:|---:|---|
-| `read-only` | 是 | 否 | 无 |
-| `workspace-write` | 是 | macOS Seatbelt 可用时是 | `process.exec`：macOS Seatbelt 可用时注册 |
-| `full-access` | 是 | macOS Seatbelt 可用时是 | 沙箱 `process.exec`（可用时）和显式主机级 `process.exec_host` |
+| 模式 | 文件读/检索 | 应用补丁 | 命令工具 | 本地 MCP tools |
+|---|---:|---:|---|---:|
+| `read-only` | 是 | 否 | 无 | 否 |
+| `workspace-write` | 是 | macOS Seatbelt 可用时是 | `process.exec`：macOS Seatbelt 可用时注册 | 否 |
+| `full-access` | 是 | macOS Seatbelt 可用时是 | 沙箱 `process.exec`（可用时）和显式主机级 `process.exec_host` | exact trust + frozen catalog + Seatbelt 可用时是 |
 
 内建 list/read/search 工具拒绝绝对路径、`..`、符号链接和 `.git`、`.private`、
 `.agent-harness`。在 macOS 上，`workspace.patch` 的检查与实际应用以及 `process.exec`
@@ -219,6 +223,89 @@ hook stdin 会临时包含当前工具的原始参数；成功后的 post hook �
 digest、身份、时长、动作和安全错误码，不写入原始 hook stdin、stdout 或 stderr。底层工具
 自己的标准事件仍遵循其原有持久化契约。
 
+## 本地 MCP stdio tools client 子集
+
+Harness 2.4.0 实现的是 **exact-digest trusted local stdio MCP tools client subset**，协议
+基线固定为 `2025-06-18`，不是完整 MCP 平台。项目定义位于 `.agent-harness/mcp.json`；
+配置存在不会自动启动 server。最小示例：
+
+```json
+{
+  "schema": "agent_harness.mcp.v1",
+  "servers": {
+    "local_tools": {
+      "transport": "stdio",
+      "command": "/absolute/path/to/mcp-server",
+      "args": [],
+      "cwd": ".",
+      "pass_env": [],
+      "network_access": false,
+      "allow_process_fork": false,
+      "startup_timeout_seconds": 10,
+      "tool_timeout_seconds": 30
+    }
+  }
+}
+```
+
+启用流程是显式的两阶段确认：
+
+```bash
+harness mcp [--json]
+harness mcp trust SERVER_ID --sha256 DIGEST
+harness mcp refresh SERVER_ID
+harness mcp disable SERVER_ID --sha256 DIGEST
+harness mcp revoke SERVER_ID
+```
+
+`harness mcp` 默认显示完整 64 位 definition digest、精确 argv、cwd、传入的环境变量名称、
+network/fork 标志和 catalog 状态；`trust`/`disable` 必须回传完整 digest。`refresh` 只会启动
+已精确授信的 server，协商 `2025-06-18`，分页读取 `tools/list`，过滤超限或不受支持的工具
+schema，并把 catalog 摘要和规范化工具定义冻结到工作区之外的 0600 私有状态。每次工具调用
+会重新握手并核对 live catalog；`notifications/tools/list_changed` 或 digest 变化都会拒绝调用，
+要求显式 refresh，不会在活动 run 中动态接受新工具。TUI `/mcp` 只读，不提供 trust 或
+refresh。
+
+当前客户端协议面只包括 initialize/initialized、分页 `tools/list`、`tools/call`、取消通知、
+响应 server `ping`，以及把 tools-list-changed 标为 stale。输入/输出 schema 只接受 Harness
+能够本地验证的 object-root 关键字子集；text 和 object-shaped `structuredContent` 可进入规范化
+结果，图片、音频、resource 等非文本内容只保留 type、长度、MIME 和 SHA-256 摘要，不做二进制
+渲染。`isError` 是已完成的远端工具结果，不被伪装成 transport failure。
+
+明确不支持：HTTP transport、OAuth、resources、prompts、sampling、elicitation、tasks、
+input-required/task result、活动 run 动态 catalog、完整 JSON Schema、二进制渲染，以及把
+Harness 作为 MCP server。未实现的方法不会被静默代理；server 发起的非 `ping` request 返回
+method-not-supported。
+
+MCP server 定义的 exact digest 绑定精确配置字节、server ID、直接 executable 的内容与文件
+身份、argv、cwd、允许传入的环境变量名称、network/fork 标志、timeout 和 sandbox-policy
+版本。它**不是传递依赖完整性证明**：不会覆盖解释器参数所指脚本、动态库、导入包、运行时
+配置、环境变量值或 server 后续读取的其他文件。调用前只会再次核验直接 executable；operator
+必须自行审查并固定其完整依赖链。
+
+为封闭“核验后、exec 前”的路径替换窗口，user-owned direct executable 会在每次连接中按已
+核验字节物化到本次 0700 私有 runtime 的 0500 副本，并执行该副本。因此这类程序看到的
+`argv[0]`，以及脚本常见的 `__file__`，会指向临时 runtime；依赖 executable 所在目录查找资源
+的 server 必须显式适配。完整 canonical ancestry 均为 root-owned、mode/ACL 对当前用户不可写的
+macOS system executable 保留原平台路径，因为复制后的 platform binary 可能无法执行。
+
+每个 MCP 进程都通过 macOS Seatbelt 启动，工作区只读，`.git`、`.private`、
+`.agent-harness` 不可读，写入限于私有 runtime HOME/TMP 和 `/dev`；network 与 fork 默认
+拒绝，只有 exact-digest-bound 的 `network_access` / `allow_process_fork` 才能打开。没有
+unsandboxed 或 unsupported-host 回退。这个 Seatbelt 仍是 allow-default 的主机策略，不是容器、
+VM 或完整机密边界；允许 fork 后，setsid/double-fork 的后代可能逃离 Harness 的进程组回收，
+并继续持有该定义授予的 Seatbelt/network 权限。
+
+`pass_env` 仍需逐项显式声明；provider 凭据、Harness/sandbox 保留项，以及 `DYLD_*`、`LD_*`、
+`PYTHONPATH`、`NODE_OPTIONS` 等常见 loader/runtime code-loading 控制均拒绝传入。获准的普通业务
+变量值会披露给本地 server，且值本身不受 definition digest 绑定。
+
+冻结的 MCP tools 只在 `full-access` 工具面注册，统一标为 external-service、high-risk、
+never-replay，并要求一次性审批；已有或新建的 session/workspace persistent allow 不能绕过。
+MCP 原始输入和规范化结果遵循普通工具的 owner-only journal/checkpoint 合同，结果也可能成为
+下一轮 provider observation。server stderr 原文只在进程运行期间被持续 drain，不写入 journal、
+checkpoint 或 catalog；CLI 最多返回 byte count、truncated 标志和 SHA-256。
+
 ## 上下文压缩
 
 Harness 始终保留完整原始消息；压缩只生成一个单独、append-only 的有损摘要，并让后续模型
@@ -254,6 +341,7 @@ Harness 始终保留完整原始消息；压缩只生成一个单独、append-on
 /tools
 /instructions
 /hooks
+/mcp
 /context
 /compact
 /approvals
@@ -276,9 +364,10 @@ Generic Session Store
         │
 Harness Runtime ── Event reducer / Journal / Checkpoint
    │          │
-Provider   Tool Registry ── Trusted Hook Broker
-                  │                 │
-           path checks / Seatbelt / explicit host shell
+Provider   Tool Registry ─┬─ Trusted Hook Broker
+                         └─ Frozen MCP Catalog / stdio Client
+                                  │
+                path checks / Seatbelt / explicit host shell
 ```
 
 包结构：
@@ -289,6 +378,8 @@ Provider   Tool Registry ── Trusted Hook Broker
 - `agent_harness/session.py`：本地多轮 session。
 - `agent_harness/context.py`：active-context 预算、分段计划和 provider 摘要契约。
 - `agent_harness/hooks.py`：项目 hook 的安全发现、exact-digest 信任绑定与沙箱执行。
+- `agent_harness/mcp.py`：本地 MCP 定义、exact-digest trust、冻结 catalog 与 stdio bridge。
+- `agent_harness/core/mcp_protocol.py`：固定 `2025-06-18` 的严格有界 MCP tools 协议子集。
 - `agent_harness/tui.py`：终端 UI。
 - `agent_harness/cli.py`：TUI/headless 入口。
 

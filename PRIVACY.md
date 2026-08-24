@@ -13,6 +13,9 @@ Agent Harness stores only the data needed for local multi-turn operation and rec
 | Hook definitions | `.agent-harness/hooks.json` and `.agent-harness/hooks/` in the workspace | Not sent by the hook subsystem; only exact digests and content-free metadata enter run policy/events |
 | Hook trust decisions | Private workspace state below `${AGENT_HARNESS_HOME:-~/.agent-harness}` | Never; records contain hook ID, exact definition SHA-256 and trusted/disabled action |
 | Raw hook stdin/stdout/stderr | Transient Harness/child-process memory and anonymous temporary input | Not sent by the hook subsystem and not persisted in hook events; the underlying tool input/result keeps its separate normal contract |
+| MCP definitions and frozen catalog | `.agent-harness/mcp.json` plus 0600 trust/catalog files below the private workspace state | Definitions/catalog metadata are local; accepted tool schemas and digests may enter the provider-visible tool list/run policy, but server instructions and stderr text do not |
+| MCP tool input and normalized result | Owner-only per-run journal/checkpoint; normalized result also becomes a bounded tool observation | Input is sent to the explicitly trusted local server; the normalized result may be sent to the selected model provider on the next step |
+| Raw MCP stderr | Transient local drain only | Never persisted or sent; the CLI can receive only byte count, truncation state and SHA-256 metadata |
 
 The TUI never renders hidden reasoning text. It records only a character count for
 provider reasoning deltas. Planner JSON is also internal and never becomes an assistant
@@ -58,6 +61,42 @@ workspace's `.git`, `.private` and `.agent-harness` roots. That policy reduces e
 routes but is an allow-default host policy, not a container or complete protection against
 local side channels. Input, output and snapshotted executable bytes also exist transiently
 in the Harness and child-process memory before cleanup.
+
+## Local MCP data
+
+Repository MCP definitions are inert until the operator binds trust to the current exact
+definition digest and explicitly refreshes the server catalog. `harness mcp` and TUI `/mcp`
+show IDs, exact argv/cwd, selected environment-variable **names**, authority flags, digests,
+counts and trust/catalog status. Environment-variable values are neither shown nor stored in
+the trust/catalog record, but a value named by `pass_env` is copied transiently into the
+trusted local server's environment when it starts.
+
+An MCP call sends the raw bounded tool arguments over local stdio to that trusted server.
+The ordinary tool recovery contract then retains the arguments and normalized result in the
+workspace's owner-only journal/checkpoint state (0700 directories and 0600 managed files).
+Text and object-shaped structured results may therefore be present locally and may become the
+next model-step observation. If the exact server definition enables network, the local server
+can independently transmit data under its granted Seatbelt/network authority; this is
+separate from transmission to the configured model provider.
+
+Raw MCP stdout frames exist transiently while the client validates and normalizes them. Text
+and structured result fields enter the normal tool result; unsupported non-text/binary items
+are not rendered and are replaced with type, encoded/decoded length where available, MIME and
+SHA-256 metadata before persistence. This does not make the original bytes harmless—they were
+still received into local process memory before normalization.
+
+Server stderr is continuously drained to avoid blocking, hashed and counted. Its original
+bytes are not written to a journal, checkpoint, session, trust file or frozen catalog and are
+not sent to the provider. A local `harness mcp --json refresh SERVER_ID` response can include only
+`byte_length`, `truncated` and `sha256`; no stderr text is retained. Server `instructions` and
+`serverInfo` are likewise represented in the catalog by SHA-256 only, not stored as raw text.
+
+Exact-digest trust is not a confidentiality boundary or dependency attestation. The digest
+does not cover transitive packages/libraries, scripts named only as interpreter arguments,
+runtime files or environment values. A trusted server can read permitted workspace data, and
+explicit `network_access` or `allow_process_fork` expands its local authority. Seatbelt remains
+an allow-default macOS host policy rather than a container; a daemonized child may escape
+best-effort process-group cleanup while retaining its granted policy.
 
 Private data created by pre-2.0 applications is not migrated, deleted or
 uploaded by Agent Harness. It remains legacy operator-owned data outside the new session

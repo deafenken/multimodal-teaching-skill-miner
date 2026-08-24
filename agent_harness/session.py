@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import re
 import stat
-import tempfile
 from threading import RLock
 from typing import Any, Iterator, Mapping, Sequence
 from uuid import uuid4
@@ -24,6 +23,8 @@ from .core.approvals import ApprovalRule
 SESSION_SCHEMA = "agent_harness.session.v1"
 APPROVAL_RULES_SCHEMA = "agent_harness.approval_rules.v1"
 HOOK_TRUST_SCHEMA = "agent_harness.hook_trust.v1"
+MCP_TRUST_SCHEMA = "agent_harness.mcp_trust.v1"
+MCP_CATALOG_SCHEMA = "agent_harness.mcp_catalog_state.v1"
 CONTEXT_COMPACTION_SCHEMA = "agent_harness.context_compaction.v1"
 _ID = re.compile(r"^[a-z][a-z0-9_-]{7,159}$")
 _HOOK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
@@ -34,12 +35,18 @@ _MAX_MESSAGE_CHARS = 200_000
 _MAX_SESSION_BYTES = 64 * 1024 * 1024
 _MAX_APPROVAL_RULES = 2_048
 _MAX_HOOK_TRUST_RECORDS = 512
+_MAX_MCP_TRUST_RECORDS = 128
+_MAX_MCP_CATALOG_SERVERS = 64
 _MAX_COMPACTIONS = 512
 _MAX_COMPACTION_SUMMARY_CHARS = 40_000
 
 
 class SessionStoreError(RuntimeError):
     """Raised when local session state cannot be trusted or persisted."""
+
+
+class _SessionDirectoryMissing(SessionStoreError):
+    """Internal sentinel for a missing managed directory."""
 
 
 def _now() -> str:
@@ -53,29 +60,174 @@ def _real_workspace(value: os.PathLike[str] | str) -> Path:
     return path
 
 
+def _directory_open_flags() -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return flags
+
+
+def _canonical_state_path(value: os.PathLike[str] | str) -> Path:
+    """Normalize trusted OS aliases while rejecting user-controlled symlinks."""
+
+    raw = Path(value).expanduser()
+    path = Path(os.path.abspath(os.fspath(raw)))
+    if not path.is_absolute():
+        raise SessionStoreError("session directory path must be absolute")
+    parts = path.parts[1:]
+    current = Path(path.anchor)
+    for index, component in enumerate(parts):
+        candidate = current / component
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            return current.joinpath(*parts[index:])
+        except OSError as exc:
+            raise SessionStoreError("session directory path is unreadable") from exc
+        if not stat.S_ISLNK(metadata.st_mode):
+            current = candidate
+            continue
+
+        try:
+            parent = current.stat()
+        except OSError as exc:
+            raise SessionStoreError("session directory path is unreadable") from exc
+        if (
+            metadata.st_uid != 0
+            or parent.st_uid != 0
+            or stat.S_IMODE(parent.st_mode) & 0o022
+        ):
+            raise SessionStoreError(
+                "session directory must be a real directory; "
+                "path contains an untrusted symlink"
+            )
+        try:
+            current = candidate.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise SessionStoreError("session directory path is unreadable") from exc
+    return current
+
+
+def _validate_directory_ancestor(metadata: os.stat_result) -> None:
+    mode = stat.S_IMODE(metadata.st_mode)
+    if metadata.st_uid not in {0, os.getuid()}:
+        raise SessionStoreError("session directory ancestor owner is invalid")
+    if mode & 0o022:
+        root_sticky_directory = (
+            metadata.st_uid == 0
+            and bool(mode & stat.S_ISVTX)
+            and bool(mode & 0o002)
+        )
+        if not root_sticky_directory:
+            raise SessionStoreError(
+                "session directory ancestor permissions are too broad"
+            )
+
+
+@contextmanager
+def _open_private_directory(
+    path: Path,
+    *,
+    create: bool,
+) -> Iterator[int]:
+    """Open a private directory without following any path-component symlink."""
+
+    if not path.is_absolute():
+        raise SessionStoreError("session directory path must be absolute")
+    flags = _directory_open_flags()
+    try:
+        descriptor = os.open(path.anchor, flags)
+    except OSError as exc:
+        raise SessionStoreError("session directory path is unreadable") from exc
+    private_tail = False
+    try:
+        components = path.parts[1:]
+        if not components:
+            metadata = os.fstat(descriptor)
+            if metadata.st_uid != os.getuid():
+                raise SessionStoreError("session directory owner is invalid")
+            if metadata.st_mode & 0o077:
+                raise SessionStoreError(
+                    "session directory permissions are too broad"
+                )
+        for index, component in enumerate(components):
+            final = index == len(components) - 1
+            created = False
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError as exc:
+                if not create:
+                    raise _SessionDirectoryMissing(
+                        "session directory does not exist"
+                    ) from exc
+                private_tail = True
+                try:
+                    os.mkdir(component, 0o700, dir_fd=descriptor)
+                    created = True
+                except FileExistsError:
+                    pass
+                except OSError as mkdir_exc:
+                    raise SessionStoreError(
+                        "session directory cannot be created"
+                    ) from mkdir_exc
+                try:
+                    child = os.open(component, flags, dir_fd=descriptor)
+                except OSError as open_exc:
+                    raise SessionStoreError(
+                        "session directory must be a real directory"
+                    ) from open_exc
+            except OSError as exc:
+                raise SessionStoreError(
+                    "session directory must be a real directory; "
+                    "path contains an untrusted symlink"
+                ) from exc
+
+            try:
+                metadata = os.fstat(child)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise SessionStoreError(
+                        "session directory must be a real directory"
+                    )
+                if created:
+                    os.fchmod(child, 0o700)
+                    metadata = os.fstat(child)
+                if final or private_tail:
+                    if metadata.st_uid != os.getuid():
+                        raise SessionStoreError(
+                            "session directory owner is invalid"
+                        )
+                    if metadata.st_mode & 0o077:
+                        raise SessionStoreError(
+                            "session directory permissions are too broad"
+                        )
+                else:
+                    _validate_directory_ancestor(metadata)
+            except Exception:
+                os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
 def _assert_private_directory(path: Path) -> None:
-    created = False
-    try:
-        current = path.lstat()
-    except FileNotFoundError:
-        path.mkdir(parents=True, mode=0o700)
-        os.chmod(path, 0o700)
-        current = path.lstat()
-        created = True
-    if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode):
-        raise SessionStoreError("session directory must be a real directory")
-    if current.st_uid != os.getuid():
-        raise SessionStoreError("session directory owner is invalid")
-    if current.st_mode & 0o077:
-        if created:
-            os.chmod(path, 0o700)
-        else:
-            raise SessionStoreError("session directory permissions are too broad")
+    with _open_private_directory(path, create=True):
+        pass
 
 
-def _assert_regular_file(path: Path) -> bool:
+def _assert_regular_file_at(parent_descriptor: int, name: str) -> bool:
     try:
-        current = path.lstat()
+        current = os.stat(
+            name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
     except FileNotFoundError:
         return False
     if (
@@ -90,58 +242,76 @@ def _assert_regular_file(path: Path) -> bool:
     return True
 
 
-def _fsync_directory(path: Path) -> None:
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
-    descriptor = os.open(path, flags)
+def _assert_regular_file(path: Path) -> bool:
     try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        with _open_private_directory(
+            path.parent,
+            create=False,
+        ) as parent_descriptor:
+            return _assert_regular_file_at(parent_descriptor, path.name)
+    except _SessionDirectoryMissing:
+        return False
 
 
 def _read_private_json(path: Path) -> Mapping[str, Any]:
-    expected = path.lstat()
-    flags = os.O_RDONLY
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    try:
-        descriptor = os.open(path, flags)
-    except OSError as exc:
-        raise SessionStoreError("session file is unreadable") from exc
-    try:
-        actual = os.fstat(descriptor)
+    with _open_private_directory(path.parent, create=False) as parent_descriptor:
+        try:
+            expected = os.stat(
+                path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise SessionStoreError("session file is unreadable") from exc
         if (
-            not stat.S_ISREG(actual.st_mode)
-            or actual.st_mode & 0o077
-            or actual.st_uid != os.getuid()
-            or actual.st_nlink != 1
-            or actual.st_dev != expected.st_dev
-            or actual.st_ino != expected.st_ino
-            or actual.st_size > _MAX_SESSION_BYTES
+            stat.S_ISLNK(expected.st_mode)
+            or not stat.S_ISREG(expected.st_mode)
+            or expected.st_mode & 0o077
+            or expected.st_uid != os.getuid()
+            or expected.st_nlink != 1
         ):
             raise SessionStoreError("session file cannot be trusted")
-        chunks: list[bytes] = []
-        remaining = actual.st_size
-        while remaining:
-            chunk = os.read(descriptor, min(remaining, 1024 * 1024))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        final = os.fstat(descriptor)
-        if (
-            remaining
-            or final.st_size != actual.st_size
-            or final.st_dev != actual.st_dev
-            or final.st_ino != actual.st_ino
-            or final.st_mtime_ns != actual.st_mtime_ns
-            or final.st_ctime_ns != actual.st_ctime_ns
-        ):
-            raise SessionStoreError("session file changed while reading")
-    finally:
-        os.close(descriptor)
+        flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(path.name, flags, dir_fd=parent_descriptor)
+        except OSError as exc:
+            raise SessionStoreError("session file is unreadable") from exc
+        try:
+            actual = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(actual.st_mode)
+                or actual.st_mode & 0o077
+                or actual.st_uid != os.getuid()
+                or actual.st_nlink != 1
+                or actual.st_dev != expected.st_dev
+                or actual.st_ino != expected.st_ino
+                or actual.st_size > _MAX_SESSION_BYTES
+            ):
+                raise SessionStoreError("session file cannot be trusted")
+            chunks: list[bytes] = []
+            remaining = actual.st_size
+            while remaining:
+                chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            final = os.fstat(descriptor)
+            if (
+                remaining
+                or final.st_size != actual.st_size
+                or final.st_dev != actual.st_dev
+                or final.st_ino != actual.st_ino
+                or final.st_mtime_ns != actual.st_mtime_ns
+                or final.st_ctime_ns != actual.st_ctime_ns
+            ):
+                raise SessionStoreError("session file changed while reading")
+        finally:
+            os.close(descriptor)
     try:
         value = json.loads(b"".join(chunks).decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -164,36 +334,49 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     ).encode("utf-8")
     if len(encoded) > _MAX_SESSION_BYTES:
         raise SessionStoreError("session exceeds the storage limit")
-    _assert_private_directory(path.parent)
-    _assert_regular_file(path)
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    temporary = Path(temporary_name)
-    try:
-        os.fchmod(descriptor, 0o600)
-        view = memoryview(encoded)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise OSError("session write made no progress")
-            view = view[written:]
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = -1
-        os.replace(temporary, path)
-        os.chmod(path, 0o600)
-        _fsync_directory(path.parent)
-    except Exception:
-        if descriptor >= 0:
-            os.close(descriptor)
+    with _open_private_directory(path.parent, create=True) as parent_descriptor:
+        _assert_regular_file_at(parent_descriptor, path.name)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        temporary_name = f".{path.name}.{uuid4().hex}.tmp"
         try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+            descriptor = os.open(
+                temporary_name,
+                flags,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+        except OSError as exc:
+            raise SessionStoreError("session temporary file cannot be created") from exc
+        try:
+            os.fchmod(descriptor, 0o600)
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("session write made no progress")
+                view = view[written:]
+            os.fsync(descriptor)
+            os.close(descriptor)
+            descriptor = -1
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=parent_descriptor,
+                dst_dir_fd=parent_descriptor,
+            )
+            os.fsync(parent_descriptor)
+        except Exception:
+            if descriptor >= 0:
+                os.close(descriptor)
+            try:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+            except FileNotFoundError:
+                pass
+            raise
 
 
 def _canonical_json(value: Any) -> str:
@@ -532,11 +715,11 @@ class SessionStore:
         state_home: os.PathLike[str] | str | None = None,
     ) -> None:
         self.workspace = _real_workspace(workspace)
-        base = Path(
+        base = _canonical_state_path(
             state_home
             or os.getenv("AGENT_HARNESS_HOME", "")
             or (Path.home() / ".agent-harness")
-        ).expanduser().absolute()
+        )
         _assert_private_directory(base)
         workspace_key = sha256(str(self.workspace).encode("utf-8")).hexdigest()[:24]
         self.root = base / "workspaces" / workspace_key
@@ -552,11 +735,16 @@ class SessionStore:
         if hasattr(os, "O_NOFOLLOW"):
             lock_flags |= os.O_NOFOLLOW
         try:
-            self._lock_descriptor = os.open(
-                self.root / ".store.lock",
-                lock_flags,
-                0o600,
-            )
+            with _open_private_directory(
+                self.root,
+                create=False,
+            ) as root_descriptor:
+                self._lock_descriptor = os.open(
+                    ".store.lock",
+                    lock_flags,
+                    0o600,
+                    dir_fd=root_descriptor,
+                )
         except OSError as exc:
             raise SessionStoreError("session lock file cannot be opened") from exc
         lock_stat = os.fstat(self._lock_descriptor)
@@ -577,9 +765,19 @@ class SessionStore:
     def hook_trust_path(self) -> Path:
         return self.root / "hook-trust.json"
 
+    @property
+    def mcp_trust_path(self) -> Path:
+        return self.root / "mcp-trust.json"
+
+    @property
+    def mcp_catalog_path(self) -> Path:
+        return self.root / "mcp-catalog.json"
+
     def _approval_state_is_private(self) -> bool:
+        with _open_private_directory(self.root, create=False):
+            pass
         try:
-            self.root.resolve(strict=True).relative_to(self.workspace)
+            self.root.relative_to(self.workspace)
         except ValueError:
             return True
         return False
@@ -675,6 +873,235 @@ class SessionStore:
             if removed:
                 _atomic_json(self.hook_trust_path, state)
             return removed
+
+    def _load_mcp_trust_state(self) -> dict[str, Any]:
+        path = self.mcp_trust_path
+        if not _assert_regular_file(path):
+            return {"schema": MCP_TRUST_SCHEMA, "servers": {}}
+        value = _read_private_json(path)
+        if value.get("schema") != MCP_TRUST_SCHEMA:
+            raise SessionStoreError("unsupported MCP trust schema")
+        raw_servers = value.get("servers")
+        if not isinstance(raw_servers, Mapping):
+            raise SessionStoreError("MCP trust state is invalid")
+        if len(raw_servers) > _MAX_MCP_TRUST_RECORDS:
+            raise SessionStoreError("MCP trust record limit exceeded")
+        clean: dict[str, dict[str, str]] = {}
+        for raw_server_id, raw_record in raw_servers.items():
+            server_id = str(raw_server_id)
+            if _HOOK_ID.fullmatch(server_id) is None or not isinstance(
+                raw_record, Mapping
+            ):
+                raise SessionStoreError("MCP trust record is invalid")
+            if set(raw_record) != {"action", "definition_sha256"}:
+                raise SessionStoreError("MCP trust record contains unknown fields")
+            action = raw_record.get("action")
+            digest = raw_record.get("definition_sha256")
+            if (
+                action not in {"trusted", "disabled"}
+                or not isinstance(digest, str)
+                or _SHA256.fullmatch(digest) is None
+            ):
+                raise SessionStoreError("MCP trust record is invalid")
+            clean[server_id] = {
+                "action": str(action),
+                "definition_sha256": digest,
+            }
+        return {"schema": MCP_TRUST_SCHEMA, "servers": clean}
+
+    def mcp_trust_state(self) -> dict[str, dict[str, str]]:
+        """Return content-free trust decisions for project MCP servers."""
+
+        if not self._approval_state_is_private():
+            raise SessionStoreError(
+                "MCP trust requires a state directory outside the workspace"
+            )
+        with self._locked():
+            return deepcopy(self._load_mcp_trust_state()["servers"])
+
+    def set_mcp_trust(
+        self,
+        server_id: str,
+        definition_sha256: str,
+        *,
+        action: str,
+    ) -> None:
+        if (
+            not isinstance(server_id, str)
+            or _HOOK_ID.fullmatch(server_id) is None
+            or not isinstance(definition_sha256, str)
+            or _SHA256.fullmatch(definition_sha256) is None
+            or action not in {"trusted", "disabled"}
+        ):
+            raise SessionStoreError("MCP trust decision is invalid")
+        if not self._approval_state_is_private():
+            raise SessionStoreError(
+                "MCP trust requires a state directory outside the workspace"
+            )
+        with self._locked():
+            state = self._load_mcp_trust_state()
+            servers = state["servers"]
+            if server_id not in servers and len(servers) >= _MAX_MCP_TRUST_RECORDS:
+                raise SessionStoreError("MCP trust record limit exceeded")
+            servers[server_id] = {
+                "action": action,
+                "definition_sha256": definition_sha256,
+            }
+            _atomic_json(self.mcp_trust_path, state)
+
+    def revoke_mcp_trust(self, server_id: str) -> bool:
+        if not isinstance(server_id, str) or _HOOK_ID.fullmatch(server_id) is None:
+            raise SessionStoreError("MCP server id is invalid")
+        if not self._approval_state_is_private():
+            raise SessionStoreError(
+                "MCP trust requires a state directory outside the workspace"
+            )
+        with self._locked():
+            state = self._load_mcp_trust_state()
+            removed = state["servers"].pop(server_id, None) is not None
+            if removed:
+                _atomic_json(self.mcp_trust_path, state)
+            return removed
+
+    @staticmethod
+    def _clean_mcp_catalog_record(raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, Mapping):
+            raise SessionStoreError("MCP catalog record is invalid")
+        required = {
+            "schema",
+            "definition_sha256",
+            "protocol_version",
+            "catalog_sha256",
+            "server_info_sha256",
+            "instructions_sha256",
+            "tools",
+            "rejected_tools",
+        }
+        allowed = required | {"refreshed_at"}
+        if set(raw) - allowed or not required.issubset(raw):
+            raise SessionStoreError("MCP catalog record contains unknown fields")
+        if raw.get("schema") != "agent_harness.mcp_catalog_record.v1":
+            raise SessionStoreError("MCP catalog record schema is invalid")
+        for field_name in (
+            "definition_sha256",
+            "catalog_sha256",
+            "server_info_sha256",
+            "instructions_sha256",
+        ):
+            value = raw.get(field_name)
+            if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+                raise SessionStoreError("MCP catalog digest is invalid")
+        protocol_version = raw.get("protocol_version")
+        if not isinstance(protocol_version, str) or len(protocol_version) > 40:
+            raise SessionStoreError("MCP catalog protocol version is invalid")
+        raw_tools = raw.get("tools")
+        rejected = raw.get("rejected_tools")
+        if (
+            not isinstance(raw_tools, list)
+            or len(raw_tools) > 128
+            or not isinstance(rejected, list)
+            or len(rejected) > 128
+        ):
+            raise SessionStoreError("MCP catalog tool lists are invalid")
+        tools: list[dict[str, Any]] = []
+        for item in raw_tools:
+            if not isinstance(item, Mapping) or set(item) != {
+                "raw_name",
+                "local_name",
+                "input_schema",
+                "output_schema",
+                "definition_sha256",
+            }:
+                raise SessionStoreError("MCP cached tool is invalid")
+            if (
+                not isinstance(item.get("raw_name"), str)
+                or not isinstance(item.get("local_name"), str)
+                or not isinstance(item.get("input_schema"), Mapping)
+                or item.get("output_schema") is not None
+                and not isinstance(item.get("output_schema"), Mapping)
+                or not isinstance(item.get("definition_sha256"), str)
+                or _SHA256.fullmatch(str(item.get("definition_sha256"))) is None
+            ):
+                raise SessionStoreError("MCP cached tool is invalid")
+            tools.append(json.loads(_canonical_json(dict(item))))
+        clean_rejected: list[dict[str, str]] = []
+        for item in rejected:
+            if (
+                not isinstance(item, Mapping)
+                or set(item) != {"tool_sha256", "reason_code"}
+                or not isinstance(item.get("tool_sha256"), str)
+                or _SHA256.fullmatch(str(item.get("tool_sha256"))) is None
+                or not isinstance(item.get("reason_code"), str)
+                or not 1 <= len(str(item.get("reason_code"))) <= 128
+            ):
+                raise SessionStoreError("MCP rejected-tool record is invalid")
+            clean_rejected.append(
+                {
+                    "tool_sha256": str(item["tool_sha256"]),
+                    "reason_code": str(item["reason_code"]),
+                }
+            )
+        clean: dict[str, Any] = {
+            "schema": "agent_harness.mcp_catalog_record.v1",
+            "definition_sha256": str(raw["definition_sha256"]),
+            "protocol_version": protocol_version,
+            "catalog_sha256": str(raw["catalog_sha256"]),
+            "server_info_sha256": str(raw["server_info_sha256"]),
+            "instructions_sha256": str(raw["instructions_sha256"]),
+            "tools": tools,
+            "rejected_tools": clean_rejected,
+        }
+        refreshed_at = raw.get("refreshed_at")
+        if refreshed_at is not None:
+            if not isinstance(refreshed_at, str) or len(refreshed_at) > 80:
+                raise SessionStoreError("MCP catalog timestamp is invalid")
+            clean["refreshed_at"] = refreshed_at
+        return clean
+
+    def _load_mcp_catalog_state(self) -> dict[str, Any]:
+        path = self.mcp_catalog_path
+        if not _assert_regular_file(path):
+            return {"schema": MCP_CATALOG_SCHEMA, "servers": {}}
+        value = _read_private_json(path)
+        if value.get("schema") != MCP_CATALOG_SCHEMA:
+            raise SessionStoreError("unsupported MCP catalog schema")
+        raw_servers = value.get("servers")
+        if not isinstance(raw_servers, Mapping):
+            raise SessionStoreError("MCP catalog state is invalid")
+        if len(raw_servers) > _MAX_MCP_CATALOG_SERVERS:
+            raise SessionStoreError("MCP catalog server limit exceeded")
+        clean: dict[str, dict[str, Any]] = {}
+        for raw_server_id, raw_record in raw_servers.items():
+            server_id = str(raw_server_id)
+            if _HOOK_ID.fullmatch(server_id) is None:
+                raise SessionStoreError("MCP catalog server id is invalid")
+            clean[server_id] = self._clean_mcp_catalog_record(raw_record)
+        return {"schema": MCP_CATALOG_SCHEMA, "servers": clean}
+
+    def mcp_catalog_state(self) -> dict[str, dict[str, Any]]:
+        if not self._approval_state_is_private():
+            raise SessionStoreError(
+                "MCP catalog requires a state directory outside the workspace"
+            )
+        with self._locked():
+            return deepcopy(self._load_mcp_catalog_state()["servers"])
+
+    def set_mcp_catalog(self, server_id: str, record: Mapping[str, Any]) -> None:
+        if not isinstance(server_id, str) or _HOOK_ID.fullmatch(server_id) is None:
+            raise SessionStoreError("MCP catalog server id is invalid")
+        if not self._approval_state_is_private():
+            raise SessionStoreError(
+                "MCP catalog requires a state directory outside the workspace"
+            )
+        clean = self._clean_mcp_catalog_record(record)
+        clean["refreshed_at"] = _now()
+        with self._locked():
+            state = self._load_mcp_catalog_state()
+            servers = state["servers"]
+            if server_id not in servers and len(servers) >= _MAX_MCP_CATALOG_SERVERS:
+                raise SessionStoreError("MCP catalog server limit exceeded")
+            servers[server_id] = clean
+            _atomic_json(self.mcp_catalog_path, state)
 
     def _load_approval_state(self) -> dict[str, Any]:
         path = self.approval_rules_path
@@ -828,12 +1255,26 @@ class SessionStore:
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         try:
-            descriptor = os.open(path, flags, 0o600)
+            with _open_private_directory(
+                path.parent,
+                create=False,
+            ) as parent_descriptor:
+                descriptor = os.open(
+                    path.name,
+                    flags,
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
         except OSError as exc:
             raise SessionStoreError("session turn lock cannot be opened") from exc
         try:
             metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mode & 0o077
+                or metadata.st_uid != os.getuid()
+                or metadata.st_nlink != 1
+            ):
                 raise SessionStoreError("session turn lock cannot be trusted")
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -855,12 +1296,26 @@ class SessionStore:
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         try:
-            descriptor = os.open(path, flags, 0o600)
+            with _open_private_directory(
+                path.parent,
+                create=False,
+            ) as parent_descriptor:
+                descriptor = os.open(
+                    path.name,
+                    flags,
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
         except OSError as exc:
             raise SessionStoreError("workspace run lock cannot be opened") from exc
         try:
             metadata = os.fstat(descriptor)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mode & 0o077
+                or metadata.st_uid != os.getuid()
+                or metadata.st_nlink != 1
+            ):
                 raise SessionStoreError("workspace run lock cannot be trusted")
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -947,9 +1402,16 @@ class SessionStore:
     def list(self, *, include_archived: bool = False) -> list[dict[str, Any]]:
         sessions: list[dict[str, Any]] = []
         with self._locked():
-            for path in self.sessions_directory.glob("session_*.json"):
+            with _open_private_directory(
+                self.sessions_directory,
+                create=False,
+            ) as directory_descriptor:
+                names = tuple(os.listdir(directory_descriptor))
+            for name in names:
+                if not name.startswith("session_") or not name.endswith(".json"):
+                    continue
                 try:
-                    session = self.load(path.stem)
+                    session = self.load(Path(name).stem)
                 except SessionStoreError:
                     continue
                 if include_archived or not session["archived"]:

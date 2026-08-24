@@ -1,5 +1,7 @@
 """Agent Harness: a recoverable, provider-neutral coding-agent runtime."""
 
+__version__ = "2.4.0"
+
 from .core import *  # noqa: F401,F403
 from .core import __all__ as _core_all
 from .context import ContextCompactionPlan, ContextCompactionResult
@@ -11,7 +13,6 @@ from .session import (
     SessionStoreError,
 )
 
-__version__ = "2.3.0"
 __all__ = [
     *_core_all,
     "AgentRunner",

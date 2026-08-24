@@ -1,5 +1,41 @@
 # Changelog
 
+## 2.4.0 — Exact-trust local MCP stdio tools
+
+- Added an intentionally narrow MCP tools client subset pinned to protocol version
+  `2025-06-18`: local stdio transport, initialization, paginated `tools/list`,
+  `tools/call`, cancellation, server ping responses and stale-catalog notification
+  handling.
+- Added secure `.agent-harness/mcp.json` discovery. A server definition must be accepted
+  with its full exact digest, then have its bounded tool catalog explicitly refreshed and
+  frozen in private state before it contributes tools to a run. The live catalog is checked
+  again before each call; changes require another explicit refresh rather than changing an
+  active run dynamically.
+- Registered MCP tools only in `full-access`, as high-risk, external-service, never-replay
+  operations that require a fresh once-only approval. Persistent session/workspace allow
+  rules cannot bypass an MCP approval.
+- Added strict, bounded newline-delimited JSON-RPC framing, a deliberately limited
+  object-root JSON Schema validator, bounded text/structured results and hash/length-only
+  projections for non-text content. Unsupported tool schemas are rejected from the frozen
+  catalog.
+- Added a dedicated read-only macOS Seatbelt launch with network and process fork denied by
+  default and available only through exact-digest-bound configuration flags. There is no
+  unsandboxed or unsupported-host fallback. Exact trust binds the direct executable and
+  launch definition; it does not attest transitive libraries, interpreter arguments,
+  packages, runtime configuration or environment values.
+- Closed the verified-path-to-exec race for user-owned direct executables by running an exact
+  mode-0500 copy from each connection's mode-0700 private runtime. This intentionally changes
+  `argv[0]`/script `__file__`; ACL-nonwritable root-anchored macOS system executables retain
+  their canonical platform path. Common loader/runtime code-loading variables are rejected
+  from `pass_env` even when explicitly named.
+- Added `harness mcp` inspection plus digest-bound `trust`, `disable`, `refresh` and
+  `revoke` operations; TUI `/mcp` remains content-free and read-only.
+- MCP inputs and normalized results follow the existing owner-only journal/checkpoint
+  contract. Raw server stderr is drained transiently and is never persisted; only bounded
+  byte-count, truncation and SHA-256 metadata can be returned to the local CLI.
+- Explicitly do not claim HTTP transport, OAuth, resources, prompts, sampling, elicitation,
+  tasks, active-run dynamic catalogs, full JSON Schema, binary rendering or MCP server mode.
+
 ## 2.3.0 — Trusted synchronous command hooks
 
 - Added a deliberately limited synchronous hook surface for `PreToolUse`, `PostToolUse`

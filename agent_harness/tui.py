@@ -317,7 +317,7 @@ class HarnessTui:
             self.state.notice(
                 "/new /sessions /resume ID /fork /archive /effects "
                 "/reconcile RUN_ID /status /model /permissions MODE /tools "
-                "/instructions /hooks /context /compact /approvals /clear /quit"
+                "/instructions /hooks /mcp /context /compact /approvals /clear /quit"
             )
         elif command == "/new":
             if self.busy:
@@ -464,6 +464,45 @@ class HarnessTui:
                     )
             except Exception as exc:
                 self.state.notice(f"项目 hooks 不可用：{exc}")
+        elif command == "/mcp":
+            if argument:
+                self.state.notice("用法：/mcp（只读；信任与刷新请使用 harness mcp）")
+                return
+            try:
+                status = self.runner.mcp_status()
+                if not status.get("config_present"):
+                    self.state.notice("未配置项目 MCP：.agent-harness/mcp.json")
+                    return
+                self.state.notice(
+                    f"项目 MCP：{status.get('server_count', 0)} configured · "
+                    f"{status.get('trusted_server_count', 0)} trusted · "
+                    f"{status.get('ready_server_count', 0)} ready · "
+                    f"{status.get('pending_server_count', 0)} review-required · "
+                    f"snapshot {str(status.get('snapshot_sha256', ''))[:12]}"
+                )
+                servers = status.get("servers", [])
+                if not isinstance(servers, list):
+                    raise ValueError("MCP status list is invalid")
+                for item in servers[:8]:
+                    if not isinstance(item, Mapping):
+                        raise ValueError("MCP status entry is invalid")
+                    self.state.notice(
+                        f"{item.get('server_id', 'server')} · "
+                        f"{item.get('trust_status', 'unknown')}/"
+                        f"{item.get('catalog_status', 'unknown')} · "
+                        f"{item.get('tool_count', 0)} tools · "
+                        f"{str(item.get('definition_sha256', ''))[:12]}"
+                    )
+                if len(servers) > 8:
+                    self.state.notice(
+                        f"另有 {len(servers) - 8} 个；运行 harness mcp 查看完整定义"
+                    )
+                if int(status.get("pending_server_count", 0)) > 0 or int(
+                    status.get("refresh_required_count", 0)
+                ) > 0:
+                    self.state.notice("信任、禁用与 catalog 刷新仅通过显式 CLI：harness mcp")
+            except Exception as exc:
+                self.state.notice(f"项目 MCP 不可用：{exc}")
         elif command == "/context":
             try:
                 status = self.runner.context_status(self.state.session_id)
@@ -595,7 +634,7 @@ class HarnessTui:
             return
         if not pending.request.persistent_scope_allowed:
             self.state.notice(
-                "可信策略 hook 要求逐次审批；本次不能保存会话或工作区放行规则"
+                "此工具要求逐次审批；本次不能保存会话或工作区放行规则"
             )
             return
         rule = ApprovalRule(
