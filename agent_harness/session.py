@@ -17,10 +17,16 @@ from uuid import uuid4
 
 import fcntl
 
+from .attachments import (
+    AttachmentDescriptor,
+    MAX_ATTACHMENTS_PER_TURN,
+    MAX_ATTACHMENTS_TOTAL_BYTES,
+)
 from .core.approvals import ApprovalRule
 
 
-SESSION_SCHEMA = "agent_harness.session.v1"
+SESSION_SCHEMA_V1 = "agent_harness.session.v1"
+SESSION_SCHEMA = "agent_harness.session.v2"
 APPROVAL_RULES_SCHEMA = "agent_harness.approval_rules.v1"
 HOOK_TRUST_SCHEMA = "agent_harness.hook_trust.v1"
 MCP_TRUST_SCHEMA = "agent_harness.mcp_trust.v1"
@@ -397,6 +403,69 @@ def _message_content_sha256(*, role: str, content: str) -> str:
     return sha256(_canonical_json(material).encode("utf-8")).hexdigest()
 
 
+def _clean_message_attachments(raw_attachments: Any) -> tuple[dict[str, Any], ...]:
+    """Return a bounded, canonical and content-free attachment manifest."""
+
+    if raw_attachments is None:
+        return ()
+    if (
+        isinstance(raw_attachments, (str, bytes, bytearray, Mapping))
+        or not isinstance(raw_attachments, Sequence)
+        or len(raw_attachments) > MAX_ATTACHMENTS_PER_TURN
+    ):
+        raise SessionStoreError("session message attachments are invalid")
+    result: list[dict[str, Any]] = []
+    attachment_ids: set[str] = set()
+    total_size_bytes = 0
+    for raw in raw_attachments:
+        try:
+            if isinstance(raw, AttachmentDescriptor):
+                descriptor = raw
+            elif isinstance(raw, Mapping):
+                descriptor = AttachmentDescriptor.from_value(raw)
+            else:
+                raise TypeError("attachment descriptor must be an object")
+            canonical = descriptor.to_dict()
+            # Re-parse the serialized form so a non-canonical implementation
+            # cannot smuggle an unvalidated field into session state.
+            canonical = AttachmentDescriptor.from_value(canonical).to_dict()
+        except Exception as exc:
+            raise SessionStoreError(
+                "session message attachment descriptor is invalid"
+            ) from exc
+        attachment_id = canonical.get("attachment_id")
+        if not isinstance(attachment_id, str) or attachment_id in attachment_ids:
+            raise SessionStoreError("session message attachment ids are not unique")
+        attachment_ids.add(attachment_id)
+        total_size_bytes += int(canonical["size_bytes"])
+        if total_size_bytes > MAX_ATTACHMENTS_TOTAL_BYTES:
+            raise SessionStoreError("session message attachment batch is too large")
+        result.append(canonical)
+    return tuple(result)
+
+
+def _attachment_manifest_sha256(
+    attachments: Sequence[Mapping[str, Any]],
+) -> str:
+    return sha256(
+        _canonical_json([dict(item) for item in attachments]).encode("utf-8")
+    ).hexdigest()
+
+
+def _message_payload_sha256(
+    *,
+    role: str,
+    content_sha256: str,
+    attachment_manifest_sha256: str,
+) -> str:
+    material = {
+        "role": role,
+        "content_sha256": content_sha256,
+        "attachment_manifest_sha256": attachment_manifest_sha256,
+    }
+    return sha256(_canonical_json(material).encode("utf-8")).hexdigest()
+
+
 def _legacy_message_id(
     *,
     session_id: str,
@@ -419,46 +488,93 @@ def _legacy_message_id(
 
 
 def _message_prefix_sha256(messages: Sequence[Mapping[str, Any]]) -> str:
-    material = [
-        {
+    material: list[dict[str, str]] = []
+    for item in messages:
+        identity = {
             "message_id": item["message_id"],
             "role": item["role"],
-            "content_sha256": item["content_sha256"],
         }
-        for item in messages
-    ]
+        payload_digest = item.get("message_payload_sha256")
+        if payload_digest is None:
+            # Preserve the exact v1/no-attachment prefix material and digest.
+            identity["content_sha256"] = item["content_sha256"]
+        else:
+            identity["message_payload_sha256"] = payload_digest
+        material.append(identity)
     return sha256(_canonical_json(material).encode("utf-8")).hexdigest()
 
 
 def _validate_message(
     value: Mapping[str, Any],
     *,
+    session_schema: str,
     session_id: str,
     index: int,
     fallback_timestamp: str,
+    require_stored_integrity: bool = True,
 ) -> dict[str, Any]:
+    base_fields = {
+        "message_id",
+        "role",
+        "content",
+        "content_sha256",
+        "timestamp",
+        "run_id",
+        "turn_id",
+    }
+    attachment_fields = {
+        "attachments",
+        "attachment_manifest_sha256",
+        "message_payload_sha256",
+    }
+    allowed_fields = (
+        base_fields | attachment_fields
+        if session_schema == SESSION_SCHEMA
+        else base_fields
+    )
+    if not set(value).issubset(allowed_fields):
+        raise SessionStoreError("session message contains unknown fields")
     role = value.get("role")
     content = value.get("content")
     if role not in {"user", "assistant"} or not isinstance(content, str):
         raise SessionStoreError("session message is invalid")
     content = content.strip()
-    if not content or len(content) > _MAX_MESSAGE_CHARS:
+    raw_attachments = value.get("attachments")
+    attachments = _clean_message_attachments(raw_attachments)
+    if session_schema == SESSION_SCHEMA_V1 and attachments:
+        raise SessionStoreError("v1 session messages cannot contain attachments")
+    if (not content and not attachments) or len(content) > _MAX_MESSAGE_CHARS:
         raise SessionStoreError("session message size is invalid")
     timestamp = value.get("timestamp")
+    if session_schema == SESSION_SCHEMA and (
+        not isinstance(timestamp, str) or not timestamp
+    ):
+        raise SessionStoreError("session message timestamp is invalid")
     if not isinstance(timestamp, str) or not timestamp:
         timestamp = fallback_timestamp
     timestamp = timestamp[:80]
     identities: dict[str, str] = {}
     for field in ("run_id", "turn_id"):
         identity = value.get(field)
-        if isinstance(identity, str) and _ID.fullmatch(identity) is not None:
-            identities[field] = identity
+        if identity is None:
+            continue
+        if not isinstance(identity, str) or _ID.fullmatch(identity) is None:
+            raise SessionStoreError("session message run identity is invalid")
+        identities[field] = identity
     run_id = identities.get("run_id")
     content_sha256 = _message_content_sha256(role=role, content=content)
     stored_content_sha256 = value.get("content_sha256")
+    if (
+        session_schema == SESSION_SCHEMA
+        and require_stored_integrity
+        and stored_content_sha256 is None
+    ):
+        raise SessionStoreError("session message content digest is missing")
     if stored_content_sha256 is not None and stored_content_sha256 != content_sha256:
         raise SessionStoreError("session message content digest is invalid")
     message_id = value.get("message_id")
+    if session_schema == SESSION_SCHEMA and message_id is None:
+        raise SessionStoreError("session message id is missing")
     if message_id is None:
         message_id = _legacy_message_id(
             session_id=session_id,
@@ -478,6 +594,28 @@ def _validate_message(
         "timestamp": timestamp,
     }
     result.update(identities)
+    if attachments:
+        manifest_sha256 = _attachment_manifest_sha256(attachments)
+        payload_sha256 = _message_payload_sha256(
+            role=role,
+            content_sha256=content_sha256,
+            attachment_manifest_sha256=manifest_sha256,
+        )
+        if require_stored_integrity and value.get(
+            "attachment_manifest_sha256"
+        ) != manifest_sha256:
+            raise SessionStoreError(
+                "session message attachment manifest digest is invalid"
+            )
+        if require_stored_integrity and value.get(
+            "message_payload_sha256"
+        ) != payload_sha256:
+            raise SessionStoreError("session message payload digest is invalid")
+        result["attachments"] = [dict(item) for item in attachments]
+        result["attachment_manifest_sha256"] = manifest_sha256
+        result["message_payload_sha256"] = payload_sha256
+    elif any(field in value for field in attachment_fields):
+        raise SessionStoreError("empty session attachment manifest is invalid")
     return result
 
 
@@ -512,6 +650,11 @@ def _validate_compactions(
         if not summary or len(summary) > _MAX_COMPACTION_SUMMARY_CHARS:
             raise SessionStoreError("session compaction summary is invalid")
         covered = messages[:source_message_count]
+        newly_covered = messages[previous_count:source_message_count]
+        if any(item.get("attachments") for item in newly_covered):
+            raise SessionStoreError(
+                "context compaction cannot cross an attachment boundary"
+            )
         if covered[-1]["role"] != "assistant":
             raise SessionStoreError("session compaction must end at an assistant boundary")
         expected_prefix_sha256 = _message_prefix_sha256(covered)
@@ -598,7 +741,8 @@ def _validate_compactions(
 
 
 def _validate_session(value: Mapping[str, Any], *, workspace: Path) -> dict[str, Any]:
-    if value.get("schema") != SESSION_SCHEMA:
+    session_schema = value.get("schema")
+    if session_schema not in {SESSION_SCHEMA_V1, SESSION_SCHEMA}:
         raise SessionStoreError("unsupported session schema")
     session_id = value.get("session_id")
     if not isinstance(session_id, str) or _ID.fullmatch(session_id) is None:
@@ -670,6 +814,7 @@ def _validate_session(value: Mapping[str, Any], *, workspace: Path) -> dict[str,
     messages = [
         _validate_message(
             item,
+            session_schema=session_schema,
             session_id=session_id,
             index=index,
             fallback_timestamp=created_at,
@@ -1426,6 +1571,7 @@ class SessionStore:
         content: str,
         run_id: str | None = None,
         turn_id: str | None = None,
+        attachments: Sequence[AttachmentDescriptor | Mapping[str, Any]] = (),
         reserve_messages: int = 0,
     ) -> dict[str, Any]:
         if (
@@ -1434,6 +1580,7 @@ class SessionStore:
             or not 0 <= reserve_messages <= 2
         ):
             raise SessionStoreError("message reservation is invalid")
+        clean_attachments = _clean_message_attachments(attachments)
         with self._locked():
             session = self.load(session_id)
             if session["archived"]:
@@ -1448,14 +1595,19 @@ class SessionStore:
                 message["run_id"] = run_id
             if turn_id is not None:
                 message["turn_id"] = turn_id
+            if clean_attachments:
+                message["attachments"] = [dict(item) for item in clean_attachments]
+                session["schema"] = SESSION_SCHEMA
             if len(session["messages"]) + 1 + reserve_messages > _MAX_MESSAGES:
                 raise SessionStoreError("session message limit exceeded")
             session["messages"].append(
                 _validate_message(
                     message,
+                    session_schema=str(session["schema"]),
                     session_id=session_id,
                     index=len(session["messages"]),
                     fallback_timestamp=str(session.get("created_at", "")) or _now(),
+                    require_stored_integrity=False,
                 )
             )
             if len(session["messages"]) == 1 and role == "user":
@@ -1483,15 +1635,19 @@ class SessionStore:
         active_material = {
             "summary_sha256": lineage["summary_sha256"],
             "source_messages_sha256": lineage["source_messages_sha256"],
-            "messages": [
-                {
-                    "message_id": item["message_id"],
-                    "role": item["role"],
-                    "content_sha256": item["content_sha256"],
-                }
-                for item in suffix
-            ],
+            "messages": [],
         }
+        for item in suffix:
+            identity = {
+                "message_id": item["message_id"],
+                "role": item["role"],
+            }
+            payload_digest = item.get("message_payload_sha256")
+            if payload_digest is None:
+                identity["content_sha256"] = item["content_sha256"]
+            else:
+                identity["message_payload_sha256"] = payload_digest
+            active_material["messages"].append(identity)
         lineage["active_context_sha256"] = sha256(
             _canonical_json(active_material).encode("utf-8")
         ).hexdigest()
@@ -1552,6 +1708,14 @@ class SessionStore:
             parent = session["compactions"][-1] if session["compactions"] else None
             if parent and source_message_count <= int(parent["source_message_count"]):
                 raise SessionStoreError("context compaction must advance its lineage")
+            parent_count = int(parent["source_message_count"]) if parent else 0
+            if any(
+                item.get("attachments")
+                for item in session["messages"][parent_count:source_message_count]
+            ):
+                raise SessionStoreError(
+                    "context compaction cannot cross an attachment boundary"
+                )
             record: dict[str, Any] = {
                 "schema": CONTEXT_COMPACTION_SCHEMA,
                 "compaction_id": f"compaction_{uuid4().hex}",
@@ -1593,11 +1757,13 @@ class SessionStore:
         provider: str,
         model: str,
         permission_mode: str,
+        attachments: Sequence[AttachmentDescriptor | Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         """Atomically append the user turn and its unresolved run fence."""
 
         if _ID.fullmatch(run_id) is None or _ID.fullmatch(turn_id) is None:
             raise SessionStoreError("run identity is invalid")
+        clean_attachments = _clean_message_attachments(attachments)
         with self._locked():
             session = self.load(session_id)
             if session["archived"]:
@@ -1615,18 +1781,26 @@ class SessionStore:
             if any(item.get("run_id") == run_id for item in session["runs"]):
                 raise SessionStoreError("session run identity conflict")
             timestamp = _now()
+            raw_message: dict[str, Any] = {
+                "message_id": f"message_{uuid4().hex}",
+                "role": "user",
+                "content": user_content,
+                "timestamp": timestamp,
+                "run_id": run_id,
+                "turn_id": turn_id,
+            }
+            if clean_attachments:
+                raw_message["attachments"] = [
+                    dict(item) for item in clean_attachments
+                ]
+                session["schema"] = SESSION_SCHEMA
             message = _validate_message(
-                {
-                    "message_id": f"message_{uuid4().hex}",
-                    "role": "user",
-                    "content": user_content,
-                    "timestamp": timestamp,
-                    "run_id": run_id,
-                    "turn_id": turn_id,
-                },
+                raw_message,
+                session_schema=str(session["schema"]),
                 session_id=session_id,
                 index=len(session["messages"]),
                 fallback_timestamp=timestamp,
+                require_stored_integrity=False,
             )
             session["messages"].append(message)
             if len(session["messages"]) == 1:
@@ -1698,9 +1872,11 @@ class SessionStore:
                             "run_id": run_id,
                             "turn_id": turn_id,
                         },
+                        session_schema=str(session["schema"]),
                         session_id=session_id,
                         index=len(session["messages"]),
                         fallback_timestamp=timestamp,
+                        require_stored_integrity=False,
                     )
                 )
             if usage:
@@ -1879,6 +2055,7 @@ __all__ = [
     "APPROVAL_RULES_SCHEMA",
     "CONTEXT_COMPACTION_SCHEMA",
     "SESSION_SCHEMA",
+    "SESSION_SCHEMA_V1",
     "SessionStore",
     "SessionStoreError",
 ]

@@ -10,6 +10,8 @@ Agent Harness stores only the data needed for local multi-turn operation and rec
 | API credentials | Environment or configured private file | Authorization header only; never session/journal content |
 | Workspace identity | Local real path, hashed for the state namespace | The provider context receives only the literal workspace label `.`; the Harness does not send the absolute workspace path as that field |
 | Workspace files | Original workspace | Built-in file tools and sandboxed `process.exec` can expose bounded workspace content; `process.exec_host` can read other current-user-accessible files and its bounded output may be sent |
+| Attachment descriptors | Session messages below the private workspace state | Opaque ID, digest and MIME metadata may frame provider input; the sanitized basename remains local display metadata, and the source path is never retained or sent by the attachment subsystem |
+| Immutable attachment blobs | `~/.agent-harness/workspaces/<hash>/attachments/` | Strict UTF-8 text is sent when attached to a supported turn; PNG/JPEG bytes are inlined only for an explicitly selected supported vision model; current DeepSeek PDF input is rejected before a run/network request |
 | Hook definitions | `.agent-harness/hooks.json` and `.agent-harness/hooks/` in the workspace | Not sent by the hook subsystem; only exact digests and content-free metadata enter run policy/events |
 | Hook trust decisions | Private workspace state below `${AGENT_HARNESS_HOME:-~/.agent-harness}` | Never; records contain hook ID, exact definition SHA-256 and trusted/disabled action |
 | Raw hook stdin/stdout/stderr | Transient Harness/child-process memory and anonymous temporary input | Not sent by the hook subsystem and not persisted in hook events; the underlying tool input/result keeps its separate normal contract |
@@ -39,6 +41,40 @@ can read permitted workspace content, while `process.exec_host` in `full-access`
 deliberately read a secret from the workspace or host and print it; the bounded observation
 can then be transmitted to the provider. Review the workspace and command before granting
 these modes.
+
+## Attachment data
+
+`/attach PATH` and `harness exec --attach PATH` import an immutable local snapshot before a
+turn. The original pathname is used transiently for a no-follow read and is not written to the
+session, journal, event stream or attachment descriptor. A sanitized basename is stored as
+local UI metadata and can itself reveal information to anyone who can read the private session,
+but the current DeepSeek request expansion uses only opaque ID, SHA-256 and MIME framing. Blob
+files are mode 0600 under a mode-0700 workspace attachment directory. Processes running as the
+same OS user can still access that local state.
+
+The descriptor and session manifest contain kind, MIME type, size, SHA-256, conservative token
+estimate and image dimensions, not the body or base64. Provider traces and attachment-specific
+public JSONL metadata do not copy body/base64/source path. Assistant or tool output can still
+quote attachment content and then follows the ordinary transcript/JSONL contract. This does
+not mean attachment content stays local: on a
+supported turn, strict UTF-8 text is expanded into provider input, and PNG/JPEG bytes are
+base64-inlined into the request only when the operator explicitly configured
+`deepseek-v4-flash-vision-exp`. The Harness does not switch models or upload through DeepSeek
+Files API automatically. PDF snapshots are represented locally but the current DeepSeek adapter
+rejects them before run creation and does not parse, extract or transmit their content.
+
+Each turn can import at most 8 attachments/24 MiB. The DeepSeek active request additionally
+caps attachment history plus the prospective turn at 16 items/24 MiB. Attachments are frozen
+with their pending prompt, so queued TUI follow-ups cannot silently acquire another turn's
+files. A session fork copies descriptors and shares the workspace attachment blobs; it does not
+create a separate copy or confidentiality boundary. Referenced blobs have no automatic expiry
+or whole-store garbage collector in this version, so they can outlive an active session unless
+the operator removes the private Harness state outside a running workflow.
+
+All attachment content, including text visible in an image, is untrusted user data. Embedded
+instructions do not become project/system instructions or authorization. They can still affect
+the remote model's response and tool requests, which remain subject to the normal local policy
+and approvals.
 
 ## Subagent and worktree data
 

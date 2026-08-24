@@ -9,6 +9,7 @@ import signal
 import sys
 from typing import Any, Mapping, Sequence
 
+from .attachments import AttachmentDescriptor, AttachmentError
 from .core import CancellationToken, HarnessCancelled
 from .hooks import HookDefinition, HookLoadError, HookSnapshot, load_project_hooks
 from .instructions import InstructionLoadError, load_project_instructions
@@ -67,6 +68,43 @@ def _runner(args: argparse.Namespace) -> AgentRunner:
     )
 
 
+def _discard_unreferenced_attachments(
+    runner: AgentRunner,
+    descriptors: Sequence[AttachmentDescriptor],
+    *,
+    session_id: str | None,
+) -> None:
+    """Best-effort cleanup limited to blobs proven absent from durable state."""
+
+    referenced: set[str] = set()
+    if session_id is not None:
+        try:
+            persisted = runner.store.load(session_id)
+        except Exception:
+            # An unreadable store is an uncertain boundary. Preserve every blob.
+            return
+        for message in persisted.get("messages", []):
+            if not isinstance(message, Mapping):
+                return
+            manifest = message.get("attachments", [])
+            if not isinstance(manifest, list):
+                return
+            for item in manifest:
+                if not isinstance(item, Mapping):
+                    return
+                attachment_id = item.get("attachment_id")
+                if isinstance(attachment_id, str):
+                    referenced.add(attachment_id)
+    for descriptor in descriptors:
+        if descriptor.attachment_id in referenced:
+            continue
+        try:
+            runner.discard_attachment(descriptor)
+        except Exception:
+            # Cleanup must never replace the authoritative turn failure.
+            continue
+
+
 def _exec(args: argparse.Namespace, runner: AgentRunner) -> int:
     if args.resume is not None and args.resume_latest:
         raise CliUsageError("--resume and --resume-latest are mutually exclusive")
@@ -75,14 +113,24 @@ def _exec(args: argparse.Namespace, runner: AgentRunner) -> int:
         prompt = sys.stdin.read().strip()
     if not prompt:
         raise ValueError("exec requires a non-empty prompt")
-    session = (
-        runner.resume_session(
-            args.resume,
-            permission_override=args.permissions or "read-only",
+    attachments = runner.ingest_attachments(args.attach) if args.attach else ()
+    session: Mapping[str, Any] | None = None
+    try:
+        session = (
+            runner.resume_session(
+                args.resume,
+                permission_override=args.permissions or "read-only",
+            )
+            if args.resume is not None or args.resume_latest
+            else runner.new_session()
         )
-        if args.resume is not None or args.resume_latest
-        else runner.new_session()
-    )
+    except BaseException:
+        _discard_unreferenced_attachments(
+            runner,
+            attachments,
+            session_id=None,
+        )
+        raise
     streamed = False
     output_closed = False
     cancellation = CancellationToken()
@@ -133,10 +181,23 @@ def _exec(args: argparse.Namespace, runner: AgentRunner) -> int:
             prompt,
             cancellation_token=cancellation,
             event_sink=event_sink,
+            attachments=attachments,
         )
     except KeyboardInterrupt:
         cancellation.cancel("keyboard_interrupt")
+        _discard_unreferenced_attachments(
+            runner,
+            attachments,
+            session_id=str(session["session_id"]),
+        )
         return EXIT_CANCELLED
+    except BaseException:
+        _discard_unreferenced_attachments(
+            runner,
+            attachments,
+            session_id=str(session["session_id"]),
+        )
+        raise
     finally:
         if previous_interrupt is not None:
             signal.signal(signal.SIGINT, previous_interrupt)
@@ -657,6 +718,13 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("prompt", nargs="+", help="prompt text, or - for stdin")
     execute.add_argument("--resume", metavar="SESSION_ID")
     execute.add_argument("--resume-latest", action="store_true")
+    execute.add_argument(
+        "--attach",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="attach one UTF-8 text, PNG, JPEG, or PDF snapshot (repeatable)",
+    )
     execute.add_argument("--jsonl", action="store_true")
     execute.add_argument("--print-session", action="store_true")
 
@@ -826,6 +894,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_USAGE
     except (
         DeepSeekConfigurationError,
+        AttachmentError,
         HookLoadError,
         InstructionLoadError,
         McpLoadError,

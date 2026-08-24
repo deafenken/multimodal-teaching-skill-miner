@@ -1,7 +1,7 @@
 # Project status
 
 Status: **engineering preview**
-Version: **2.5.0**
+Version: **2.6.0**
 
 ## Implemented
 
@@ -12,6 +12,11 @@ Version: **2.5.0**
 - read-only downgrade on resume, workspace-wide unresolved-run fencing and manual
   `effects`/`reconcile` acknowledgement;
 - DeepSeek adapter with central tool calls and native final-answer streaming;
+- provider-neutral immutable attachment snapshots and strict descriptors: no-follow stable
+  ingestion into owner-private blobs, 8-item/24-MiB turn bounds, manifest/session lineage,
+  context accounting and pre-run provider-capability validation; standard DeepSeek models
+  accept strict UTF-8 text, while PNG/JPEG require an explicitly selected
+  `deepseek-v4-flash-vision-exp` model and a 16-item/24-MiB active-request bound;
 - list/read/search tools, macOS Seatbelt-enforced patch/command writers, and a separately
   named host command behind explicit permission profiles;
 - per-call approval before sensitive effects, fail-closed headless behavior and private
@@ -42,6 +47,10 @@ Version: **2.5.0**
 ## Deliberately not claimed
 
 - feature parity with Claude Code or Codex;
+- automatic model switching, DeepSeek Files API upload, or PDF understanding/extraction; the
+  current DeepSeek adapter rejects PDF before run creation, and PDF ingestion checks only the
+  `%PDF-`/`%%EOF` envelope and size boundary;
+- graphical attachment drag-and-drop, paste or clipboard input in the curses TUI;
 - a portable cross-platform or container-grade command sandbox (the enforced backend is
   currently macOS Seatbelt only);
 - complete host-read, IPC or credential-service isolation: the Seatbelt profile is an

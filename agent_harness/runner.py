@@ -9,10 +9,17 @@ import re
 import sys
 from threading import Lock
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote
 from uuid import uuid4
 
+from .attachments import (
+    AttachmentDescriptor,
+    AttachmentError,
+    AttachmentStore,
+    MAX_ATTACHMENTS_PER_TURN,
+    MAX_ATTACHMENTS_TOTAL_BYTES,
+)
 from .core import (
     ApprovalDecision,
     ApprovalBroker,
@@ -241,7 +248,14 @@ class AgentRunner:
             model=model,
         )
         self.client = DeepSeekClient(config)
-        self.model = DeepSeekCodingModel(self.client)
+        self.attachment_store = AttachmentStore(self.store.root / "attachments")
+        self._active_attachment_blobs: dict[
+            str, tuple[AttachmentDescriptor, bytes]
+        ] | None = None
+        self.model = DeepSeekCodingModel(
+            self.client,
+            attachment_loader=self._load_attachment_for_model,
+        )
         self._api_key_file = selected_key_file
         self._project_extensions_enabled = project_extensions_enabled
         self._agent_context = dict(agent_context) if agent_context is not None else None
@@ -654,6 +668,7 @@ class AgentRunner:
                 "status": "invalid",
                 "error_code": "mcp_configuration_invalid",
             }
+        attachment_capabilities = self.model.capabilities
         return {
             **provider,
             "workspace": str(self.workspace),
@@ -672,6 +687,19 @@ class AgentRunner:
                 "max_depth": self._subagent_limits.max_depth,
                 "background_supported": False,
                 "automatic_merge_supported": False,
+            },
+            "attachments": {
+                "schema": "agent_harness.attachment_capabilities.v1",
+                "supported_kinds": list(attachment_capabilities.attachment_kinds),
+                "supported_media_types": list(
+                    attachment_capabilities.attachment_mime_types
+                ),
+                "provider_max_count": attachment_capabilities.max_attachment_count,
+                "provider_max_bytes": attachment_capabilities.max_attachment_bytes,
+                "ingestion_max_per_turn": MAX_ATTACHMENTS_PER_TURN,
+                "ingestion_max_bytes_per_turn": MAX_ATTACHMENTS_TOTAL_BYTES,
+                "automatic_model_switch": False,
+                "remote_files_api_used": False,
             },
             "approval_defaults": {
                 "low": "allow",
@@ -778,12 +806,160 @@ class AgentRunner:
 
         return load_project_instructions(self.workspace, self.active_directory)
 
+    def _load_attachment_for_model(self, value: Mapping[str, Any]) -> bytes:
+        """Resolve only a validated descriptor from the active immutable snapshot."""
+
+        descriptor = AttachmentDescriptor.from_value(value)
+        active = self._active_attachment_blobs
+        if active is None:
+            return self.attachment_store.read(descriptor)
+        cached = active.get(descriptor.attachment_id)
+        if cached is None or cached[0] != descriptor:
+            raise AttachmentError("attachment is outside the active turn snapshot")
+        return cached[1]
+
+    def ingest_attachments(
+        self,
+        paths: Sequence[str | os.PathLike[str]],
+    ) -> tuple[AttachmentDescriptor, ...]:
+        """Import one bounded batch relative to the runner's active directory."""
+
+        if isinstance(paths, (str, bytes, os.PathLike)):
+            raise AttachmentError("attachment batch is invalid")
+        resolved: list[str | Path] = []
+        try:
+            iterator = iter(paths)
+        except TypeError:
+            raise AttachmentError("attachment batch is invalid") from None
+        for raw in iterator:
+            try:
+                value = os.fspath(raw)
+            except TypeError:
+                raise AttachmentError("attachment path is invalid") from None
+            if not isinstance(value, str) or not value:
+                raise AttachmentError("attachment path is invalid")
+            path = Path(value)
+            if not path.is_absolute() and not (
+                value == "~" or value.startswith(f"~{os.sep}")
+            ):
+                path = self.active_directory / path
+            resolved.append(path)
+        return self.attachment_store.ingest_many(resolved)
+
+    def discard_attachment(
+        self,
+        value: AttachmentDescriptor | Mapping[str, Any],
+    ) -> None:
+        """Discard exactly one verified, unreferenced attachment blob."""
+
+        descriptor = (
+            value
+            if isinstance(value, AttachmentDescriptor)
+            else AttachmentDescriptor.from_value(value)
+        )
+        self.attachment_store.discard(descriptor)
+
+    @staticmethod
+    def _normalize_turn_attachments(
+        values: Sequence[AttachmentDescriptor | Mapping[str, Any]],
+    ) -> tuple[AttachmentDescriptor, ...]:
+        if isinstance(values, (str, bytes, bytearray, Mapping)):
+            raise AttachmentError("attachment batch is invalid")
+        try:
+            raw_values = tuple(values)
+        except TypeError:
+            raise AttachmentError("attachment batch is invalid") from None
+        if len(raw_values) > MAX_ATTACHMENTS_PER_TURN:
+            raise AttachmentError("attachment batch exceeds the item limit")
+        result: list[AttachmentDescriptor] = []
+        seen: set[str] = set()
+        total = 0
+        for raw in raw_values:
+            try:
+                descriptor = (
+                    raw
+                    if isinstance(raw, AttachmentDescriptor)
+                    else AttachmentDescriptor.from_value(raw)
+                )
+                descriptor = AttachmentDescriptor.from_value(descriptor.to_dict())
+            except AttachmentError:
+                raise
+            except Exception:
+                raise AttachmentError("attachment descriptor is invalid") from None
+            if descriptor.attachment_id in seen:
+                raise AttachmentError("attachment identifiers must be unique")
+            seen.add(descriptor.attachment_id)
+            total += descriptor.size_bytes
+            if total > MAX_ATTACHMENTS_TOTAL_BYTES:
+                raise AttachmentError("attachment batch exceeds the total size limit")
+            result.append(descriptor)
+        return tuple(result)
+
+    def _preflight_attachments(
+        self,
+        *,
+        active_messages: Sequence[Mapping[str, Any]],
+        turn_attachments: tuple[AttachmentDescriptor, ...],
+    ) -> dict[str, tuple[AttachmentDescriptor, bytes]]:
+        descriptors: list[AttachmentDescriptor] = []
+        for message in active_messages:
+            raw_manifest = message.get("attachments", [])
+            if not isinstance(raw_manifest, list):
+                raise AttachmentError("stored attachment manifest is invalid")
+            for raw in raw_manifest:
+                if not isinstance(raw, Mapping):
+                    raise AttachmentError("stored attachment manifest is invalid")
+                descriptors.append(AttachmentDescriptor.from_value(raw))
+        descriptors.extend(turn_attachments)
+        if not descriptors:
+            return {}
+
+        try:
+            capabilities = self.model.model_spec.capabilities.validated()
+        except Exception:
+            raise AttachmentError(
+                "selected model has no validated attachment capability contract"
+            ) from None
+        if len(descriptors) > capabilities.max_attachment_count:
+            raise AttachmentError("active context exceeds the model attachment count limit")
+        total_bytes = sum(item.size_bytes for item in descriptors)
+        if total_bytes > capabilities.max_attachment_bytes:
+            raise AttachmentError("active context exceeds the model attachment size limit")
+
+        loaded: dict[str, tuple[AttachmentDescriptor, bytes]] = {}
+        for descriptor in descriptors:
+            if descriptor.attachment_id in loaded:
+                raise AttachmentError(
+                    "active context contains a duplicate attachment identifier"
+                )
+            if descriptor.kind not in capabilities.attachment_kinds:
+                if descriptor.kind == "image":
+                    raise AttachmentError(
+                        "selected model does not support image attachments; "
+                        "select deepseek-v4-flash-vision-exp explicitly"
+                    )
+                if descriptor.kind == "pdf":
+                    raise AttachmentError(
+                        "selected DeepSeek model does not support PDF attachments"
+                    )
+                raise AttachmentError("selected model does not support this attachment kind")
+            if descriptor.media_type not in capabilities.attachment_mime_types:
+                raise AttachmentError(
+                    "selected model does not support this attachment media type"
+                )
+            loaded[descriptor.attachment_id] = (
+                descriptor,
+                self.attachment_store.read(descriptor),
+            )
+        return loaded
+
     def _context_budget(
         self,
         *,
         session: Mapping[str, Any],
         snapshot: InstructionSnapshot,
         prospective_prompt: str = "",
+        prospective_attachments: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         view = self.store.context_view(str(session["session_id"]))
         permissions = permission_profile(self.permission_mode)
@@ -806,6 +982,7 @@ class AgentRunner:
             project_instruction_bytes=snapshot.total_bytes,
             tool_definitions=definitions,
             prospective_prompt=prospective_prompt,
+            prospective_attachments=prospective_attachments,
         )
         spec = self.model.model_spec
         available = max(
@@ -830,6 +1007,12 @@ class AgentRunner:
         budget = self._context_budget(session=session, snapshot=snapshot)
         view = budget.pop("view")
         lineage = view["lineage"]
+        active_attachment_count = 0
+        active_attachment_bytes = 0
+        for message in view["messages"]:
+            for descriptor in message.get("attachments", []):
+                active_attachment_count += 1
+                active_attachment_bytes += int(descriptor["size_bytes"])
         return {
             "schema": "agent_harness.context_status.v1",
             "session_id": session_id,
@@ -844,6 +1027,8 @@ class AgentRunner:
             "active_context_sha256": lineage["active_context_sha256"],
             "instruction_bytes": snapshot.total_bytes,
             "instruction_count": len(snapshot.documents),
+            "active_attachment_count": active_attachment_count,
+            "active_attachment_bytes": active_attachment_bytes,
             **budget,
         }
 
@@ -856,6 +1041,7 @@ class AgentRunner:
         cancellation_token: CancellationToken,
         target_tokens: int | None = None,
         prospective_prompt: str = "",
+        prospective_attachments: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         compactor = getattr(self.model, "compact_context", None)
         if not callable(compactor):
@@ -892,6 +1078,7 @@ class AgentRunner:
                     session=refreshed,
                     snapshot=snapshot,
                     prospective_prompt=prospective_prompt,
+                    prospective_attachments=prospective_attachments,
                 )
                 if budget["estimated_input_tokens_upper_bound"] <= target_tokens:
                     break
@@ -1016,6 +1203,7 @@ class AgentRunner:
         cancellation_token: CancellationToken | None = None,
         event_sink: EventSink | None = None,
         approval_broker: ApprovalBroker | None = None,
+        attachments: Sequence[AttachmentDescriptor | Mapping[str, Any]] = (),
     ) -> TurnOutcome:
         with self.store.workspace_run_lock():
             unresolved = self.store.unresolved_workspace_runs()
@@ -1032,6 +1220,7 @@ class AgentRunner:
                     cancellation_token=cancellation_token,
                     event_sink=event_sink,
                     approval_broker=approval_broker,
+                    attachments=attachments,
                 )
 
     def _run_turn_locked(
@@ -1042,10 +1231,12 @@ class AgentRunner:
         cancellation_token: CancellationToken | None = None,
         event_sink: EventSink | None = None,
         approval_broker: ApprovalBroker | None = None,
+        attachments: Sequence[AttachmentDescriptor | Mapping[str, Any]] = (),
     ) -> TurnOutcome:
         content = str(prompt).strip()
         if not content or len(content) > 200_000:
             raise ValueError("prompt must contain 1 to 200000 characters")
+        turn_attachments = self._normalize_turn_attachments(attachments)
         token = cancellation_token or CancellationToken()
         # Stored permission metadata is never an authority source. The current
         # invocation's explicit runner mode controls the grants, and the
@@ -1064,6 +1255,11 @@ class AgentRunner:
                 "session has an unfinished or uncertain run; inspect its journal "
                 "before archiving it or starting a new session"
             )
+        preflight_view = self.store.context_view(session_id)
+        attachment_blobs = self._preflight_attachments(
+            active_messages=preflight_view["messages"],
+            turn_attachments=turn_attachments,
+        )
         hook_runner = None
         mcp_catalog = None
         mcp_policy_material: Mapping[str, Any] = {
@@ -1115,6 +1311,7 @@ class AgentRunner:
             session=existing,
             snapshot=instruction_snapshot,
             prospective_prompt=content,
+            prospective_attachments=[item.to_dict() for item in turn_attachments],
         )
         if budget["estimated_input_tokens_upper_bound"] >= budget["automatic_trigger_tokens"]:
             self._compact_locked(
@@ -1124,7 +1321,23 @@ class AgentRunner:
                 cancellation_token=token,
                 target_tokens=budget["automatic_target_tokens"],
                 prospective_prompt=content,
+                prospective_attachments=[item.to_dict() for item in turn_attachments],
             )
+            refreshed = self.store.load(session_id)
+            budget = self._context_budget(
+                session=refreshed,
+                snapshot=instruction_snapshot,
+                prospective_prompt=content,
+                prospective_attachments=[
+                    item.to_dict() for item in turn_attachments
+                ],
+            )
+        if (
+            attachment_blobs
+            and budget["estimated_input_tokens_upper_bound"]
+            > budget["available_input_tokens"]
+        ):
+            raise SessionStoreError("active context exceeds the selected model input limit")
         run_id = f"run_{uuid4().hex}"
         turn_id = f"turn_{uuid4().hex}"
         session = self.store.begin_run(
@@ -1135,6 +1348,7 @@ class AgentRunner:
             provider="deepseek",
             model=self.client.config.model,
             permission_mode=mode,
+            attachments=turn_attachments,
         )
         context_view = self.store.context_view(session_id)
         context_lineage = dict(context_view["lineage"])
@@ -1162,6 +1376,7 @@ class AgentRunner:
             turn_id=turn_id,
             checkpoint_path=checkpoint_path,
         )
+        self._active_attachment_blobs = attachment_blobs
         try:
             try:
                 result = run_agent_harness(
@@ -1169,7 +1384,15 @@ class AgentRunner:
                     self.registry,
                     {
                         "messages": [
-                            {"role": item["role"], "content": item["content"]}
+                            {
+                                "role": item["role"],
+                                "content": item["content"],
+                                **(
+                                    {"attachments": item["attachments"]}
+                                    if item.get("attachments")
+                                    else {}
+                                ),
+                            }
                             for item in context_view["messages"]
                         ],
                         "workspace": ".",
@@ -1217,6 +1440,7 @@ class AgentRunner:
                 # every future entry point fails closed instead of replaying it.
                 raise
         finally:
+            self._active_attachment_blobs = None
             # The scheduler contract joins every started child before returning
             # or raising.  Clear the lifetime spawn charge on every root exit,
             # including unknown runtime failures, so stale run IDs cannot leak

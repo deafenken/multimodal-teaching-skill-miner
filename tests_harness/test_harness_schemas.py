@@ -8,6 +8,7 @@ import unittest
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
+from agent_harness.attachments import AttachmentDescriptor
 from agent_harness.core import HarnessCheckpoint
 from agent_harness.core.contracts import HarnessContractError
 from agent_harness.core.events import HarnessEventEmitter, canonical_sha256
@@ -58,6 +59,37 @@ class HarnessSchemaTests(unittest.TestCase):
             pending_effect=None,
         )
         self._validate("agent_harness_checkpoint.schema.json", checkpoint.to_dict())
+
+    def test_attachment_descriptors_match_the_public_schema(self) -> None:
+        text = AttachmentDescriptor.from_value(
+            {
+                "schema": "agent_harness.attachment.v1",
+                "attachment_id": "att_" + "1" * 32,
+                "kind": "text",
+                "media_type": "text/markdown; charset=utf-8",
+                "display_name": "notes.md",
+                "size_bytes": 12,
+                "sha256": "2" * 64,
+                "estimated_tokens": 12,
+            }
+        )
+        image = AttachmentDescriptor.from_value(
+            {
+                "schema": "agent_harness.attachment.v1",
+                "attachment_id": "att_" + "3" * 32,
+                "kind": "image",
+                "media_type": "image/png",
+                "display_name": "screen.png",
+                "size_bytes": 64,
+                "sha256": "4" * 64,
+                "estimated_tokens": 512,
+                "width": 8,
+                "height": 8,
+            }
+        )
+
+        self._validate("agent_harness_attachment.schema.json", text.to_dict())
+        self._validate("agent_harness_attachment.schema.json", image.to_dict())
 
     def test_journal_record_and_checkpoint_envelope_match_schemas(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

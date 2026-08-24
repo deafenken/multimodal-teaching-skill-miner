@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 from typing import Any, Mapping, Sequence
 
+from .attachments import (
+    AttachmentDescriptor,
+    MAX_ATTACHMENTS_PER_TURN,
+    MAX_ATTACHMENTS_TOTAL_BYTES,
+)
 from .core.contracts import HarnessContractError
 
 
@@ -25,6 +31,52 @@ def _canonical_bytes(value: Any) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise HarnessContractError("context value must be canonical JSON") from exc
+
+
+def _validated_attachment_manifest(
+    raw_attachments: Any,
+    *,
+    field: str,
+) -> tuple[tuple[dict[str, Any], ...], int]:
+    if raw_attachments is None:
+        return (), 0
+    if (
+        isinstance(raw_attachments, (str, bytes, bytearray, Mapping))
+        or not isinstance(raw_attachments, Sequence)
+        or len(raw_attachments) > MAX_ATTACHMENTS_PER_TURN
+    ):
+        raise HarnessContractError(f"{field} attachment manifest is invalid")
+    result: list[dict[str, Any]] = []
+    attachment_ids: set[str] = set()
+    estimated_tokens = 0
+    total_size_bytes = 0
+    for raw in raw_attachments:
+        if not isinstance(raw, Mapping):
+            raise HarnessContractError(f"{field} attachment manifest is invalid")
+        try:
+            descriptor = AttachmentDescriptor.from_value(raw)
+            canonical = descriptor.to_dict()
+        except Exception as exc:
+            raise HarnessContractError(
+                f"{field} attachment descriptor is invalid"
+            ) from exc
+        attachment_id = canonical.get("attachment_id")
+        estimate = canonical.get("estimated_tokens")
+        if (
+            not isinstance(attachment_id, str)
+            or attachment_id in attachment_ids
+            or isinstance(estimate, bool)
+            or not isinstance(estimate, int)
+            or estimate < 0
+        ):
+            raise HarnessContractError(f"{field} attachment manifest is invalid")
+        attachment_ids.add(attachment_id)
+        total_size_bytes += int(canonical["size_bytes"])
+        if total_size_bytes > MAX_ATTACHMENTS_TOTAL_BYTES:
+            raise HarnessContractError(f"{field} attachment batch is too large")
+        estimated_tokens += estimate
+        result.append(canonical)
+    return tuple(result), estimated_tokens
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +162,13 @@ def select_compaction_plan(
     if latest is not None and not isinstance(latest, Mapping):
         raise HarnessContractError("session compaction lineage is invalid")
     parent_count = int(latest.get("source_message_count", 0)) if latest else 0
+    if any(
+        isinstance(item, Mapping) and item.get("attachments")
+        for item in raw_messages[:parent_count]
+    ):
+        raise HarnessContractError(
+            "context compaction lineage crosses an attachment boundary"
+        )
     maximum_count = len(raw_messages) - retain_messages
     if maximum_count <= parent_count:
         return None
@@ -118,6 +177,10 @@ def select_compaction_plan(
     selected_messages: tuple[Mapping[str, Any], ...] = ()
     for candidate_count in range(parent_count + 1, maximum_count + 1):
         candidate = raw_messages[candidate_count - 1]
+        if isinstance(candidate, Mapping) and candidate.get("attachments"):
+            # Attachment-aware compaction is intentionally not part of v1.
+            # Keep this message and every message after it in active context.
+            break
         if not isinstance(candidate, Mapping) or candidate.get("role") != "assistant":
             continue
         delta = raw_messages[parent_count:candidate_count]
@@ -126,7 +189,7 @@ def select_compaction_plan(
         if len(_canonical_bytes(delta)) > max_source_bytes:
             break
         selected_count = candidate_count
-        selected_messages = tuple(dict(item) for item in delta)
+        selected_messages = tuple(deepcopy(dict(item)) for item in delta)
     if selected_count == parent_count:
         return None
     return ContextCompactionPlan(
@@ -147,25 +210,49 @@ def estimate_context_tokens(
     project_instruction_bytes: int = 0,
     tool_definitions: Sequence[Mapping[str, Any]] = (),
     prospective_prompt: str = "",
+    prospective_attachments: Sequence[Mapping[str, Any]] = (),
 ) -> int:
     """Conservative UTF-8 byte upper bound used for automatic compaction."""
 
     if project_instruction_bytes < 0:
         raise HarnessContractError("project instruction byte count is invalid")
-    material = {
+    projected_messages: list[dict[str, Any]] = []
+    attachment_tokens = 0
+    for item in messages:
+        projected: dict[str, Any] = {
+            "role": str(item.get("role", "")),
+            "content": str(item.get("content", "")),
+        }
+        manifest, estimated = _validated_attachment_manifest(
+            item.get("attachments"),
+            field="message",
+        )
+        if manifest:
+            projected["attachments"] = [dict(value) for value in manifest]
+            attachment_tokens += estimated
+        projected_messages.append(projected)
+    prospective_manifest, prospective_tokens = _validated_attachment_manifest(
+        prospective_attachments,
+        field="prospective",
+    )
+    attachment_tokens += prospective_tokens
+    material: dict[str, Any] = {
         "history_summary": summary,
-        "messages": [
-            {
-                "role": str(item.get("role", "")),
-                "content": str(item.get("content", "")),
-            }
-            for item in messages
-        ],
+        "messages": projected_messages,
         "prospective_prompt": prospective_prompt,
         "tools": [dict(item) for item in tool_definitions],
     }
+    if prospective_manifest:
+        material["prospective_attachments"] = [
+            dict(value) for value in prospective_manifest
+        ]
     framing = (len(messages) + len(tool_definitions) + 4) * _MESSAGE_OVERHEAD_BYTES
-    return len(_canonical_bytes(material)) + project_instruction_bytes + framing
+    return (
+        len(_canonical_bytes(material))
+        + project_instruction_bytes
+        + framing
+        + attachment_tokens
+    )
 
 
 __all__ = [

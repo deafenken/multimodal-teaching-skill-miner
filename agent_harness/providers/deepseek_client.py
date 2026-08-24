@@ -8,6 +8,8 @@ explicitly opt in before user text can leave the machine.
 
 from __future__ import annotations
 
+import base64
+import binascii
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -23,10 +25,17 @@ from urllib import error, parse, request
 
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
-ALLOWED_MODELS = frozenset({DEFAULT_MODEL})
+VISION_MODEL = "deepseek-v4-flash-vision-exp"
+ALLOWED_MODELS = frozenset({DEFAULT_MODEL, VISION_MODEL})
 _RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _MAX_SSE_EVENT_BYTES = 1024 * 1024
+_MAX_INLINE_IMAGE_BYTES = 24 * 1024 * 1024
+_MAX_REQUEST_BYTES = 48 * 1024 * 1024
+_IMAGE_DATA_PREFIXES = {
+    "image/jpeg": "data:image/jpeg;base64,",
+    "image/png": "data:image/png;base64,",
+}
 _MAX_WEB_SOURCE_NODES = 4096
 _WEB_SEARCH_ERROR_CODES = frozenset(
     {
@@ -77,6 +86,114 @@ def _canonical_json(value: Any) -> bytes:
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
+
+
+def _decode_inline_image_url(value: Any) -> tuple[str, int]:
+    """Validate one bounded inline image without exposing its body in errors."""
+
+    if not isinstance(value, str):
+        raise DeepSeekConfigurationError("inline image URL is invalid")
+    media_type = next(
+        (
+            candidate
+            for candidate, prefix in _IMAGE_DATA_PREFIXES.items()
+            if value.startswith(prefix)
+        ),
+        None,
+    )
+    if media_type is None:
+        raise DeepSeekConfigurationError("inline image URL is invalid")
+    encoded = value[len(_IMAGE_DATA_PREFIXES[media_type]) :]
+    if not encoded or len(encoded) > ((_MAX_INLINE_IMAGE_BYTES + 2) // 3) * 4:
+        raise DeepSeekConfigurationError("inline image exceeds the safety limit")
+    try:
+        body = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise DeepSeekConfigurationError("inline image body is invalid") from None
+    if not body or len(body) > _MAX_INLINE_IMAGE_BYTES:
+        raise DeepSeekConfigurationError("inline image exceeds the safety limit")
+    if media_type == "image/png" and not body.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise DeepSeekConfigurationError("inline image body is invalid")
+    if media_type == "image/jpeg" and not (
+        body.startswith(b"\xff\xd8\xff") and body.endswith(b"\xff\xd9")
+    ):
+        raise DeepSeekConfigurationError("inline image body is invalid")
+    return media_type, len(body)
+
+
+def _validated_chat_messages(
+    messages: Sequence[Mapping[str, Any]], *, model: str
+) -> list[dict[str, Any]]:
+    """Copy the exact OpenAI-compatible text/vision message subset we send."""
+
+    safe_messages: list[dict[str, Any]] = []
+    inline_image_bytes = 0
+    for index, item in enumerate(messages):
+        if not isinstance(item, Mapping) or set(item) != {"role", "content"}:
+            raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+        role = item.get("role")
+        content = item.get("content")
+        if not isinstance(role, str) or role not in {
+            "system",
+            "user",
+            "assistant",
+        }:
+            raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+        if isinstance(content, str):
+            if not content.strip():
+                raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+            safe_messages.append({"role": role, "content": content})
+            continue
+        if role != "user" or type(content) is not list or not content:
+            raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+        if len(content) > 33:
+            raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+        safe_blocks: list[dict[str, Any]] = []
+        saw_text = False
+        for block in content:
+            if not isinstance(block, Mapping):
+                raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+            block_type = block.get("type")
+            if block_type == "text" and set(block) == {"type", "text"}:
+                text = block.get("text")
+                if not isinstance(text, str) or not text.strip():
+                    raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+                saw_text = True
+                safe_blocks.append({"type": "text", "text": text})
+                continue
+            if block_type == "image_url" and set(block) == {
+                "type",
+                "image_url",
+            }:
+                if model != VISION_MODEL:
+                    raise DeepSeekConfigurationError(
+                        "configured DeepSeek model does not support image input"
+                    )
+                image_url = block.get("image_url")
+                if not isinstance(image_url, Mapping) or set(image_url) != {"url"}:
+                    raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+                _media_type, body_bytes = _decode_inline_image_url(
+                    image_url.get("url")
+                )
+                inline_image_bytes += body_bytes
+                if inline_image_bytes > _MAX_INLINE_IMAGE_BYTES:
+                    raise DeepSeekConfigurationError(
+                        "inline images exceed the safety limit"
+                    )
+                safe_blocks.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_url["url"]},
+                    }
+                )
+                continue
+            raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+        if not saw_text:
+            raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
+        safe_messages.append({"role": role, "content": safe_blocks})
+    if not safe_messages:
+        raise DeepSeekConfigurationError("at least one message is required")
+    return safe_messages
 
 
 def _truthy(value: str | None) -> bool:
@@ -1315,7 +1432,7 @@ class DeepSeekClient:
 
     def chat_json(
         self,
-        messages: Sequence[Mapping[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         request_kind: str,
         require_remote_consent: bool = True,
@@ -1330,15 +1447,7 @@ class DeepSeekClient:
         safe_kind = str(request_kind).strip()
         if not safe_kind or len(safe_kind) > 80:
             raise DeepSeekConfigurationError("request_kind is invalid")
-        safe_messages: list[dict[str, str]] = []
-        for index, item in enumerate(messages):
-            role = str(item.get("role", ""))
-            content = str(item.get("content", ""))
-            if role not in {"system", "user", "assistant"} or not content.strip():
-                raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
-            safe_messages.append({"role": role, "content": content})
-        if not safe_messages:
-            raise DeepSeekConfigurationError("at least one message is required")
+        safe_messages = _validated_chat_messages(messages, model=self.config.model)
         effective_max_tokens = (
             self.config.max_tokens if max_tokens is None else max_tokens
         )
@@ -1363,6 +1472,10 @@ class DeepSeekClient:
         if not self.config.thinking_enabled:
             request_body["temperature"] = self.config.temperature
         request_bytes = _canonical_json(request_body)
+        if len(request_bytes) > _MAX_REQUEST_BYTES:
+            raise DeepSeekConfigurationError(
+                "DeepSeek request exceeds the safety limit"
+            )
         request_sha = sha256(request_bytes).hexdigest()
         key = _read_api_key(
             api_key=self._api_key, api_key_file=self.config.api_key_file
@@ -1387,7 +1500,14 @@ class DeepSeekClient:
                 if attempt >= self.config.max_retries:
                     raise DeepSeekClientError(
                         f"DeepSeek request failed after {attempt + 1} attempt(s): {last_error}"
-                    ) from exc
+                    ) from None
+                time.sleep(0.2 * (attempt + 1))
+                continue
+            except Exception:
+                if attempt >= self.config.max_retries:
+                    raise DeepSeekClientError(
+                        "DeepSeek request transport failed"
+                    ) from None
                 time.sleep(0.2 * (attempt + 1))
                 continue
             last_status = status
@@ -1451,7 +1571,7 @@ class DeepSeekClient:
 
     def chat_text_stream(
         self,
-        messages: Sequence[Mapping[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         request_kind: str,
         cancellation_token: CancellationLike,
@@ -1475,15 +1595,7 @@ class DeepSeekClient:
         safe_kind = str(request_kind).strip()
         if not safe_kind or len(safe_kind) > 80:
             raise DeepSeekConfigurationError("request_kind is invalid")
-        safe_messages: list[dict[str, str]] = []
-        for index, item in enumerate(messages):
-            role = str(item.get("role", ""))
-            content = str(item.get("content", ""))
-            if role not in {"system", "user", "assistant"} or not content.strip():
-                raise DeepSeekConfigurationError(f"messages[{index}] is invalid")
-            safe_messages.append({"role": role, "content": content})
-        if not safe_messages:
-            raise DeepSeekConfigurationError("at least one message is required")
+        safe_messages = _validated_chat_messages(messages, model=self.config.model)
         effective_max_tokens = (
             self.config.max_tokens if max_tokens is None else max_tokens
         )
@@ -1510,6 +1622,10 @@ class DeepSeekClient:
         if not self.config.thinking_enabled:
             request_body["temperature"] = self.config.temperature
         request_bytes = _canonical_json(request_body)
+        if len(request_bytes) > _MAX_REQUEST_BYTES:
+            raise DeepSeekConfigurationError(
+                "DeepSeek request exceeds the safety limit"
+            )
         request_sha = sha256(request_bytes).hexdigest()
         key = _read_api_key(
             api_key=self._api_key, api_key_file=self.config.api_key_file
@@ -1651,24 +1767,24 @@ class DeepSeekClient:
                 return
             except DeepSeekClientError:
                 raise
-            except Exception as exc:
+            except Exception:
                 cancellation_token.raise_if_cancelled()
                 if emitted_content or attempt >= effective_retries:
                     raise DeepSeekClientError(
                         "DeepSeek stream transport failed"
-                    ) from exc
+                    ) from None
                 delay = 0.2 * (attempt + 1)
                 if time.monotonic() + delay >= deadline_monotonic:
                     raise DeepSeekClientError(
                         "DeepSeek stream retry would exceed the deadline"
-                    ) from exc
+                    ) from None
                 if cancellation_token.wait(delay):
                     cancellation_token.raise_if_cancelled()
         raise DeepSeekClientError("DeepSeek stream ended without a result")
 
     def chat_json_stream(
         self,
-        messages: Sequence[Mapping[str, str]],
+        messages: Sequence[Mapping[str, Any]],
         *,
         request_kind: str,
         cancellation_token: CancellationLike,

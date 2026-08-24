@@ -41,6 +41,43 @@ Security fixes target the current `2.x` Agent Harness line.
   an uncertain crash boundary. Cancellation after such an effect begins settles as an
   explicit handoff.
 
+### Immutable attachment imports
+
+An attachment pathname is an untrusted import source, not an authorization grant. The loader
+requires an absolute or home-expanded path, walks components with no-follow descriptors,
+rejects user-controlled symbolic links and non-regular sources, and checks file
+identity/size/timestamps before and after a bounded read. It then publishes an immutable copy
+as a mode-0600 blob inside a mode-0700 workspace attachment directory; published/read blobs
+must have exactly one hard link. Descriptor size and SHA-256 are revalidated before provider
+use. These owner-only modes protect against other OS
+accounts under ordinary filesystem semantics; they do not isolate another process running as
+the same user or an attacker who already controls the Harness state directory/process.
+
+Type is derived from bytes rather than trusted from the suffix. Text must decode as strict
+UTF-8. PNG/JPEG validation checks the actual signature, bounded structure and dimensions.
+PDF validation only checks the `%PDF-`/`%%EOF` envelope and size limit; it is not a PDF parser,
+renderer, malware scanner, OCR engine or content extractor. A turn is limited to 8 imports and
+24 MiB total, with 2-MiB text, 8-MiB image and 16-MiB PDF item bounds. A selected provider's
+active context has a separate exact capability/count/byte preflight; the DeepSeek adapter caps
+active attachments at 16/24 MiB and rejects an unsupported, missing or changed blob before
+compaction, run creation or network access.
+
+Ordinary DeepSeek text models accept only strict UTF-8 text attachments. PNG/JPEG requires the
+operator to select the exact `deepseek-v4-flash-vision-exp` model. There is no automatic model
+switch and no Files API upload; supported image bytes are inlined in that provider request.
+PDF is rejected by the current DeepSeek adapter before a run. Secure local ingestion therefore
+does not imply provider support or semantic safety.
+
+Attachment bodies, including text visible inside screenshots or documents, are untrusted user
+data. They are delimited as such in provider input and cannot directly alter central tools,
+permissions, scopes, approval rules, hooks, MCP trust or sandbox policy. They can still influence
+the model to request an authorized tool, so normal schema, permission and approval enforcement
+remains essential. Attachment manifests and attachment-specific event metadata never copy a
+source path, raw body or base64; a sanitized basename is retained only as local display
+metadata. Assistant or tool output may still quote attachment content and then follows the
+ordinary transcript/event contract. The immutable blob itself remains sensitive local data
+and may contain secrets.
+
 ### Trusted project command hooks
 
 `.agent-harness/hooks.json` and files below `.agent-harness/hooks/` are untrusted repository

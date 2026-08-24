@@ -75,7 +75,7 @@ def test_message_ids_are_stable_unique_and_transcript_is_append_only(tmp_path: P
     modified = deepcopy(stored)
     modified["messages"][0]["content"] = "changed"
     modified["messages"][0].pop("content_sha256")
-    with pytest.raises(SessionStoreError, match="append-only"):
+    with pytest.raises(SessionStoreError, match="digest|append-only"):
         store.save(modified)
 
     reordered = deepcopy(stored)
@@ -130,6 +130,7 @@ def test_legacy_messages_receive_deterministic_ids(tmp_path: Path) -> None:
     stored = store.append_message(session["session_id"], role="user", content="legacy")
     path = store.sessions_directory / f"{session['session_id']}.json"
     material = json.loads(path.read_text(encoding="utf-8"))
+    material["schema"] = "agent_harness.session.v1"
     material["messages"][0].pop("message_id")
     material["messages"][0].pop("content_sha256")
     path.write_text(json.dumps(material), encoding="utf-8")

@@ -4,9 +4,10 @@
 
 ```text
 TUI / headless CLI
-        │
-Session Store
-        │
+   │             │
+Session Store   Immutable Attachment Store
+   └──────┬──────┘
+          │
 Harness Runtime
  ┌──────┼─────────────────────────────┐
 Provider Adapter      Tool Registry          Event/Journal
@@ -23,35 +24,42 @@ events, budgets and recovery; application-domain models stay outside the package
 
 ## Run protocol
 
-1. Validate the session fence; securely snapshot project instructions, hook definitions and
-   local MCP definitions; require an exact trust/disable decision for every executable
-   proposal and a current explicitly refreshed catalog for every trusted MCP server.
-2. Estimate the prospective active context; when it crosses the 80% threshold, append one
+1. Validate the session fence and reject an unfinished or uncertain prior run.
+2. Validate every prospective attachment descriptor against its owner-private immutable blob,
+   the per-turn/active-request bounds and the exact selected provider/model capability. A
+   missing, modified or unsupported attachment fails before compaction, run creation or a
+   network request.
+3. Securely snapshot project instructions, hook definitions and local MCP definitions; require
+   an exact trust/disable decision for every executable proposal and a current explicitly
+   refreshed catalog for every trusted MCP server.
+4. Estimate the prospective active context, including conservative attachment tokens; when it
+   crosses the 80% threshold, append one
    or more bounded provider summaries until it approaches 60% or cannot advance safely.
-3. Create fresh run/turn identities and atomically append both the user message and the
+5. Create fresh run/turn identities and atomically append both the user message, its content-free
+   attachment manifest and the
    unresolved run record. A crash after this commit therefore leaves a visible fence.
-4. Create the 0600 hash-chain journal and bind instruction, hook-policy, frozen MCP-policy/
+6. Create the 0600 hash-chain journal and bind instruction, hook-policy, frozen MCP-policy/
    catalog and context-lineage digests.
-5. Build the provider-visible tool list from the active permission profile and data-scope
+7. Build the provider-visible tool list from the active permission profile and data-scope
    metadata. Trusted frozen MCP tools join it only in `full-access`; a scope label authorizes
    a handler while OS isolation is enforced separately.
-6. Ask the provider adapter for either central tool calls, a final answer or a handoff.
-7. Validate schema/replay first, then synchronously run matching `PreToolUse` hooks. Their
+8. Ask the provider adapter for either central tool calls, a final answer or a handoff.
+9. Validate schema/replay first, then synchronously run matching `PreToolUse` hooks. Their
    aggregate can preserve the central policy, require approval or deny; it cannot allow a
    call that central policy would otherwise ask for or deny.
-8. Resolve approval before `tool.started` and the durable tool effect boundary. Approval
+10. Resolve approval before `tool.started` and the durable tool effect boundary. Approval
    events contain digests, not raw command or patch text. MCP calls are always high-risk,
    once-only approvals and cannot inherit or create a persistent allow.
-9. Validate and settle tools centrally. After the final success or failure, synchronously
+11. Validate and settle tools centrally. After the final success or failure, synchronously
    run the observe-only `PostToolUse` or `PostToolUseFailure` hook before emitting the final
    tool settlement. Every tool and hook effect has typed lifecycle evidence.
-10. If the selected tool is `agent.delegate`, approve the exact batch once, atomically reserve
+12. If the selected tool is `agent.delegate`, approve the exact batch once, atomically reserve
     the in-process fan-out budget, create one clean-HEAD Git worktree per child behind the
     repository-common lock, run 1–4 child sessions concurrently, propagate cancellation and
     join them all. Return only bounded summaries/opaque IDs; never merge child changes.
-11. Feed bounded observations to the next model step.
-12. Stream final assistant text, commit one terminal event and atomically checkpoint.
-13. Atomically append the authoritative assistant message and settle the session run.
+13. Feed bounded observations to the next model step.
+14. Stream final assistant text, commit one terminal event and atomically checkpoint.
+15. Atomically append the authoritative assistant message and settle the session run.
 
 ## Invariants
 
@@ -94,6 +102,16 @@ events, budgets and recovery; application-domain models stay outside the package
   retained and each summary is bound to a stable-ID prefix digest and parent digest.
 - A history summary is user data inside the provider JSON envelope, never a system message
   or a new authorization source. Planner and answer receive the same summary and suffix.
+- Attachment descriptors bind an immutable local blob by opaque ID, exact size and SHA-256.
+  Attachment manifests and attachment-specific event metadata do not copy the source path,
+  raw body or base64. The sanitized basename is local display metadata, not a path or authority
+  source. Assistant/tool output that quotes an attachment follows its ordinary persistence
+  contract.
+- A compaction range cannot cover or cross an attachment-bearing message. That message and
+  its following active suffix remain live and may therefore reach the context limit rather
+  than losing the attachment relationship through summarization.
+- Attachment text, documents and images are untrusted user data. Instructions visible inside
+  them cannot become system/project policy, tools, permissions, scopes or approval authority.
 - `agent.delegate` is high-risk, never replayed and never persistently approved. Its child
   authority is a dynamic subset of the parent and is capped at `workspace-write`; child
   runners have no host command, MCP, command hooks, persistent approval or nested delegation.
@@ -115,6 +133,7 @@ events, budgets and recovery; application-domain models stay outside the package
 - `harness`: interactive TUI when stdin/stdout are terminals.
 - `harness exec`: streaming headless output.
 - `harness exec --jsonl`: canonical event envelopes plus one exec-result record.
+- `harness exec --attach PATH`: repeatable immutable attachment input for one headless turn.
 - `harness sessions|resume|fork|archive`: local session lifecycle.
 - `harness effects` and `harness reconcile RUN_ID`: list workspace-wide unresolved runs
   and record a manual acknowledgement after inspection.
@@ -134,6 +153,41 @@ events, budgets and recovery; application-domain models stay outside the package
   constructing a provider. Lists and normal detail are path-free; only one exact ID plus
   `--path` reveals its worktree path. TUI `/agents` combines content-free live status and
   retained artifact metadata.
+
+## Immutable attachment boundary
+
+The attachment store treats the selected pathname as an untrusted import source. It walks
+components without following user-controlled links, requires a stable regular file, reads
+under a type-specific bound, derives the kind from bytes, and atomically publishes a mode-0600
+blob below a mode-0700 workspace attachment directory. The public
+`agent_harness.attachment.v1` descriptor contains an opaque ID, kind, MIME type, sanitized
+basename, byte size, SHA-256, conservative token estimate and image dimensions where
+applicable. It contains no source path or body. A session fork copies descriptors and shares
+the same workspace blob store; it is not a new confidentiality boundary or physical copy.
+
+One turn can ingest at most 8 attachments and 24 MiB total. Individual strict UTF-8 text,
+PNG/JPEG and PDF snapshots are limited to 2, 8 and 16 MiB respectively. PNG/JPEG parsers
+validate the actual signature, bounded structure and dimensions. PDF handling only checks a
+`%PDF-` header, a bounded `%%EOF` terminator and size; it does not parse, render, OCR or extract
+the document. These ingestion facts do not imply that the selected provider can consume the
+kind.
+
+The provider seam declares exact attachment kinds, MIME types, count and byte limits. The
+current DeepSeek adapter accepts strict UTF-8 text on ordinary text models. It accepts
+PNG/JPEG only for the exact, explicitly configured `deepseek-v4-flash-vision-exp` model, with
+an active maximum of 16 attachments and 24 MiB. The Harness never changes models
+automatically. Image blocks are inline user-message data for that request; the current path
+does not call DeepSeek Files API. PDF is unsupported by the adapter and fails before run
+creation or network access even though its immutable local representation is valid.
+
+Planner and final-answer phases receive the same expanded attachment inputs. Inline image
+bytes and base64 are not copied into provider traces, attachment manifests or attachment-event
+metadata; assistant/tool output may still describe them under the normal persistence contract.
+Text/image content is still sent to
+the selected remote provider when a turn proceeds, so attachment selection is a disclosure
+decision. Content is always marked as untrusted user data. The curses TUI provides explicit
+`/attach PATH`, `/attachments` and `/detach ID|all` staging bound to a pending turn; graphical
+drag-and-drop, image paste and clipboard ingestion are outside this version.
 
 ## Trusted command-hook subset
 

@@ -104,6 +104,9 @@ class ProviderModelSpec:
             "vision": self.capabilities.vision,
             "web_search": self.capabilities.web_search,
             "cancellation": self.capabilities.cancellation,
+            "text_attachment": "text" in self.capabilities.attachment_kinds,
+            "image_attachment": "image" in self.capabilities.attachment_kinds,
+            "pdf_attachment": "pdf" in self.capabilities.attachment_kinds,
         }
         unknown = required - set(flags)
         if unknown:

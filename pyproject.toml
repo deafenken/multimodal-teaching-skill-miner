@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-harness"
-version = "2.5.0"
+version = "2.6.0"
 description = "Auditable, provider-neutral coding-agent harness with CLI and TUI"
 readme = "README.md"
 authors = [{name = "Agent Harness contributors"}]
@@ -45,6 +45,7 @@ namespaces = false
 
 [tool.setuptools.data-files]
 "share/agent-harness/schema" = [
+  "schema/agent_harness_attachment.schema.json",
   "schema/agent_harness_checkpoint.schema.json",
   "schema/agent_harness_event.schema.json",
   "schema/agent_harness_trace.schema.json",

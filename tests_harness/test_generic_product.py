@@ -451,6 +451,7 @@ def test_session_store_reserves_capacity_and_serializes_turns(tmp_path: Path) ->
         permission_mode="read-only",
     )
     material = first.load(session["session_id"])
+    material["schema"] = "agent_harness.session.v1"
     material["messages"] = [
         {"role": "user", "content": f"message-{index}", "timestamp": "now"}
         for index in range(1_999)

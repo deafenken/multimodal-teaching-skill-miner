@@ -13,6 +13,12 @@ from threading import Event, Thread
 import time
 from typing import Any, Mapping, Sequence
 
+from .attachments import (
+    AttachmentDescriptor,
+    AttachmentError,
+    MAX_ATTACHMENTS_PER_TURN,
+    MAX_ATTACHMENTS_TOTAL_BYTES,
+)
 from .core import (
     ApprovalDecision,
     ApprovalRequest,
@@ -36,6 +42,12 @@ _MAX_FOLLOWUPS = 32
 _MAX_FOLLOWUP_CHARS = 100_000
 _OPAQUE_ARTIFACT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _ARTIFACT_PHASE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingTurn:
+    prompt: str
+    attachments: tuple[AttachmentDescriptor, ...] = ()
 
 
 @dataclass(slots=True)
@@ -99,7 +111,9 @@ class HarnessTui:
         self.worker: Thread | None = None
         self.worker_kind: str | None = None
         self.cancellation: CancellationToken | None = None
-        self.followups: list[str] = []
+        self.followups: list[_PendingTurn] = []
+        self.pending_attachments: list[AttachmentDescriptor] = []
+        self.active_turn: _PendingTurn | None = None
         self.pending_approval: _PendingApproval | None = None
         self.approval_scroll = 0
         self.approval_preview_visible = False
@@ -121,22 +135,49 @@ class HarnessTui:
     def _event_sink(self, event: Mapping[str, Any]) -> None:
         self.queue.put(("event", dict(event)))
 
-    def start_turn(self, prompt: str) -> None:
+    def start_turn(
+        self,
+        prompt: str,
+        attachments: Sequence[AttachmentDescriptor | Mapping[str, Any]] = (),
+    ) -> bool:
         prompt = prompt.strip()
         if not prompt:
-            return
+            return False
+        try:
+            frozen_attachments = tuple(
+                item
+                if isinstance(item, AttachmentDescriptor)
+                else AttachmentDescriptor.from_value(item)
+                for item in attachments
+            )
+        except (AttachmentError, TypeError):
+            self.state.notice("附件描述符无效；本轮未发送")
+            return False
+        if len(frozen_attachments) > MAX_ATTACHMENTS_PER_TURN:
+            self.state.notice("单轮附件不能超过 8 个；本轮未发送")
+            return False
+        if sum(item.size_bytes for item in frozen_attachments) > MAX_ATTACHMENTS_TOTAL_BYTES:
+            self.state.notice("单轮附件总量不能超过 24 MiB；本轮未发送")
+            return False
+        pending_turn = _PendingTurn(prompt=prompt, attachments=frozen_attachments)
         if self.busy:
             if (
                 len(self.followups) >= _MAX_FOLLOWUPS
-                or sum(len(item) for item in self.followups) + len(prompt)
+                or sum(len(item.prompt) for item in self.followups) + len(prompt)
                 > _MAX_FOLLOWUP_CHARS
             ):
                 self.state.notice("后续队列已满；请等待当前运行完成")
-                return
-            self.followups.append(prompt)
+                return False
+            self.followups.append(pending_turn)
             self.state.notice(f"已加入后续队列（{len(self.followups)}）")
-            return
-        self.transcript.append({"role": "user", "content": prompt})
+            return True
+        local_message: dict[str, Any] = {"role": "user", "content": prompt}
+        if frozen_attachments:
+            local_message["attachments"] = [
+                item.to_dict() for item in frozen_attachments
+            ]
+        self.transcript.append(local_message)
+        self.active_turn = pending_turn
         self.state.begin_turn()
         self.cancellation = CancellationToken()
         self.approval_broker = _TuiApprovalBroker(
@@ -152,6 +193,7 @@ class HarnessTui:
                     cancellation_token=self.cancellation,
                     event_sink=self._event_sink,
                     approval_broker=self.approval_broker,
+                    attachments=pending_turn.attachments,
                 )
                 self.queue.put(("outcome", outcome))
             except BaseException as exc:
@@ -160,6 +202,7 @@ class HarnessTui:
         self.worker = Thread(target=work, name="agent-harness-turn", daemon=True)
         self.worker_kind = "turn"
         self.worker.start()
+        return True
 
     def start_compaction(self) -> None:
         if self.busy:
@@ -212,9 +255,10 @@ class HarnessTui:
         self.approval_scroll = 0
         self.approval_preview_visible = False
         self.approval_broker = None
+        self.active_turn = None
         if self.followups:
-            next_prompt = self.followups.pop(0)
-            self.start_turn(next_prompt)
+            next_turn = self.followups.pop(0)
+            self.start_turn(next_turn.prompt, next_turn.attachments)
 
     def _complete_compaction(self, result: Mapping[str, Any]) -> None:
         persisted = self.runner.store.load(self.state.session_id)
@@ -233,8 +277,8 @@ class HarnessTui:
         else:
             self.state.notice("没有可压缩的已完成旧轮次")
         if self.followups:
-            next_prompt = self.followups.pop(0)
-            self.start_turn(next_prompt)
+            next_turn = self.followups.pop(0)
+            self.start_turn(next_turn.prompt, next_turn.attachments)
 
     def drain(self) -> None:
         while True:
@@ -258,11 +302,14 @@ class HarnessTui:
                         self.approval_preview_visible = False
                         self.state.status = "approval"
                 elif kind == "error":
+                    failed_turn = self.active_turn
+                    queued_turns = tuple(self.followups)
                     self.worker = None
                     self.worker_kind = None
                     self.cancellation = None
                     self.state.status = "failed"
                     self.state.assistant_draft = ""
+                    self.active_turn = None
                     self.followups.clear()
                     self.pending_approval = None
                     self.approval_scroll = 0
@@ -277,6 +324,37 @@ class HarnessTui:
                         self.transcript = [
                             dict(item) for item in persisted.get("messages", [])
                         ]
+                        referenced = {
+                            str(item.get("attachment_id"))
+                            for message in persisted.get("messages", [])
+                            if isinstance(message, Mapping)
+                            for item in message.get("attachments", [])
+                            if isinstance(item, Mapping)
+                            and isinstance(item.get("attachment_id"), str)
+                        }
+                        recovery_turns = (
+                            ((failed_turn,) if failed_turn is not None else ())
+                            + queued_turns
+                        )
+                        if recovery_turns:
+                            pending_ids = {
+                                item.attachment_id for item in self.pending_attachments
+                            }
+                            recovered = 0
+                            for recovery_turn in recovery_turns:
+                                for descriptor in recovery_turn.attachments:
+                                    if (
+                                        descriptor.attachment_id not in referenced
+                                        and descriptor.attachment_id not in pending_ids
+                                    ):
+                                        self.pending_attachments.append(descriptor)
+                                        pending_ids.add(descriptor.attachment_id)
+                                        recovered += 1
+                            if recovered:
+                                self.state.notice(
+                                    f"失败/排队轮次的 {recovered} 个未持久化附件"
+                                    "已恢复到待发送区"
+                                )
                     self.state.notice(f"运行失败：{type(payload).__name__}: {payload}")
             except Exception as exc:
                 if self.cancellation is not None:
@@ -293,8 +371,32 @@ class HarnessTui:
         self.approval_scroll = 0
         self.approval_preview_visible = False
         self.approval_broker = None
+        self.followups.clear()
+        self.active_turn = None
         for notice in session.get("risk_notices", [])[-8:]:
             self.state.notice(str(notice))
+
+    def _session_switch_blocked(self) -> bool:
+        if not self.pending_attachments:
+            return False
+        self.state.notice("仍有待发送附件；请先发送或使用 /detach all")
+        return True
+
+    def _discard_pending_attachments(self) -> bool:
+        failed: list[AttachmentDescriptor] = []
+        for descriptor in self.pending_attachments:
+            try:
+                self.runner.discard_attachment(descriptor)
+            except Exception:
+                failed.append(descriptor)
+        removed = len(self.pending_attachments) - len(failed)
+        self.pending_attachments = failed
+        if failed:
+            self.state.notice("部分附件无法安全删除，已保留在待发送区")
+            return False
+        if removed:
+            self.state.notice(f"已删除 {removed} 个待发送附件快照")
+        return True
 
     def _hook_status(self) -> dict[str, Any]:
         status_loader = getattr(self.runner, "hook_status", None)
@@ -347,18 +449,21 @@ class HarnessTui:
         if command in {"/quit", "/exit"}:
             if self.busy:
                 self.state.notice("运行中请先按 Ctrl+C 停止")
-            else:
+            elif self._discard_pending_attachments():
                 self.running = False
         elif command == "/help":
             self.state.notice(
                 "/new /sessions /resume ID /fork /archive /effects "
                 "/reconcile RUN_ID /status /model /permissions MODE /tools "
                 "/agents /instructions /hooks /mcp /context /compact "
+                "/attach PATH /attachments /detach ID|all "
                 "/approvals /clear /quit"
             )
         elif command == "/new":
             if self.busy:
                 self.state.notice("运行完成后才能新建会话")
+            elif self._session_switch_blocked():
+                return
             else:
                 self._replace_session(self.runner.new_session())
                 self.state.notice("已新建会话")
@@ -372,6 +477,8 @@ class HarnessTui:
         elif command == "/resume":
             if self.busy:
                 self.state.notice("运行完成后才能切换会话")
+            elif self._session_switch_blocked():
+                return
             else:
                 try:
                     self._replace_session(
@@ -386,6 +493,8 @@ class HarnessTui:
         elif command == "/fork":
             if self.busy:
                 self.state.notice("运行完成后才能 fork")
+            elif self._session_switch_blocked():
+                return
             else:
                 try:
                     self._replace_session(self.runner.store.fork(self.state.session_id))
@@ -395,6 +504,8 @@ class HarnessTui:
         elif command == "/archive":
             if self.busy:
                 self.state.notice("运行完成后才能归档")
+            elif self._session_switch_blocked():
+                return
             else:
                 self.runner.store.archive(self.state.session_id)
                 self._replace_session(self.runner.new_session())
@@ -447,6 +558,81 @@ class HarnessTui:
             allowed = permission_profile(self.runner.permission_mode)
             names = [spec.name for spec in self.runner.registry.specs() if spec.permission in allowed]
             self.state.notice("可用工具：" + ", ".join(names))
+        elif command == "/attach":
+            if not argument:
+                self.state.notice("用法：/attach PATH")
+                return
+            if len(self.pending_attachments) >= MAX_ATTACHMENTS_PER_TURN:
+                self.state.notice("待发送附件已达 8 个；请先发送或移除")
+                return
+            loader = getattr(self.runner, "ingest_attachments", None)
+            if not callable(loader):
+                self.state.notice("当前运行器不支持附件")
+                return
+            try:
+                imported = loader([argument])
+                if not isinstance(imported, tuple) or len(imported) != 1:
+                    raise AttachmentError("attachment importer returned invalid data")
+                descriptor = imported[0]
+                if not isinstance(descriptor, AttachmentDescriptor):
+                    raise AttachmentError("attachment importer returned invalid data")
+                projected = sum(
+                    item.size_bytes for item in self.pending_attachments
+                ) + descriptor.size_bytes
+                if projected > MAX_ATTACHMENTS_TOTAL_BYTES:
+                    try:
+                        self.runner.discard_attachment(descriptor)
+                    except Exception:
+                        self.pending_attachments.append(descriptor)
+                        self.state.notice(
+                            "附件超过单轮 24 MiB 且无法安全回收；已保留，请 /detach"
+                        )
+                    else:
+                        self.state.notice("待发送附件总量不能超过 24 MiB")
+                    return
+                self.pending_attachments.append(descriptor)
+                self.state.notice(
+                    f"已附加 {descriptor.display_name} · {descriptor.kind} · "
+                    f"{descriptor.size_bytes} bytes · {descriptor.attachment_id}"
+                )
+            except AttachmentError as exc:
+                self.state.notice(f"附件导入失败：{exc}")
+        elif command == "/attachments":
+            if argument:
+                self.state.notice("用法：/attachments")
+                return
+            total = sum(item.size_bytes for item in self.pending_attachments)
+            self.state.notice(
+                f"待发送附件：{len(self.pending_attachments)} 个 · {total} bytes"
+            )
+            for descriptor in self.pending_attachments:
+                self.state.notice(
+                    f"{descriptor.attachment_id} · {descriptor.kind} · "
+                    f"{descriptor.size_bytes} bytes · {descriptor.display_name}"
+                )
+        elif command == "/detach":
+            if not argument:
+                self.state.notice("用法：/detach ID|all")
+                return
+            if argument.casefold() == "all":
+                self._discard_pending_attachments()
+                return
+            matches = [
+                item
+                for item in self.pending_attachments
+                if item.attachment_id == argument
+            ]
+            if len(matches) != 1:
+                self.state.notice("未找到这个待发送附件 ID")
+                return
+            descriptor = matches[0]
+            try:
+                self.runner.discard_attachment(descriptor)
+            except Exception:
+                self.state.notice("附件无法安全删除，仍保留在待发送区")
+                return
+            self.pending_attachments.remove(descriptor)
+            self.state.notice(f"已移除 {descriptor.attachment_id}")
         elif command == "/agents":
             if argument:
                 self.state.notice("用法：/agents（仅显示不含路径的活动与 artifact 元数据）")
@@ -636,7 +822,9 @@ class HarnessTui:
         if value.startswith("/"):
             self.command(value)
         else:
-            self.start_turn(value)
+            attachments = tuple(self.pending_attachments)
+            if self.start_turn(value, attachments):
+                self.pending_attachments.clear()
 
     def handle_key(self, key: Any) -> None:
         if key == curses.KEY_RESIZE:
@@ -650,7 +838,8 @@ class HarnessTui:
             self._handle_interrupt()
         elif key in ("\x04", 4):
             if not self.busy and not self.input_buffer:
-                self.running = False
+                if self._discard_pending_attachments():
+                    self.running = False
         elif key in (curses.KEY_BACKSPACE, "\b", "\x7f", 127, 8):
             self.input_buffer = self.input_buffer[:-1]
         elif key == curses.KEY_PPAGE:
@@ -746,6 +935,17 @@ class HarnessTui:
             wrapped = wrap_display(content, max(10, width - 4))
             lines.append(f"{role} › {wrapped[0]}")
             lines.extend(f"    {line}" for line in wrapped[1:])
+            attachments = message.get("attachments", [])
+            if isinstance(attachments, list) and attachments:
+                labels: list[str] = []
+                for item in attachments[:8]:
+                    if not isinstance(item, Mapping):
+                        continue
+                    name = sanitize_terminal_text(item.get("display_name", "attachment"))
+                    kind = sanitize_terminal_text(item.get("kind", "file"))
+                    labels.append(f"{name} ({kind})")
+                if labels:
+                    lines.append("    attachments › " + ", ".join(labels))
             lines.append("")
         if self.state.assistant_draft:
             wrapped = wrap_display(self.state.assistant_draft, max(10, width - 4))
@@ -800,7 +1000,8 @@ class HarnessTui:
         header = (
             f" Agent Harness  fg-agents {self.state.running_agent_count}/"
             f"{len(self.state.agents)}  {self.runner.client.config.model}  "
-            f"{self.runner.permission_mode}  {self.runner.workspace.name} "
+            f"{self.runner.permission_mode}  att {len(self.pending_attachments)}  "
+            f"{self.runner.workspace.name} "
         )
         self._add(screen, 0, 0, header.ljust(columns - 1), columns - 1, curses.A_REVERSE)
         self._add(screen, 1, 0, "─" * (columns - 1), columns - 1, curses.A_DIM)
@@ -872,6 +1073,11 @@ class HarnessTui:
         cache_total = cache_hit + self.state.usage.get("prompt_cache_miss_tokens", 0)
         cache = f"cache {round(cache_hit * 100 / cache_total)}%" if cache_total else "cache —"
         queue_label = f" · queued {len(self.followups)}" if self.followups else ""
+        attachment_label = (
+            f" · attachments {len(self.pending_attachments)}"
+            if self.pending_attachments
+            else " · attachments 0"
+        )
         approval_label = " · approval waiting" if self.pending_approval else ""
         agents_label = (
             f" · fg-agents {self.state.running_agent_count} running/"
@@ -881,13 +1087,20 @@ class HarnessTui:
         )
         status = (
             f" {self.state.status}{agents_label} · {total} tokens · {cache}"
-            f"{queue_label}{approval_label} "
+            f"{queue_label}{attachment_label}{approval_label} "
         )
         self._add(screen, rows - 4, 0, status.ljust(columns - 1), columns - 1, curses.A_REVERSE)
         self._add(screen, rows - 3, 0, "─" * (columns - 1), columns - 1, curses.A_DIM)
         prompt = "> " + self.input_buffer
         self._add(screen, rows - 2, 0, prompt, columns - 1, curses.A_BOLD)
-        self._add(screen, rows - 1, 0, "Enter 发送 · Ctrl+C 停止 · PgUp/PgDn 滚动 · /help", columns - 1, curses.A_DIM)
+        self._add(
+            screen,
+            rows - 1,
+            0,
+            "Enter 发送 · /attach PATH · Ctrl+C 停止 · PgUp/PgDn 滚动 · /help",
+            columns - 1,
+            curses.A_DIM,
+        )
         cursor_column = min(columns - 2, display_width(prompt))
         try:
             screen.move(rows - 2, cursor_column)

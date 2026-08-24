@@ -24,6 +24,7 @@ macOS 双击：
 harness                         # TUI
 harness exec "检查当前改动"     # 流式 headless
 harness exec --jsonl "运行测试" # JSONL 事件流
+harness exec --attach NOTES.md "核对这份说明" # 本轮不可变文本附件
 harness sessions
 harness agents                    # 列出保留的子任务 worktree（默认不显示路径）
 harness agents WORKTREE_ID --path # 明确查看一个保留 worktree 的本机路径
@@ -66,6 +67,9 @@ TUI 中使用 `/permissions workspace-write` 切换当前会话权限。
   once-only approval、never-replay 执行。
 - 稳定 message ID、append-only 原始 transcript、可验证摘要血缘和 active-context view；
   `/compact` 手动压缩，接近输入预算时自动分段压缩，`/context` 只显示计数与 digest。
+- provider-neutral 附件快照：严格 UTF-8 文本/Markdown、校验后的 PNG/JPEG 和
+  有界 PDF 会导入 owner-private 不可变 blob；会话中的附件 manifest 仅保留本地
+  消毒 basename、类型、大小和 digest，不复制源路径、原始内容或 base64。
 - 每次 run 使用 0600 hash-chain journal 和原子 checkpoint。任一 session 留下未完成或
   待核对 run 时，整个 workspace 的所有新 run 都会被 fence 阻断；`effects` 只列出证据，
   `reconcile` 只记录操作员已检查并清除 fence，不会验证、回滚或重放外部效果。
@@ -144,6 +148,34 @@ export HARNESS_DEEPSEEK_THINKING='0'
 
 TUI 只展示 provider 返回的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，不会
 伪造缓存命中。planner 使用稳定的 system-prefix，便于服务端前缀缓存复用。
+
+## 附件
+
+Headless 可重复传入 `--attach`；TUI 使用 `/attach PATH` 暂存本轮快照，
+`/attachments` 检查待发列表，`/detach ID|all` 只移除尚未绑定到待发 turn 的项目。
+普通 prompt 提交时，Harness 会把“此 prompt + 当时暂存的附件”一起冻结，不会
+让忙时 follow-up 的附件串到下一个 prompt。当前 curses TUI 没有图形拖拽、粘贴
+或剪贴板导入，不声称这部分与 Claude Code/Codex 交互对齐。
+
+导入不相信扩展名：文本必须是严格 UTF-8，PNG/JPEG 会校验实际签名、结构和
+尺寸；PDF 只校验 `%PDF-`/`%%EOF` 包络与大小边界，不解析或提取内容。源文件使用
+no-follow 路径遍历和稳定 inode/device/size 读取，然后原子发布到当前
+workspace 对应的 0700 私有附件目录，blob 为 0600。
+每轮最多导入 8 个、原始字节合计最多 24 MiB；单个文本、图片、PDF 上限分别
+为 2、8、16 MiB。当前 DeepSeek provider 的活动请求另有 16 个/24 MiB 上限。
+
+当前 DeepSeek 能力边界是：
+
+- `deepseek-v4-flash` 等普通文本模型可接收严格 UTF-8 文本/Markdown 附件。
+- 只有操作员显式设置 `HARNESS_DEEPSEEK_MODEL=deepseek-v4-flash-vision-exp` 时，才会发送
+  PNG/JPEG；Harness 不会为图片自动换模型。图片在当次 provider 请求内联，不调用
+  DeepSeek Files API。
+- PDF 可安全导入、快照并用统一 descriptor 表示，但当前 DeepSeek adapter 不支持
+  PDF；它会在建立 run 或发出网络请求前拒绝，不伪造提取结果。
+
+文档、文本和图片内容始终是不可信的用户数据。其中的指令不是 system/project
+指令，不能扩大工具权限、数据 scope 或审批范围。使用附件表示用户明确同意把
+该 turn 所需的文本或内联图片字节发送给选定的远程 provider。
 
 ## 项目指令
 
@@ -356,6 +388,8 @@ Harness 始终保留完整原始消息；压缩只生成一个单独、append-on
 看到“最新摘要 + 未覆盖消息后缀 + 当前用户消息”。每条消息有稳定 ID 和内容摘要；每个压缩
 记录绑定连续原文前缀、父摘要、provider/model 和 prompt 版本。hash 用于发现私有状态损坏
 和血缘不一致，不是抵抗拥有状态目录写权限者的签名。
+压缩区间不能跨过含附件的消息；该消息及其后缀会留在 active view，所以含附件的长会话
+可能在不能继续安全压缩时直接达到 context 上限。
 
 自动压缩在“摘要、活动消息、项目指令、工具定义和待发送 prompt”的保守 UTF-8 byte 上界
 达到可用输入预算 80% 时触发，目标降到约 60%，并保留最近 6 条原始消息。单次只总结有界
@@ -389,6 +423,9 @@ Harness 始终保留完整原始消息；压缩只生成一个单独、append-on
 /agents
 /context
 /compact
+/attach PATH
+/attachments
+/detach ID|all
 /approvals
 /approvals clear session|workspace
 /clear
@@ -405,11 +442,11 @@ Harness 始终保留完整原始消息；压缩只生成一个单独、append-on
 ```text
 TUI / headless CLI
         │
-Generic Session Store
+Generic Session Store ─── Immutable Attachment Store
         │
 Harness Runtime ── Event reducer / Journal / Checkpoint
    │          │
-Provider   Tool Registry ─┬─ Trusted Hook Broker
+Provider ← capability preflight   Tool Registry ─┬─ Trusted Hook Broker
                          ├─ Frozen MCP Catalog / stdio Client
                          └─ Foreground Subagent Scheduler
                                   │
@@ -422,6 +459,7 @@ Provider   Tool Registry ─┬─ Trusted Hook Broker
 
 - `agent_harness/core/`：domain-neutral runtime、events、tools、journal、recovery。
 - `agent_harness/providers/`：provider client 与 tool-aware adapter。
+- `agent_harness/attachments.py`：no-follow 导入、不可变私有 blob 和 descriptor 合同。
 - `agent_harness/toolsets/`：coding workspace 工具。
 - `agent_harness/session.py`：本地多轮 session。
 - `agent_harness/context.py`：active-context 预算、分段计划和 provider 摘要契约。

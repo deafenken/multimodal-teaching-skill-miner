@@ -1,7 +1,13 @@
 """Agent Harness: a recoverable, provider-neutral coding-agent runtime."""
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
+from .attachments import (
+    ATTACHMENT_SCHEMA,
+    AttachmentDescriptor,
+    AttachmentError,
+    AttachmentStore,
+)
 from .core import *  # noqa: F401,F403
 from .core import __all__ as _core_all
 from .context import ContextCompactionPlan, ContextCompactionResult
@@ -31,7 +37,11 @@ from .worktrees import (
 
 __all__ = [
     *_core_all,
+    "ATTACHMENT_SCHEMA",
     "AgentRunner",
+    "AttachmentDescriptor",
+    "AttachmentError",
+    "AttachmentStore",
     "CONTEXT_COMPACTION_SCHEMA",
     "ContextCompactionPlan",
     "ContextCompactionResult",

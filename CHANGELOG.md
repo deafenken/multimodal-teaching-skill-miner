@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.6.0 — Immutable local attachments
+
+- Added a provider-neutral `agent_harness.attachment.v1` descriptor and owner-private,
+  immutable blob snapshots. Imports use no-follow path traversal, stable-file checks,
+  byte-based type validation and atomic publication; session manifests retain a sanitized
+  local basename, size, type and digests, never the source path, inline body or base64.
+- Added bounded ingestion for strict UTF-8 text/Markdown, validated PNG/JPEG and PDF snapshots
+  with `%PDF-`/`%%EOF` envelope checks (not parsing or extraction). A turn may ingest at most
+  8 attachments and 24 MiB total; individual
+  text, image and PDF limits are 2, 8 and 16 MiB respectively.
+- Added exact provider capability preflight before a run or network request. Standard
+  DeepSeek text models accept UTF-8 text attachments. PNG/JPEG input is available only when
+  the operator explicitly selects `deepseek-v4-flash-vision-exp`; the Harness never changes
+  models automatically. The current DeepSeek adapter rejects PDF before creating a run.
+- Added identical attachment expansion for planner/final-answer phases, inline vision request
+  validation and trace redaction. The current DeepSeek path does not upload through its Files
+  API; image bytes are inlined only in the provider request and are not copied into
+  attachment-specific event metadata. Assistant/tool output retains its ordinary contract.
+- Added repeated headless `--attach` input and TUI staging commands `/attach`, `/attachments`
+  and `/detach`. The curses UI intentionally does not claim drag-and-drop, paste or clipboard
+  parity with Claude Code or Codex.
+- Bound attachment manifests into append-only session lineage and context estimates. A
+  compaction range cannot cross an attachment-bearing message, so attachment history remains
+  in the active suffix and can reach the context limit rather than being silently summarized.
+- Treat all attachment content, including images and documents, as untrusted user data rather
+  than system/project instructions or an authorization source. Active DeepSeek provider input
+  is capped at 16 attachments and 24 MiB in addition to the per-turn ingestion limits.
+
 ## 2.5.0 — Isolated foreground subagents
 
 - Added one provider-visible `agent.delegate` capability for a high-risk, never-replay,
