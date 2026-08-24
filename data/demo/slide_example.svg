@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720">
-  <rect width="1280" height="720" fill="#102a56"/>
-  <text x="640" y="180" text-anchor="middle" fill="white" font-family="Arial, Helvetica, sans-serif" font-size="72">Concrete Example</text>
-  <text x="640" y="360" text-anchor="middle" fill="#ffde59" font-family="Arial, Helvetica, sans-serif" font-size="96">x = 2</text>
-  <text x="640" y="520" text-anchor="middle" fill="white" font-family="Arial, Helvetica, sans-serif" font-size="54">What happens next?</text>
-</svg>
-

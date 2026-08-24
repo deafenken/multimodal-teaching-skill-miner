@@ -1,0 +1,41 @@
+{
+  "name": "@agent-harness/sdk",
+  "version": "2.7.0",
+  "description": "Dependency-free Node.js SDK for the Agent Harness headless JSONL interface",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/sdk.test.mjs && tsc -p tsconfig.json",
+    "pack:check": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "LicenseRef-Academic-Evaluation-1.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deafenken/multimodal-teaching-skill-miner.git",
+    "directory": "sdk/typescript"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

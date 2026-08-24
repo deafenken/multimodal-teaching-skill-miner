@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-harness/agent_harness_attachment.schema.json",
+  "title": "Agent Harness attachment descriptor",
+  "description": "Content-free metadata for one immutable owner-private attachment snapshot. Runtime validation also enforces a 255-byte UTF-8 display-name limit.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/text"
+    },
+    {
+      "$ref": "#/$defs/image"
+    },
+    {
+      "$ref": "#/$defs/pdf"
+    }
+  ],
+  "$defs": {
+    "commonProperties": {
+      "schema": {
+        "const": "agent_harness.attachment.v1"
+      },
+      "attachment_id": {
+        "type": "string",
+        "pattern": "^att_[0-9a-f]{32}$"
+      },
+      "display_name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255,
+        "not": {
+          "enum": [
+            ".",
+            ".."
+          ]
+        },
+        "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+      },
+      "sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "estimated_tokens": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "text": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "attachment_id",
+        "kind",
+        "media_type",
+        "display_name",
+        "size_bytes",
+        "sha256",
+        "estimated_tokens"
+      ],
+      "properties": {
+        "schema": {
+          "$ref": "#/$defs/commonProperties/schema"
+        },
+        "attachment_id": {
+          "$ref": "#/$defs/commonProperties/attachment_id"
+        },
+        "kind": {
+          "const": "text"
+        },
+        "media_type": {
+          "enum": [
+            "text/plain; charset=utf-8",
+            "text/markdown; charset=utf-8"
+          ]
+        },
+        "display_name": {
+          "$ref": "#/$defs/commonProperties/display_name"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2097152
+        },
+        "sha256": {
+          "$ref": "#/$defs/commonProperties/sha256"
+        },
+        "estimated_tokens": {
+          "$ref": "#/$defs/commonProperties/estimated_tokens",
+          "description": "The runtime requires this conservative estimate to equal size_bytes for text."
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "attachment_id",
+        "kind",
+        "media_type",
+        "display_name",
+        "size_bytes",
+        "sha256",
+        "estimated_tokens",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "schema": {
+          "$ref": "#/$defs/commonProperties/schema"
+        },
+        "attachment_id": {
+          "$ref": "#/$defs/commonProperties/attachment_id"
+        },
+        "kind": {
+          "const": "image"
+        },
+        "media_type": {
+          "enum": [
+            "image/png",
+            "image/jpeg"
+          ]
+        },
+        "display_name": {
+          "$ref": "#/$defs/commonProperties/display_name"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "sha256": {
+          "$ref": "#/$defs/commonProperties/sha256"
+        },
+        "estimated_tokens": {
+          "const": 512
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        }
+      }
+    },
+    "pdf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "attachment_id",
+        "kind",
+        "media_type",
+        "display_name",
+        "size_bytes",
+        "sha256",
+        "estimated_tokens"
+      ],
+      "properties": {
+        "schema": {
+          "$ref": "#/$defs/commonProperties/schema"
+        },
+        "attachment_id": {
+          "$ref": "#/$defs/commonProperties/attachment_id"
+        },
+        "kind": {
+          "const": "pdf"
+        },
+        "media_type": {
+          "const": "application/pdf"
+        },
+        "display_name": {
+          "$ref": "#/$defs/commonProperties/display_name"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "sha256": {
+          "$ref": "#/$defs/commonProperties/sha256"
+        },
+        "estimated_tokens": {
+          "$ref": "#/$defs/commonProperties/estimated_tokens",
+          "description": "The runtime requires this conservative estimate to equal size_bytes for PDF snapshots."
+        }
+      }
+    }
+  }
+}

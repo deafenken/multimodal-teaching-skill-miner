@@ -1,54 +1,26 @@
-# 题目要求—实现—证据追踪矩阵
+# Requirements traceability
 
-状态含义：`完成` 表示本地工程验收闭环；`部分完成` 表示真实运行但证据范围有限；`外部待完成` 表示不能由代码或伪造数据补齐。
+| ID | Requirement | Implementation | Verification |
+|---|---|---|---|
+| H-CORE-01 | Bounded model/tool loop | `agent_harness/core/runtime.py` | `tests_harness/test_agent_harness.py` |
+| H-EVENT-01 | Continuous typed events and one terminal | `agent_harness/core/events.py` | `tests_harness/test_harness_controller.py`, `test_generic_product.py` |
+| H-DUR-01 | Durable-first hash-chain journal and checkpoint | `agent_harness/core/journal.py` | `test_harness_journal.py`, `test_harness_runtime_journal.py` |
+| H-PROV-01 | Provider-neutral contracts and tool-aware DeepSeek adapter | `agent_harness/core/providers.py`, `agent_harness/providers/deepseek.py` | `test_harness_provider_registry.py`, `test_generic_product.py` |
+| H-ATT-01 | Provider-neutral immutable attachment descriptors/blobs; no-follow stable ingestion, byte-derived type checks, per-turn and provider caps, path/body/base64-free attachment manifests/metadata, pre-run capability rejection, DeepSeek text plus explicit vision-only PNG/JPEG support, and no PDF parsing/provider claim | `agent_harness/attachments.py`, `core/providers.py`, `providers/deepseek.py`, `providers/deepseek_client.py`, `session.py`, `context.py`, `runner.py`, `cli.py`, `tui.py` | `test_attachments.py`, `test_provider_attachments.py`, `test_session_attachments.py`, `test_attachment_interfaces.py`, `test_cli.py` |
+| H-SEC-01 | Central schema, permission, data-scope metadata and replay-policy checks; no claim that scopes sandbox handler authority | `agent_harness/core/tools.py` | `test_harness_tool_security.py` |
+| H-WS-01 | Workspace-confined readers, Seatbelt-enforced patch/command writers with signal and known credential-IPC denial, and a separately authorized host shell | `agent_harness/toolsets/workspace.py` | `test_generic_product.py` |
+| H-APP-01 | Digest-bound per-call approval before sensitive tool start/effect, fail-closed headless handoff and private exact rules | `agent_harness/core/approvals.py`, `core/tools.py`, `session.py`, `tui.py` | `test_approvals.py`, `test_generic_product.py` |
+| H-INS-01 | Workspace-scoped, no-follow, bounded project instruction snapshot used by planner and answer | `agent_harness/instructions.py`, `runner.py`, `providers/deepseek.py` | `test_instructions.py`, `test_generic_product.py` |
+| H-CTX-01 | Stable message IDs, append-only original transcript, prefix/parent summary lineage, summary+suffix active view, manual and bounded automatic compaction, attachment token accounting and a no-crossing attachment boundary | `agent_harness/context.py`, `session.py`, `runner.py`, `providers/deepseek.py` | `test_context_compaction.py`, `test_session_attachments.py`, `test_generic_product.py` |
+| H-HOOK-01 | Exact-digest trust for the synchronous `PreToolUse`/`PostToolUse`/`PostToolUseFailure` command-hook subset; project hooks can only tighten central authority, execute in a dedicated read-only/no-network macOS sandbox with no unsafe fallback, and emit no raw hook I/O | `agent_harness/hooks.py`, `core/hooks.py`, `core/tools.py`, `toolsets/workspace.py`, `session.py`, `runner.py`, `cli.py`, `tui.py` | `test_hooks.py`, `test_harness_runtime_journal.py`, `test_harness_schemas.py`, `test_generic_product.py` |
+| H-MCP-01 | Exact-digest trusted local stdio MCP tools client subset pinned to `2025-06-18`; explicit frozen catalog, live-catalog equality, bounded schema/content normalization, full-access high-risk once-only approval, never replay, read-only Seatbelt with digest-bound network/fork flags, and no raw stderr persistence | `agent_harness/mcp.py`, `core/mcp_protocol.py`, `core/tools.py`, `toolsets/workspace.py`, `session.py`, `runner.py`, `cli.py`, `tui.py` | `test_mcp.py`, `test_mcp_protocol_edges.py`, `test_mcp_runner_integration.py`, `test_session_private_paths.py` |
+| H-AGT-01 | One high-risk foreground wait-all batch of 1–4 isolated child sessions; atomic in-process limits, dynamic permission subset, parent cancellation/join, no nested/background execution, no child hooks/MCP/host/persistent approval, bounded untrusted summaries and prompt/output/path-free lifecycle metadata | `agent_harness/subagents.py`, `runner.py`, `core/events.py`, `core/runtime.py`, `core/tools.py`, `providers/deepseek.py`, `tui_state.py` | `test_subagents.py`, `test_subagent_runner.py`, `test_subagent_events.py`, `test_tui_subagents.py`, `test_approvals.py`, `test_generic_product.py` |
+| H-WT-01 | Exact clean committed-HEAD Git worktrees with direct trusted Git argv, scrubbed config/environment, common-dir mutation lock, durable opaque records, administrative/lock/manifest verification, pristine-only non-force cleanup, CAS ref deletion and conservative preservation (a post-remove ref race retains the branch/record, not the removed checkout) | `agent_harness/worktrees.py`, `runner.py`, `cli.py`, `tui.py` | `test_worktrees.py`, `test_cli.py`, `test_tui_subagents.py`, `test_generic_product.py` |
+| H-SES-01 | Private workspace-scoped sessions, atomic user/run and assistant/terminal commits, resume downgrade/logical fork/archive, workspace-wide unresolved-run fence and manual acknowledgement | `agent_harness/session.py`, `agent_harness/runner.py` | `test_generic_product.py`, `test_context_compaction.py` |
+| H-SDK-01 | Stable typed SDK surfaces with shared Harness authority: Python in-process sync/async start/resume/fork, single-consumer run/stream, attachments, cancellation and explicit optional approval broker; dependency-free Node.js 18+ TypeScript lazy start/resume and run/stream over a shell-free bounded JSONL subprocess with attachments, per-turn permission, AbortSignal, strict identity/terminal/result/exit agreement, pre-spawn listener safety, bounded pre/post-result lifecycle and async observer isolation | `agent_harness/sdk.py`, `agent_harness/py.typed`, `sdk/typescript/index.js`, `sdk/typescript/index.d.ts`, `sdk/typescript/package.json` | `tests_harness/test_sdk.py`, `sdk/typescript/test/sdk.test.mjs`, TypeScript `npm pack --dry-run`, installed Python wheel import/API smoke |
+| H-TUI-01 | Streaming TUI without hidden reasoning; session/reconciliation commands, scrollable approvals, read-only `/hooks` and `/mcp`, content-free `/agents`, `/context`, background `/compact`, and turn-bound immutable `/attach`/`/attachments`/`/detach` staging | `agent_harness/tui.py`, `tui_state.py` | `test_generic_product.py`, `test_tui_subagents.py`, `test_attachment_interfaces.py`, `test_context_compaction.py`, `test_hooks.py`, `test_mcp_runner_integration.py`; PTY smoke is run locally before release |
+| H-CLI-01 | Text and canonical JSONL headless entry, repeated immutable `--attach`, explicit digest-bound hook/MCP trust administration, MCP catalog refresh and provider-free path-redacted worktree artifact inspection | `agent_harness/cli.py` | `test_cli.py`, `test_attachment_interfaces.py`, `test_hooks.py`, `test_mcp.py`, `test_mcp_runner_integration.py`, CLI smoke and package entry-point check |
+| H-PKG-01 | Wheel contains only the active typed Harness package, attachment/checkpoint/event/exec-result/trace/journal schemas, license and governance documents | `pyproject.toml`, `agent_harness/py.typed`, `schema/agent_harness_attachment.schema.json`, `schema/agent_harness_exec_result.schema.json` | clean wheel content audit |
 
-| 题目要求 | 状态 | 实现与证据 | 验收入口 |
-|---|:---:|---|---|
-| 2 门课程、每门至少 5 节 | 完成（演示） | `data/dataset_manifest.json`、10 份合法 transcript | `tsm audit`、`tsm verify-delivery` |
-| 10 节完整正式视频转写 | 完成 | 默认离线 demo 仍是释义节选；独立私有数据集已从 10/10 MIT OCW 官方 WebVTT 生成，页面/VTT/媒体时长/哈希绑定，`formal_empirical_ready=true`，全文不进入 wheel | `tsm fetch-formal-captions`、`tsm audit --require-formal`、`artifacts/public/formal_caption_retrieval_receipt.json` |
-| 10 节完整真实媒体 | 完成工程证据 | 10 个 MIT OCW 完整 MP4 已私有下载、本地 SHA-256 与 FFprobe 验证；共 1,038,813,006 bytes、26,656.83 秒，上游未提供固定媒体哈希，原视频不进入 wheel | `tsm fetch-full-videos`、`artifacts/private/full_videos/media_manifest.json`、`artifacts/public/full_video_validation_receipt.json` |
-| 视频/字幕预处理 | 完成 | `preprocess.py`，流式哈希、ASR 版本/模型 provenance | `tsm preprocess` |
-| TeachObs 字幕与审计 ASR 缺口 | 论文 profile 完成技术覆盖；完整 profile 部分完成 | 平台字幕已审计 23/30 讲、34 轨（creator-provided 19、automatic 15），平均时间轴覆盖 0.985841；六讲离线 GPU ASR 已按 v2/v4/v4 契约全部通过导入。当前优先级 matrix 为 creator-provided 19 + automatic 4 + audited ASR 6 = 29/30 讲，唯一 pending 为 S4，满足论文 profile 但不满足完整 30 讲 profile。job/result 逐讲绑定媒体 SHA/时长、固定 Whisper revision/模型树/解码/runtime，并采用完整媒体单次输入、最小 0.90 first-to-last VAD 语音锚点 span、两端各自最大 0.10 媒体时长的对称相对空白；旧证据失败关闭且不迁移。权威状态仍以当前私有输入重算并绑定哈希的 `teachobs_asr_receipt.json` 为准；技术审计不能把 ASR 写成官方字幕，也不能建立内容准确率或 WER | `fetch/audit-teachobs-captions`、`prepare-teachobs-asr-handoff`、`import-teachobs-asr-results`、`docs/teachobs_audited_asr_handoff.md`、`artifacts/public/teachobs_caption_receipt.json`、`artifacts/public/teachobs_asr_receipt.json` |
-| 完整视频多模态处理 | 完成工程链路 | v9/v2 对 10/10 讲完成全时间轴抽帧和字幕—媒体对齐；2553 帧、2441 非空 OCR 帧、1964 帧至少 3 个接受词、40191 接受词、1974 视觉事件、2270 融合事件；输出数量不等于识别正确数 | `tsm multimodal-longform-dataset`、`dataset_manifest.semantic.json`、`data_audit.semantic.json` |
-| 视觉语义特征 | 完成工程链路 | wheel `visual` extra 提供单帧/数据集/回绑三个入口；CLIP 对 2553/2553 哈希绑定帧完成 512 维嵌入与固定八类相对 prompt 分数；模型 revision/权重 SHA/CPU 环境可追溯；没有人工类别真值，Accuracy 未建立 | `tsm visual-semantic-extract`、`tsm visual-semantic-dataset`、`tsm visual-semantic-apply`、`semantic_batch_receipt.json` |
-| 四臂多模态消融 | 完成内部配对分析 | 10 讲相同 transcript segments；transcript-only / +audio / +visual / full 内部分数 95.37/95.37/95.30/95.32，保留事件 0/237/2033/2270；不是准确率、独立 Skill 质量或因果增益 | `tsm multimodal-ablation`、`ablation/ablation_report.json` |
-| TeachObs 论文交集四臂 F1 | 完成正式探索性实跑 | `paper_track1_23_train_6_test` 固定 23 讲/3,846 训练场景、六讲/1,099 测试场景，媒体/特征 gate 为 29 讲/4,945 场景。训练内 5 折 lesson-grouped OOF 每折重拟合 TF-IDF/IDF/scaler并选择固定候选/阈值；正式 transcript/+audio/+visual/full Micro-F1 为 0.594496/0.604708/0.548328/0.543812，Hamming 为 0.818833/0.809967/0.775297/0.763258。full Macro-F1 比 text 高 0.065266（六讲 cluster 95% CI [0.014886,0.095637]），但 Micro/Hamming 下降；冻结 v2 JSON+NPZ 预测逐位一致。首轮公开测试已在修订前观察，故始终是 post-test exploratory，不是 0.9、确认性或部署结果 | `tsm benchmark-teachobs-multimodal --evaluation-profile paper_track1_23_train_6_test`、`scripts/run_teachobs_external_study.sh` |
-| 多模态公开证据最小化 | 完成工程边界 | 从私有 manifest/audit/semantic/ablation 重算 aggregate-only receipts，保留来源哈希承诺，移除媒体、文本、帧、嵌入、逐讲记录和路径 | `scripts/build_multimodal_public_receipts.py`、`tsm release-audit artifacts/public` |
-| 输入新视频的完整闭环 | 完成 | 可选同媒体哈希 ASR，或视频+官方/审计 transcript；随后真实 FFmpeg/OCR→多模态→Skill→教学→交互→评估，并机读区分 transcript 与 audio-verified speech | `tsm pipeline --transcript`、`run_multimodal_demo.sh`、`run_defense_demo.sh` |
-| 10 讲完整研究一键复跑 | 完成工程入口 | 总 runner 串联字幕/视频、可恢复长视频处理、CLIP、审计、四臂消融、公开 receipts 与 release audit；默认 CPU，可显式选择授权 GPU | `scripts/run_full_video_multimodal_study.sh MODEL_DIR --acknowledge-source-terms [--reuse-downloads]` |
-| 教学目标与 Bloom 层级 | 完成 | `miner.py::infer_bloom`、Skill schema | `tsm mine` |
-| 教学步骤（题目 4.2 九个环节） | 完成（演示数据） | `teaching_phases.py` 逐条对应题目列出的九个环节；`mine_skill` 用线索匹配定位每个环节在 transcript 中的首次出现，并按教师自己的时间顺序排出 procedure，而不是套固定模板。命中的步骤带真实时间段、命中线索和 `evidence_id` 并标 `origin=observed_method`，未命中的补为 `recommended_enrichment`。10 份演示 transcript 各观察到 4–7 个环节 | `tsm mine`、`skill.mining_metadata.teaching_phase_analysis` |
-| 至少 5 类教学策略 | 完成（演示数据） | observed-only 集合级覆盖，不含推荐模板；当前 13/14 类 | `summary.json` |
-| 方法来自视频证据 | 部分完成 | 稳定 `evidence_id`；步骤区分 observed/recommended；`method_fidelity` 维度进一步从被引用的 evidence 反推每个 observed 步骤的线索、时间段和引用是否成立 | `evaluate_skill.method_provenance`、`evaluate_skill.method_fidelity` |
-| 长视频 episode 多 Skill 蒸馏 | 部分完成 | 完整视频已按 chunk 可恢复处理并生成全程事件；当前仍每视频一个主 Skill，episode 聚类/多 Skill 和专家 gold-set 待完成 | `longform_multimodal.py`、`docs/project_status.md` |
-| 明确触发条件与前提 | 完成 | `trigger`、`preconditions`、严格 schema | `tsm validate skill` |
-| 可执行步骤与教师动作 | 完成 | `procedure`、`teacher_actions`、状态机 | `tsm teach`、`tsm interact` |
-| 读取学生信号并动态调整 | 完成工程能力 | `runtime.py` 的 retry/fallback/advance | `interactive_demo.json` |
-| 成功标准、失败模式 | 完成 | `success_criteria`、`failure_modes`、`verification` | schema + tests |
-| 新任务测试 | 完成能力覆盖 | 6 个留出主题与静态基线 | `tsm benchmark` |
-| 自动评估 | 完成内部一致性 | 七个维度：结构 12%、证据 18%、可执行 18%、方法忠实度 22%、教学质量 12%、迁移 9%、溯源 9%；`method_fidelity` 从被引用 evidence 反推 observed 步骤主张，是唯一在诚实产物之间产生区分度的维度（83.3–89.8），其余六个维度在 10 份演示 Skill 上标准差为 0.000。五个硬门槛之外新增 `method_distilled_from_video`。不等于学习效果 | `tsm evaluate`、`tests/test_method_fidelity.py` |
-| 10/10 双人独立人工验证 | 外部待完成 | 覆盖与 canonical Skill fingerprint 审计完成，空模板保持 incomplete | `tsm human-evaluate --skills artifacts/skills` |
-| 真实学习效果 | 外部待完成 | 没有前后测/对照组；已提供外部 manifest gate、system artifact 绑定与签名接入，未附正向证据 | `prepare-external-research-evidence`、伦理审批后的 RCT/cluster-RCT |
-| 真实课堂自动识别 | 部分完成 | OUC pilot + DIPSER pose/watch | recognition 报告 |
-| DIPSER 开发 Accuracy 约 0.8 | 完成开发估计 | 严格因果 0.8176 | `run_dipser_optimization.py` |
-| 离线 0.9 挑战 | 完成探索估计 | SGKF5 0.9020；LOSO 0.8986；50-seed 0.8883 | `run_dipser_hierarchical_challenge.py` |
-| 防止 artifact 篡改 | 完成 | records 与精确矩阵指纹重新计算 | `test_dipser_artifact_integrity.py` |
-| 冻结外部评估 | 完成协议 | checkpoint v3、strict feature binding、ClaimContract、claim cluster、签名登记/receipt、一次性 ledger | `freeze-recognition-model`、`create-freeze-registration`、`evaluate-frozen-recognition` |
-| 原始目标站点数据生成严格特征 | 完成工程能力 | raw hash/window、sample order、提取器代码/配置/环境/工具 provenance 绑定；只提取不预测 | `extract-strict-features`、`docs/raw_feature_bridge.md` |
-| 确认性多模态增益 | 外部待完成 | 当前同一事后开发数据不允许确认性结论；已提供外部 manifest gate、system artifact 绑定与签名接入 | 新锁箱配对消融、`verify-external-research-evidence` |
-| 跨学校/部署 Accuracy | 外部待完成 | 当前随附报告的 deployment flags 保持 false；delivery 仅接受完整签名证据链 | 前瞻一次性目标站点 lockbox |
-| 环境与依赖自检 | 完成 | 资源、Python、工具、recognition、API 安全 | `tsm doctor` |
-| wheel 非 editable 安装 | 完成验收入口 | 干净双构建字节一致、bundled data/schema/config/governance、核心隔离 smoke、recognition/签名入口及 exact release wheel 验收 | `verify_project.sh`、`build_release_wheel.sh`、`verify_release_wheel.sh` |
-| 发布与隐私 | 完成工程边界 | private paths、0600/0700、aggregate export、release audit；当 TeachObs 私有 media/caption 输入可用时，最终验收还会校验 annotation/caption/ASR public receipts 对当前私有输入的哈希绑定；四臂 benchmark 一旦生成任一产物，result、public receipt 和冻结 JSON+NPZ bundle 必须同时通过 profile-aware checker。本次证据文件 SHA 写入项目 receipt，并在生成 acceptance 时重算，防止仅“隐私扫描通过”但语义已陈旧或构建期间改变的 receipt 进入发布；仍需人工披露风险审查 | `PRIVACY.md`、`tsm release-audit`、`scripts/verify_project.sh` |
-| CI | 配置完成、远端待验证 | Python 3.10–3.13、测试、wheel、隐私 workflow 已定义；当前目录无 `.git`，不能核验 Git tracked 边界或远端 run | `.github/workflows/ci.yml` |
-
-## 答辩时必须主动说明
-
-1. 自动评分衡量结构、内部证据一致性、可执行性和能力覆盖，不等价于真实学习增益。
-2. 内置 2×5 转写仍是离线释义演示；正式 10 讲链路使用私有官方字幕和完整媒体。字幕就绪、10/10 全程覆盖、2553/2553 CLIP 完成只证明来源、覆盖与工程执行，不解决事件真值、方法标签、学习效果或部署准确率。
-3. OCR 接受词数、CLIP 相对 prompt 分数、视觉/融合事件数都不是正确数；没有独立 gold label 时不能报告真实 Accuracy/Precision/Recall/F1。
-4. 四臂内部量表没有显示正向 Skill 分数增益，并且内部证据一致性不是独立质量评分；确认性多模态增益仍需冻结后新数据配对评测。
-5. `observed_method` 才计入视频方法覆盖；`recommended_enrichment` 是系统脚手架。
-6. `interact` 的达标信号由教师、上层 Agent 或独立判分器提供，运行时不冒充学科答案判分器。
-7. DIPSER 的 0.902 是 `offline full-session transductive post-selection development estimate`，不是 raw-video、实时、单学生、跨学校或部署 0.9。
-8. 只有 checkpoint v3 在新目标站点的一次性前瞻 lockbox 上通过全部 ClaimContract、coverage、逐类、claim-cluster 与签名登记 gate，并由预先固定的外部可信公钥验证最终 receipt，才能建立部署准确率；开发者自签名不构成独立锁箱。
+All listed verification proves repository engineering behavior only. It is not a
+production-security certification.

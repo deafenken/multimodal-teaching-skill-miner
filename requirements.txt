@@ -1,5 +1,0 @@
-# The offline core intentionally has no third-party Python runtime dependencies.
-# Install optional recognition and developer dependencies from pyproject.toml:
-#   python -m pip install -e '.[recognition,dev]'
-# External media tools are installed separately: ffmpeg/ffprobe, Tesseract OCR,
-# and the OpenAI Whisper CLI.

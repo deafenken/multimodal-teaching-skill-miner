@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-harness/agent_harness_checkpoint.schema.json",
+  "title": "Agent Harness recoverable operation checkpoint",
+  "type": "object",
+  "required": [
+    "schema",
+    "run_id",
+    "turn_id",
+    "status",
+    "next_sequence",
+    "next_step",
+    "model_calls",
+    "tool_calls",
+    "context_sha256",
+    "policy_sha256",
+    "external_effect_started",
+    "repeated_calls",
+    "observations",
+    "idempotency_receipts",
+    "completed_call_receipts",
+    "pending_effect",
+    "checkpoint_sha256"
+  ],
+  "properties": {
+    "schema": {"const": "agent_harness.checkpoint.v1"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "status": {"enum": ["running", "completed", "cancelled", "failed", "handoff"]},
+    "next_sequence": {"type": "integer", "minimum": 1},
+    "next_step": {"type": "integer", "minimum": 1},
+    "model_calls": {"type": "integer", "minimum": 0},
+    "tool_calls": {"type": "integer", "minimum": 0},
+    "context_sha256": {"$ref": "#/$defs/sha256"},
+    "policy_sha256": {"$ref": "#/$defs/sha256"},
+    "external_effect_started": {"type": "boolean"},
+    "repeated_calls": {
+      "type": "object",
+      "additionalProperties": {"type": "integer", "minimum": 0}
+    },
+    "observations": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "idempotency_receipts": {
+      "type": "object",
+      "additionalProperties": {"type": "object"}
+    },
+    "completed_call_receipts": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/toolReceipt"}
+    },
+    "pending_effect": {
+      "oneOf": [
+        {"type": "null"},
+        {"$ref": "#/$defs/pendingToolEffect"}
+      ]
+    },
+    "checkpoint_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "toolCall": {
+      "type": "object",
+      "required": ["call_id", "name", "arguments"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "arguments": {"type": "object"},
+        "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 200}
+      },
+      "additionalProperties": false
+    },
+    "pendingToolEffect": {
+      "type": "object",
+      "required": ["kind", "step", "call", "tool_version", "replay_policy", "arguments_sha256", "effect_started", "remaining_calls"],
+      "properties": {
+        "kind": {"const": "tool"},
+        "step": {"type": "integer", "minimum": 1},
+        "call": {"$ref": "#/$defs/toolCall"},
+        "tool_version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "replay_policy": {"enum": ["safe", "idempotent", "never"]},
+        "arguments_sha256": {"$ref": "#/$defs/sha256"},
+        "effect_started": {"type": "boolean"},
+        "remaining_calls": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {"$ref": "#/$defs/toolCall"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "toolReceipt": {
+      "type": "object",
+      "required": ["call_id", "tool_name", "arguments_sha256", "replay_policy", "ok", "result_sha256"],
+      "properties": {
+        "call_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "tool_name": {"type": "string", "minLength": 1, "maxLength": 128},
+        "arguments_sha256": {"$ref": "#/$defs/sha256"},
+        "replay_policy": {"enum": ["safe", "idempotent", "never"]},
+        "ok": {"type": "boolean"},
+        "result_sha256": {
+          "oneOf": [
+            {"$ref": "#/$defs/sha256"},
+            {"type": "null"}
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

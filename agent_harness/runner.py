@@ -1,0 +1,1586 @@
+"""High-level multi-turn runner shared by the TUI and headless CLI."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import os
+from pathlib import Path
+import re
+import sys
+from threading import Lock
+import time
+from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import quote
+from uuid import uuid4
+
+from .attachments import (
+    AttachmentDescriptor,
+    AttachmentError,
+    AttachmentStore,
+    MAX_ATTACHMENTS_PER_TURN,
+    MAX_ATTACHMENTS_TOTAL_BYTES,
+)
+from .core import (
+    ApprovalDecision,
+    ApprovalBroker,
+    ApprovalPolicy,
+    ApprovalRequest,
+    CancellationToken,
+    HarnessCancelled,
+    HarnessDeadlineExceeded,
+    HarnessJournal,
+    HarnessLimits,
+    RetryPolicy,
+    run_agent_harness,
+)
+from .context import estimate_context_tokens, select_compaction_plan
+from .hooks import (
+    HookLoadError,
+    HookSnapshot,
+    TrustedHookRunner,
+    load_project_hooks,
+)
+from .instructions import InstructionSnapshot, load_project_instructions
+from .mcp import (
+    McpLoadError,
+    McpSnapshot,
+    TrustedMcpCatalog,
+    load_project_mcp,
+    mcp_status as project_mcp_status,
+)
+from .providers import DeepSeekClient, DeepSeekCodingModel, DeepSeekConfig
+from .session import SessionStore, SessionStoreError
+from .subagents import (
+    SubagentLimits,
+    SubagentLineage,
+    SubagentResult,
+    SubagentScheduler,
+    SubagentTask,
+    register_subagent_tool,
+)
+from .toolsets import (
+    PERMISSION_PROFILES,
+    build_workspace_registry,
+    permission_profile,
+    workspace_sandbox_status,
+)
+from .worktrees import WorktreeError, WorktreeManager
+
+
+EventSink = Callable[[Mapping[str, Any]], None]
+_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
+_CONTEXT_SAFETY_MARGIN_TOKENS = 512
+_AUTO_COMPACTION_TRIGGER_RATIO = 0.80
+_AUTO_COMPACTION_TARGET_RATIO = 0.60
+_MAX_COMPACTION_PASSES = 8
+_SUBAGENT_ARTIFACT_SCHEMA = "agent_harness.subagent_artifacts.v1"
+_MAX_SUBAGENT_ARTIFACTS = 256
+
+
+class _DelegatedChildApprovalBroker:
+    """One-run authority granted by the approved, isolated delegate call."""
+
+    _ALLOWED_TOOLS = frozenset({"workspace.patch", "process.exec"})
+
+    def decide(
+        self,
+        request: ApprovalRequest,
+        *,
+        preview: str = "",
+    ) -> ApprovalDecision:
+        del preview
+        if request.tool_name not in self._ALLOWED_TOOLS or request.persistent_scope_allowed:
+            return ApprovalDecision.for_request(
+                request,
+                verdict="deny",
+                reason_code="subagent_authority_denied",
+            )
+        return ApprovalDecision.for_request(
+            request,
+            verdict="allow",
+            reason_code="parent_delegate_allowed_once",
+        )
+
+
+def default_worktree_home() -> Path:
+    configured = os.getenv("AGENT_HARNESS_WORKTREE_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "AgentHarnessWorktrees"
+    return Path.home() / ".cache" / "agent-harness-worktrees"
+
+
+def _redact_private_paths(text: str, paths: tuple[str | Path, ...]) -> str:
+    """Remove known local path spellings from one bounded child summary."""
+
+    spellings: set[str] = set()
+    for raw in paths:
+        value = os.fspath(raw)
+        if len(value) <= 1:
+            continue
+        spellings.add(value)
+        spellings.add(quote(value, safe="/:"))
+        try:
+            path = Path(value)
+            resolved = os.fspath(path.resolve(strict=False))
+            spellings.add(resolved)
+            spellings.add(quote(resolved, safe="/:"))
+            if path.is_absolute():
+                spellings.add(path.as_uri())
+                spellings.add(Path(resolved).as_uri())
+        except (OSError, RuntimeError, ValueError):
+            continue
+    redacted = text
+    for spelling in sorted(spellings, key=len, reverse=True):
+        redacted = re.sub(
+            re.escape(spelling),
+            "<isolated-worktree>",
+            redacted,
+            flags=re.IGNORECASE,
+        )
+    return redacted
+
+
+@dataclass(frozen=True, slots=True)
+class TurnOutcome:
+    session_id: str
+    run_id: str
+    turn_id: str
+    status: str
+    message: str | None
+    reason: str
+    usage: Mapping[str, int]
+    result: Mapping[str, Any]
+
+
+def _event_usage(events: Any) -> dict[str, int]:
+    usage: dict[str, int] = {}
+    if not isinstance(events, list):
+        return usage
+    for event in events:
+        if not isinstance(event, Mapping) or event.get("type") != "model.completed":
+            continue
+        payload = event.get("payload")
+        raw = payload.get("usage") if isinstance(payload, Mapping) else None
+        if not isinstance(raw, Mapping):
+            continue
+        for key, value in raw.items():
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                usage[str(key)] = usage.get(str(key), 0) + value
+    return usage
+
+
+def _remote_content_enabled() -> bool:
+    raw = os.getenv("HARNESS_ALLOW_REMOTE_CONTENT")
+    if raw is None:
+        # A provider-backed coding agent cannot operate without sending the
+        # prompt. Keep the direct-launch path usable while allowing operators
+        # to make remote execution fail closed explicitly.
+        return True
+    value = raw.strip().casefold()
+    if value in _TRUE_VALUES:
+        return True
+    if value in _FALSE_VALUES:
+        return False
+    raise ValueError("HARNESS_ALLOW_REMOTE_CONTENT must be one of 1/0, true/false, yes/no, on/off")
+
+
+class AgentRunner:
+    """One workspace-bound, provider-backed Agent Harness facade."""
+
+    def __init__(
+        self,
+        workspace: str | Path,
+        *,
+        active_directory: str | Path | None = None,
+        state_home: str | Path | None = None,
+        api_key_file: str | Path | None = None,
+        model: str | None = None,
+        permission_mode: str = "read-only",
+        deadline_seconds: float = 180.0,
+        max_steps: int = 12,
+        subagents_enabled: bool = True,
+        subagent_limits: SubagentLimits | None = None,
+        worktree_home: str | Path | None = None,
+        project_extensions_enabled: bool = True,
+        agent_context: Mapping[str, Any] | None = None,
+    ) -> None:
+        if permission_mode not in PERMISSION_PROFILES:
+            raise ValueError(f"unknown permission mode: {permission_mode}")
+        if type(subagents_enabled) is not bool:
+            raise ValueError("subagents_enabled must be a boolean")
+        if type(project_extensions_enabled) is not bool:
+            raise ValueError("project_extensions_enabled must be a boolean")
+        if agent_context is not None and not isinstance(agent_context, Mapping):
+            raise ValueError("agent_context must be an object")
+        if agent_context is not None:
+            if permission_mode not in {"read-only", "workspace-write"}:
+                raise ValueError("delegated agents support only read-only or workspace-write")
+            # Child identity is itself a privilege boundary.  Do not depend on
+            # every caller remembering the companion isolation flags.
+            subagents_enabled = False
+            project_extensions_enabled = False
+        self.store = SessionStore(workspace, state_home=state_home)
+        self.workspace = self.store.workspace
+        self._state_home = self.store.root.parent.parent
+        raw_active = (
+            self.workspace if active_directory is None else Path(active_directory).expanduser()
+        )
+        if not raw_active.is_absolute():
+            raw_active = self.workspace / raw_active
+        selected_active = raw_active.resolve(strict=True)
+        if not selected_active.is_dir():
+            raise ValueError("active directory must be a directory")
+        try:
+            selected_active.relative_to(self.workspace)
+        except ValueError as exc:
+            raise ValueError("active directory must stay inside the workspace") from exc
+        self.active_directory = selected_active
+        default_key_file = self.workspace / ".private" / "deepseek_api.txt"
+        selected_key_file = api_key_file
+        if selected_key_file is None and default_key_file.exists():
+            selected_key_file = default_key_file
+        config = DeepSeekConfig.from_environment(
+            api_key_file=selected_key_file,
+            allow_remote_content=_remote_content_enabled(),
+            model=model,
+        )
+        self.client = DeepSeekClient(config)
+        self.attachment_store = AttachmentStore(self.store.root / "attachments")
+        self._active_attachment_blobs: dict[
+            str, tuple[AttachmentDescriptor, bytes]
+        ] | None = None
+        self.model = DeepSeekCodingModel(
+            self.client,
+            attachment_loader=self._load_attachment_for_model,
+        )
+        self._api_key_file = selected_key_file
+        self._project_extensions_enabled = project_extensions_enabled
+        self._agent_context = dict(agent_context) if agent_context is not None else None
+        self._subagents_enabled = subagents_enabled
+        self._subagent_limits = subagent_limits or SubagentLimits()
+        self._worktree_home = Path(worktree_home or default_worktree_home()).expanduser()
+        self._worktree_manager_instance: WorktreeManager | None = None
+        self._worktree_manager_lock = Lock()
+        self._subagent_scheduler: SubagentScheduler | None = None
+        if self._subagents_enabled:
+            self._subagent_scheduler = SubagentScheduler(
+                lambda task, lineage, child_token, deadline: self._execute_subagent(
+                    task,
+                    lineage,
+                    child_token,
+                    deadline,
+                ),
+                limits=self._subagent_limits,
+                permission_authorizer=self._authorize_subagent_task,
+            )
+        self.registry = self._fresh_workspace_registry()
+        self._mcp_registry_active = False
+        self.permission_mode = permission_mode
+        self.limits = HarnessLimits(
+            max_steps=max_steps,
+            max_model_calls=max_steps,
+            max_total_tool_calls=32,
+            max_tool_calls_per_step=8,
+            max_repeated_tool_calls=2,
+            deadline_seconds=deadline_seconds,
+            max_tool_output_chars=24_000,
+            max_event_payload_chars=40_000,
+        ).validated()
+        self.retry_policy = RetryPolicy(
+            max_attempts=2,
+            initial_backoff_seconds=0.25,
+            backoff_multiplier=2.0,
+            max_backoff_seconds=2.0,
+        ).validated()
+
+    def _fresh_workspace_registry(self):
+        registry = build_workspace_registry(self.workspace)
+        if self._subagent_scheduler is not None:
+            register_subagent_tool(registry, self._subagent_scheduler)
+        return registry
+
+    def _authorize_subagent_task(self, task: SubagentTask) -> bool:
+        if not self._subagents_enabled:
+            return False
+        if task.permission_mode == "read-only":
+            return True
+        return self.permission_mode in {"workspace-write", "full-access"}
+
+    def _worktree_manager(self) -> WorktreeManager:
+        if not self._subagents_enabled:
+            raise WorktreeError("subagents are disabled")
+        with self._worktree_manager_lock:
+            if self._worktree_manager_instance is None:
+                self._worktree_manager_instance = WorktreeManager(
+                    self.workspace,
+                    state_directory=self.store.root / "worktrees",
+                    worktree_home=self._worktree_home,
+                )
+            return self._worktree_manager_instance
+
+    def subagent_artifacts(
+        self,
+        reveal_paths: bool = False,
+    ) -> dict[str, Any]:
+        """Return a bounded, content-free snapshot of retained child artifacts.
+
+        Local paths are absent by default.  The explicit path-reveal mode adds
+        only the isolated worktree path; repository, Git-admin, branch, and
+        state paths remain private.
+        """
+
+        if type(reveal_paths) is not bool:
+            raise ValueError("reveal_paths must be a boolean")
+        state_directory = self.store.root / "worktrees"
+        with self._worktree_manager_lock:
+            manager = self._worktree_manager_instance
+            if manager is None:
+                # Inspection should be side-effect free for the common case of
+                # a non-Git workspace with no retained artifacts.
+                if not os.path.lexists(state_directory):
+                    return {
+                        "schema": _SUBAGENT_ARTIFACT_SCHEMA,
+                        "artifacts": [],
+                    }
+                manager = WorktreeManager(
+                    self.workspace,
+                    state_directory=state_directory,
+                    worktree_home=self._worktree_home,
+                )
+                self._worktree_manager_instance = manager
+        records = manager.list_records(limit=_MAX_SUBAGENT_ARTIFACTS)
+        artifacts: list[dict[str, str]] = []
+        for record in records:
+            item = {
+                "artifact_id": record.worktree_id,
+                "phase": record.phase,
+                "created_at": record.created_at,
+            }
+            if reveal_paths:
+                item["worktree_path"] = record.worktree_path
+            artifacts.append(item)
+        return {
+            "schema": _SUBAGENT_ARTIFACT_SCHEMA,
+            "artifacts": artifacts,
+        }
+
+    def _execute_subagent(
+        self,
+        task: SubagentTask,
+        lineage: SubagentLineage,
+        cancellation_token: CancellationToken,
+        deadline_monotonic: float,
+    ) -> SubagentResult:
+        """Run one child in a dedicated worktree and never merge it implicitly."""
+
+        cancellation_token.raise_if_cancelled()
+        if time.monotonic() >= deadline_monotonic:
+            raise HarnessDeadlineExceeded("subagent deadline expired before setup")
+        if not self._authorize_subagent_task(task):
+            return SubagentResult(
+                task_id=task.task_id,
+                status="failed",
+                summary="Subagent authority was revoked before allocation.",
+                error_code="subagent_permission_denied",
+            )
+        try:
+            manager = self._worktree_manager()
+            record = manager.create(
+                cancellation_token=cancellation_token,
+                deadline_monotonic=deadline_monotonic,
+            )
+        except HarnessCancelled:
+            raise
+        except WorktreeError as exc:
+            return SubagentResult(
+                task_id=task.task_id,
+                status="failed",
+                summary=(
+                    "Isolated worktree setup became uncertain and requires inspection."
+                    if exc.worktree_id is not None
+                    else "Isolated worktree setup was rejected before creation."
+                ),
+                changed=exc.worktree_id is not None,
+                requires_reconciliation=exc.worktree_id is not None,
+                error_code=str(exc.code)[:128],
+                artifact_id=exc.worktree_id,
+            )
+        artifact_id: str | None = record.worktree_id
+        child_session_id: str | None = None
+        child: AgentRunner | None = None
+        child_outcome: TurnOutcome | None = None
+        requires_reconciliation = False
+        cleanup_removed = False
+
+        def child_is_uncertain() -> bool:
+            if child is None or child_session_id is None:
+                return False
+            try:
+                return bool(child.store.unresolved_workspace_runs())
+            except Exception:
+                return True
+
+        def clean_artifact(
+            *,
+            cleanup_deadline: float,
+            token: CancellationToken | None,
+        ) -> tuple[bool, bool]:
+            """Return ``(removed, structurally_uncertain)`` without forcing."""
+
+            try:
+                cleanup = manager.remove_if_pristine(
+                    record.worktree_id,
+                    cancellation_token=token,
+                    deadline_monotonic=cleanup_deadline,
+                )
+            except Exception:
+                return False, True
+            return cleanup.removed, False
+
+        try:
+            cancellation_token.raise_if_cancelled()
+            if time.monotonic() >= deadline_monotonic:
+                raise HarnessDeadlineExceeded("subagent deadline expired before provider execution")
+            if not self._authorize_subagent_task(task):
+                removed, cleanup_uncertain = clean_artifact(
+                    cleanup_deadline=time.monotonic() + 1.0,
+                    token=None,
+                )
+                return SubagentResult(
+                    task_id=task.task_id,
+                    status="failed",
+                    summary="Subagent authority was revoked before execution.",
+                    changed=not removed,
+                    requires_reconciliation=cleanup_uncertain,
+                    error_code="subagent_permission_denied",
+                    artifact_id=None if removed else artifact_id,
+                )
+            child_root = Path(record.worktree_path)
+            active_relative = self.active_directory.relative_to(self.workspace)
+            child_active = child_root / active_relative
+            if not child_active.is_dir():
+                child_active = child_root
+            remaining = deadline_monotonic - time.monotonic()
+            if remaining < 0.05:
+                raise HarnessDeadlineExceeded("subagent deadline expired before provider execution")
+            child = AgentRunner(
+                child_root,
+                active_directory=child_active,
+                state_home=self._state_home,
+                api_key_file=self._api_key_file,
+                model=self.client.config.model,
+                permission_mode=task.permission_mode,
+                deadline_seconds=max(
+                    0.05,
+                    min(remaining, self.limits.deadline_seconds),
+                ),
+                max_steps=self.limits.max_steps,
+                subagents_enabled=False,
+                subagent_limits=self._subagent_limits,
+                worktree_home=self._worktree_home,
+                project_extensions_enabled=False,
+                agent_context={
+                    "kind": "subagent",
+                    "agent_id": lineage.agent_id,
+                    "task_id": lineage.task_id,
+                    "root_run_id": lineage.root_run_id,
+                    "parent_run_id": lineage.parent_run_id,
+                    "parent_turn_id": lineage.parent_turn_id,
+                    "parent_call_id": lineage.parent_call_id,
+                    "depth": lineage.depth,
+                    "result_contract": "concise result for parent",
+                },
+            )
+            session = child.new_session(title=f"Subagent {task.task_id}"[:160])
+            child_session_id = str(session["session_id"])
+            child_outcome = child.run_turn(
+                child_session_id,
+                task.prompt,
+                cancellation_token=cancellation_token,
+                approval_broker=_DelegatedChildApprovalBroker(),
+            )
+            stored = child.store.load(child_session_id)
+            child_run = next(
+                (
+                    item
+                    for item in stored.get("runs", [])
+                    if item.get("run_id") == child_outcome.run_id
+                ),
+                {},
+            )
+            requires_reconciliation = child_run.get("requires_reconciliation") is True
+            cancellation_token.raise_if_cancelled()
+            if time.monotonic() >= deadline_monotonic:
+                raise HarnessDeadlineExceeded("subagent exceeded the shared deadline")
+            if not self._authorize_subagent_task(task):
+                if not requires_reconciliation:
+                    cleanup_removed, cleanup_uncertain = clean_artifact(
+                        cleanup_deadline=deadline_monotonic,
+                        token=cancellation_token,
+                    )
+                    requires_reconciliation = cleanup_uncertain
+                    if cleanup_removed:
+                        artifact_id = None
+                return SubagentResult(
+                    task_id=task.task_id,
+                    status="failed",
+                    summary="Subagent authority was revoked during execution.",
+                    changed=not cleanup_removed,
+                    requires_reconciliation=requires_reconciliation,
+                    error_code="subagent_permission_denied",
+                    artifact_id=artifact_id,
+                    session_id=child_outcome.session_id,
+                    run_id=child_outcome.run_id,
+                    turn_id=child_outcome.turn_id,
+                )
+            if not requires_reconciliation:
+                cleanup_removed, cleanup_uncertain = clean_artifact(
+                    cleanup_deadline=deadline_monotonic,
+                    token=cancellation_token,
+                )
+                requires_reconciliation = cleanup_uncertain
+                if cleanup_removed:
+                    artifact_id = None
+                elif cleanup_uncertain:
+                    return SubagentResult(
+                        task_id=task.task_id,
+                        status="failed",
+                        summary=(
+                            "Subagent cleanup could not be proven safe; its isolated "
+                            "worktree was preserved."
+                        ),
+                        changed=True,
+                        requires_reconciliation=True,
+                        error_code="subagent_cleanup_uncertain",
+                        artifact_id=artifact_id,
+                        session_id=child_outcome.session_id,
+                        run_id=child_outcome.run_id,
+                        turn_id=child_outcome.turn_id,
+                    )
+        except (HarnessCancelled, HarnessDeadlineExceeded) as exc:
+            requires_reconciliation = child_is_uncertain()
+            cleanup_uncertain = False
+            if not requires_reconciliation:
+                cleanup_removed, cleanup_uncertain = clean_artifact(
+                    cleanup_deadline=time.monotonic() + 1.0,
+                    token=None,
+                )
+                if cleanup_removed:
+                    artifact_id = None
+            if requires_reconciliation or cleanup_uncertain or not cleanup_removed:
+                is_cancelled = isinstance(exc, HarnessCancelled)
+                return SubagentResult(
+                    task_id=task.task_id,
+                    status="cancelled" if is_cancelled else "failed",
+                    summary=(
+                        "Subagent was cancelled and its isolated worktree was preserved."
+                        if is_cancelled
+                        else "Subagent exceeded its deadline; its isolated worktree was preserved."
+                    ),
+                    changed=True,
+                    requires_reconciliation=(requires_reconciliation or cleanup_uncertain),
+                    error_code=(
+                        "subagent_cancelled" if is_cancelled else "subagent_deadline_exceeded"
+                    ),
+                    artifact_id=artifact_id,
+                    session_id=child_session_id,
+                )
+            raise
+        except Exception:
+            requires_reconciliation = child_is_uncertain()
+            cleanup_uncertain = False
+            if not requires_reconciliation:
+                cleanup_removed, cleanup_uncertain = clean_artifact(
+                    cleanup_deadline=time.monotonic() + 1.0,
+                    token=None,
+                )
+                if cleanup_removed:
+                    artifact_id = None
+            requires_reconciliation = requires_reconciliation or cleanup_uncertain
+            return SubagentResult(
+                task_id=task.task_id,
+                status="failed",
+                summary="Subagent execution failed; its isolated worktree was preserved.",
+                changed=not cleanup_removed,
+                requires_reconciliation=requires_reconciliation,
+                error_code="subagent_execution_failed",
+                artifact_id=artifact_id,
+                session_id=child_session_id,
+            )
+
+        assert child_outcome is not None
+        summary = (child_outcome.message or child_outcome.reason or "").strip()
+        if not summary:
+            summary = "Subagent completed without a textual report."
+        private_paths: list[str | Path] = [
+            record.worktree_path,
+            record.common_git_dir,
+            record.repository,
+            self._worktree_home,
+            self._state_home,
+        ]
+        if child is not None:
+            private_paths.extend((child.workspace, child.store.root))
+        summary = _redact_private_paths(summary, tuple(private_paths))
+        summary = summary[: self._subagent_limits.max_summary_chars]
+        status = child_outcome.status
+        if status not in {"completed", "failed", "cancelled"}:
+            status = "failed"
+        error_code = None if status == "completed" else f"subagent_{child_outcome.status}"
+        return SubagentResult(
+            task_id=task.task_id,
+            status=status,
+            summary=summary,
+            changed=not cleanup_removed,
+            requires_reconciliation=requires_reconciliation,
+            error_code=error_code,
+            artifact_id=artifact_id,
+            session_id=child_outcome.session_id,
+            run_id=child_outcome.run_id,
+            turn_id=child_outcome.turn_id,
+        )
+
+    @property
+    def provider_status(self) -> dict[str, Any]:
+        provider = self.client.public_status()
+        # The low-level client can parse provider-managed web-search events, but
+        # the coding adapter does not currently expose that capability as a
+        # Harness tool. Report the active product surface, not latent transport
+        # support.
+        provider["web_search_supported"] = False
+        provider["web_search_transport"] = "disabled"
+        try:
+            hooks = self.hook_status()
+        except (HookLoadError, SessionStoreError):
+            hooks = {
+                "schema": "agent_harness.hook_status.v1",
+                "status": "invalid",
+                "error_code": "hook_configuration_invalid",
+            }
+        try:
+            mcp = self.mcp_status()
+        except (McpLoadError, SessionStoreError):
+            mcp = {
+                "schema": "agent_harness.mcp_status.v1",
+                "status": "invalid",
+                "error_code": "mcp_configuration_invalid",
+            }
+        attachment_capabilities = self.model.capabilities
+        return {
+            **provider,
+            "workspace": str(self.workspace),
+            "active_directory": str(self.active_directory),
+            "permission_mode": self.permission_mode,
+            "available_permission_modes": list(PERMISSION_PROFILES),
+            "workspace_sandbox": workspace_sandbox_status(),
+            "project_hooks": hooks,
+            "project_mcp": mcp,
+            "subagents": {
+                "enabled": self._subagents_enabled,
+                "mode": "foreground-wait-all" if self._subagents_enabled else "disabled",
+                "isolation": "git-worktree" if self._subagents_enabled else "none",
+                "max_batch_size": self._subagent_limits.max_batch_size,
+                "max_concurrency": self._subagent_limits.max_global_active,
+                "max_depth": self._subagent_limits.max_depth,
+                "background_supported": False,
+                "automatic_merge_supported": False,
+            },
+            "attachments": {
+                "schema": "agent_harness.attachment_capabilities.v1",
+                "supported_kinds": list(attachment_capabilities.attachment_kinds),
+                "supported_media_types": list(
+                    attachment_capabilities.attachment_mime_types
+                ),
+                "provider_max_count": attachment_capabilities.max_attachment_count,
+                "provider_max_bytes": attachment_capabilities.max_attachment_bytes,
+                "ingestion_max_per_turn": MAX_ATTACHMENTS_PER_TURN,
+                "ingestion_max_bytes_per_turn": MAX_ATTACHMENTS_TOTAL_BYTES,
+                "automatic_model_switch": False,
+                "remote_files_api_used": False,
+            },
+            "approval_defaults": {
+                "low": "allow",
+                "medium": "ask",
+                "high": "ask",
+                "headless_ask": "handoff",
+            },
+        }
+
+    def hook_snapshot(self) -> HookSnapshot:
+        """Freeze the exact project hook definitions proposed for the next run."""
+
+        return load_project_hooks(self.workspace)
+
+    def mcp_snapshot(self) -> McpSnapshot:
+        """Freeze project MCP server launch proposals without starting them."""
+
+        return load_project_mcp(self.workspace)
+
+    def mcp_status(self) -> dict[str, Any]:
+        """Return content-free MCP trust and frozen-catalog diagnostics."""
+
+        status = project_mcp_status(self.store, self.mcp_snapshot())
+        if status["pending_server_count"]:
+            state = "review_required"
+        elif status["refresh_required_count"]:
+            state = "refresh_required"
+        elif status["ready_server_count"]:
+            state = "ready"
+        elif status["server_count"]:
+            state = "disabled"
+        else:
+            state = "none"
+        return {
+            **status,
+            "schema": "agent_harness.mcp_status.v1",
+            "status": state,
+        }
+
+    def hook_status(self) -> dict[str, Any]:
+        """Return content-free hook definitions and exact trust status."""
+
+        snapshot = self.hook_snapshot()
+        trust_state = self.store.hook_trust_state()
+        metadata = snapshot.metadata(trust_state)
+        if metadata["pending_hook_count"]:
+            status = "review_required"
+        elif metadata["trusted_hook_count"]:
+            status = "ready" if metadata["sandbox"]["available"] else "blocked"
+        elif metadata["hook_count"]:
+            status = "disabled"
+        else:
+            status = "none"
+        return {
+            **metadata,
+            "schema": "agent_harness.hook_status.v1",
+            "status": status,
+        }
+
+    def set_hook_trust(
+        self,
+        hook_id: str,
+        definition_sha256: str,
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        """Persist a digest-bound trust or disable decision for a current hook."""
+
+        snapshot = self.hook_snapshot()
+        definition = next(
+            (item for item in snapshot.definitions if item.hook_id == hook_id),
+            None,
+        )
+        if definition is None:
+            raise HookLoadError("hook id is not present in the current project config")
+        if definition.definition_sha256 != definition_sha256:
+            raise HookLoadError("hook definition digest does not match current content")
+        self.store.set_hook_trust(
+            definition.hook_id,
+            definition.definition_sha256,
+            action=action,
+        )
+        return self.hook_status()
+
+    def trust_hook(
+        self,
+        hook_id: str,
+        definition_sha256: str,
+        *,
+        action: str = "trusted",
+    ) -> dict[str, Any]:
+        return self.set_hook_trust(
+            hook_id,
+            definition_sha256,
+            action=action,
+        )
+
+    def revoke_hook(self, hook_id: str) -> dict[str, Any]:
+        self.store.revoke_hook_trust(hook_id)
+        return self.hook_status()
+
+    def instruction_snapshot(self) -> InstructionSnapshot:
+        """Load the workspace-scoped instruction set for the next turn."""
+
+        return load_project_instructions(self.workspace, self.active_directory)
+
+    def _load_attachment_for_model(self, value: Mapping[str, Any]) -> bytes:
+        """Resolve only a validated descriptor from the active immutable snapshot."""
+
+        descriptor = AttachmentDescriptor.from_value(value)
+        active = self._active_attachment_blobs
+        if active is None:
+            return self.attachment_store.read(descriptor)
+        cached = active.get(descriptor.attachment_id)
+        if cached is None or cached[0] != descriptor:
+            raise AttachmentError("attachment is outside the active turn snapshot")
+        return cached[1]
+
+    def ingest_attachments(
+        self,
+        paths: Sequence[str | os.PathLike[str]],
+    ) -> tuple[AttachmentDescriptor, ...]:
+        """Import one bounded batch relative to the runner's active directory."""
+
+        if isinstance(paths, (str, bytes, os.PathLike)):
+            raise AttachmentError("attachment batch is invalid")
+        resolved: list[str | Path] = []
+        try:
+            iterator = iter(paths)
+        except TypeError:
+            raise AttachmentError("attachment batch is invalid") from None
+        for raw in iterator:
+            try:
+                value = os.fspath(raw)
+            except TypeError:
+                raise AttachmentError("attachment path is invalid") from None
+            if not isinstance(value, str) or not value:
+                raise AttachmentError("attachment path is invalid")
+            path = Path(value)
+            if not path.is_absolute() and not (
+                value == "~" or value.startswith(f"~{os.sep}")
+            ):
+                path = self.active_directory / path
+            resolved.append(path)
+        return self.attachment_store.ingest_many(resolved)
+
+    def discard_attachment(
+        self,
+        value: AttachmentDescriptor | Mapping[str, Any],
+    ) -> None:
+        """Discard exactly one verified, unreferenced attachment blob."""
+
+        descriptor = (
+            value
+            if isinstance(value, AttachmentDescriptor)
+            else AttachmentDescriptor.from_value(value)
+        )
+        self.attachment_store.discard(descriptor)
+
+    @staticmethod
+    def _normalize_turn_attachments(
+        values: Sequence[AttachmentDescriptor | Mapping[str, Any]],
+    ) -> tuple[AttachmentDescriptor, ...]:
+        if isinstance(values, (str, bytes, bytearray, Mapping)):
+            raise AttachmentError("attachment batch is invalid")
+        try:
+            raw_values = tuple(values)
+        except TypeError:
+            raise AttachmentError("attachment batch is invalid") from None
+        if len(raw_values) > MAX_ATTACHMENTS_PER_TURN:
+            raise AttachmentError("attachment batch exceeds the item limit")
+        result: list[AttachmentDescriptor] = []
+        seen: set[str] = set()
+        total = 0
+        for raw in raw_values:
+            try:
+                descriptor = (
+                    raw
+                    if isinstance(raw, AttachmentDescriptor)
+                    else AttachmentDescriptor.from_value(raw)
+                )
+                descriptor = AttachmentDescriptor.from_value(descriptor.to_dict())
+            except AttachmentError:
+                raise
+            except Exception:
+                raise AttachmentError("attachment descriptor is invalid") from None
+            if descriptor.attachment_id in seen:
+                raise AttachmentError("attachment identifiers must be unique")
+            seen.add(descriptor.attachment_id)
+            total += descriptor.size_bytes
+            if total > MAX_ATTACHMENTS_TOTAL_BYTES:
+                raise AttachmentError("attachment batch exceeds the total size limit")
+            result.append(descriptor)
+        return tuple(result)
+
+    def _preflight_attachments(
+        self,
+        *,
+        active_messages: Sequence[Mapping[str, Any]],
+        turn_attachments: tuple[AttachmentDescriptor, ...],
+    ) -> dict[str, tuple[AttachmentDescriptor, bytes]]:
+        descriptors: list[AttachmentDescriptor] = []
+        for message in active_messages:
+            raw_manifest = message.get("attachments", [])
+            if not isinstance(raw_manifest, list):
+                raise AttachmentError("stored attachment manifest is invalid")
+            for raw in raw_manifest:
+                if not isinstance(raw, Mapping):
+                    raise AttachmentError("stored attachment manifest is invalid")
+                descriptors.append(AttachmentDescriptor.from_value(raw))
+        descriptors.extend(turn_attachments)
+        if not descriptors:
+            return {}
+
+        try:
+            capabilities = self.model.model_spec.capabilities.validated()
+        except Exception:
+            raise AttachmentError(
+                "selected model has no validated attachment capability contract"
+            ) from None
+        if len(descriptors) > capabilities.max_attachment_count:
+            raise AttachmentError("active context exceeds the model attachment count limit")
+        total_bytes = sum(item.size_bytes for item in descriptors)
+        if total_bytes > capabilities.max_attachment_bytes:
+            raise AttachmentError("active context exceeds the model attachment size limit")
+
+        loaded: dict[str, tuple[AttachmentDescriptor, bytes]] = {}
+        for descriptor in descriptors:
+            if descriptor.attachment_id in loaded:
+                raise AttachmentError(
+                    "active context contains a duplicate attachment identifier"
+                )
+            if descriptor.kind not in capabilities.attachment_kinds:
+                if descriptor.kind == "image":
+                    raise AttachmentError(
+                        "selected model does not support image attachments; "
+                        "select deepseek-v4-flash-vision-exp explicitly"
+                    )
+                if descriptor.kind == "pdf":
+                    raise AttachmentError(
+                        "selected DeepSeek model does not support PDF attachments"
+                    )
+                raise AttachmentError("selected model does not support this attachment kind")
+            if descriptor.media_type not in capabilities.attachment_mime_types:
+                raise AttachmentError(
+                    "selected model does not support this attachment media type"
+                )
+            loaded[descriptor.attachment_id] = (
+                descriptor,
+                self.attachment_store.read(descriptor),
+            )
+        return loaded
+
+    def _context_budget(
+        self,
+        *,
+        session: Mapping[str, Any],
+        snapshot: InstructionSnapshot,
+        prospective_prompt: str = "",
+        prospective_attachments: Sequence[Mapping[str, Any]] = (),
+    ) -> dict[str, Any]:
+        view = self.store.context_view(str(session["session_id"]))
+        permissions = permission_profile(self.permission_mode)
+        scopes = {"internal", "user_input", "workspace_read"}
+        if (
+            "workspace.write" in permissions
+            or "process.exec.sandboxed" in permissions
+            or "process.exec.host" in permissions
+        ):
+            scopes.add("workspace_write")
+        if "process.exec.host" in permissions:
+            scopes.add("host_access")
+        definitions = self.registry.definitions(
+            permissions,
+            trusted_data_scopes=frozenset(scopes),
+        )
+        estimated = estimate_context_tokens(
+            summary=str(view["summary"]),
+            messages=view["messages"],
+            project_instruction_bytes=snapshot.total_bytes,
+            tool_definitions=definitions,
+            prospective_prompt=prospective_prompt,
+            prospective_attachments=prospective_attachments,
+        )
+        spec = self.model.model_spec
+        available = max(
+            1,
+            spec.context_window_tokens - spec.maximum_output_tokens - _CONTEXT_SAFETY_MARGIN_TOKENS,
+        )
+        return {
+            "estimated_input_tokens_upper_bound": estimated,
+            "available_input_tokens": available,
+            "automatic_trigger_tokens": max(1, int(available * _AUTO_COMPACTION_TRIGGER_RATIO)),
+            "automatic_target_tokens": max(1, int(available * _AUTO_COMPACTION_TARGET_RATIO)),
+            "context_window_tokens": spec.context_window_tokens,
+            "maximum_output_tokens": spec.maximum_output_tokens,
+            "view": view,
+        }
+
+    def context_status(self, session_id: str) -> dict[str, Any]:
+        """Return private-content-free active-context diagnostics."""
+
+        session = self.store.load(session_id)
+        snapshot = self.instruction_snapshot()
+        budget = self._context_budget(session=session, snapshot=snapshot)
+        view = budget.pop("view")
+        lineage = view["lineage"]
+        active_attachment_count = 0
+        active_attachment_bytes = 0
+        for message in view["messages"]:
+            for descriptor in message.get("attachments", []):
+                active_attachment_count += 1
+                active_attachment_bytes += int(descriptor["size_bytes"])
+        return {
+            "schema": "agent_harness.context_status.v1",
+            "session_id": session_id,
+            "transcript_message_count": view["transcript_message_count"],
+            "compacted_message_count": view["compacted_message_count"],
+            "active_message_count": view["active_message_count"],
+            "summary_chars": len(str(view["summary"])),
+            "compaction_count": len(session["compactions"]),
+            "compaction_id": lineage["compaction_id"],
+            "summary_sha256": lineage["summary_sha256"],
+            "source_messages_sha256": lineage["source_messages_sha256"],
+            "active_context_sha256": lineage["active_context_sha256"],
+            "instruction_bytes": snapshot.total_bytes,
+            "instruction_count": len(snapshot.documents),
+            "active_attachment_count": active_attachment_count,
+            "active_attachment_bytes": active_attachment_bytes,
+            **budget,
+        }
+
+    def _compact_locked(
+        self,
+        session_id: str,
+        *,
+        trigger: str,
+        snapshot: InstructionSnapshot,
+        cancellation_token: CancellationToken,
+        target_tokens: int | None = None,
+        prospective_prompt: str = "",
+        prospective_attachments: Sequence[Mapping[str, Any]] = (),
+    ) -> dict[str, Any]:
+        compactor = getattr(self.model, "compact_context", None)
+        if not callable(compactor):
+            raise SessionStoreError("the selected model does not support context compaction")
+        passes = 0
+        latest_record: Mapping[str, Any] | None = None
+        while passes < _MAX_COMPACTION_PASSES:
+            cancellation_token.raise_if_cancelled()
+            session = self.store.load(session_id)
+            plan = select_compaction_plan(session)
+            if plan is None:
+                break
+            result = compactor(
+                plan,
+                cancellation_token=cancellation_token,
+                deadline_monotonic=time.monotonic() + self.limits.deadline_seconds,
+            ).validated()
+            cancellation_token.raise_if_cancelled()
+            latest_record = self.store.record_compaction(
+                session_id,
+                summary=result.summary,
+                source_message_count=plan.source_message_count,
+                provider=self.model.model_spec.provider,
+                model=self.model.model_spec.model,
+                trigger=trigger,
+                usage=result.usage,
+                instructions_sha256=snapshot.snapshot_sha256,
+                provider_request_id=result.provider_request_id,
+            )
+            passes += 1
+            if target_tokens is not None:
+                refreshed = self.store.load(session_id)
+                budget = self._context_budget(
+                    session=refreshed,
+                    snapshot=snapshot,
+                    prospective_prompt=prospective_prompt,
+                    prospective_attachments=prospective_attachments,
+                )
+                if budget["estimated_input_tokens_upper_bound"] <= target_tokens:
+                    break
+        status = self.context_status(session_id)
+        return {
+            "schema": "agent_harness.compaction_result.v1",
+            "session_id": session_id,
+            "status": "compacted" if latest_record is not None else "not_needed",
+            "passes": passes,
+            "compaction_id": (
+                latest_record.get("compaction_id") if latest_record is not None else None
+            ),
+            "source_message_count": (
+                latest_record.get("source_message_count")
+                if latest_record is not None
+                else status["compacted_message_count"]
+            ),
+            "summary_sha256": (
+                latest_record.get("summary_sha256")
+                if latest_record is not None
+                else status["summary_sha256"]
+            ),
+            "summary_chars": status["summary_chars"],
+            "active_message_count": status["active_message_count"],
+            "transcript_message_count": status["transcript_message_count"],
+            "estimated_input_tokens_upper_bound": status["estimated_input_tokens_upper_bound"],
+        }
+
+    def compact_session(
+        self,
+        session_id: str,
+        *,
+        cancellation_token: CancellationToken | None = None,
+    ) -> dict[str, Any]:
+        """Manually compact old turns while preserving the original transcript."""
+
+        token = cancellation_token or CancellationToken()
+        with self.store.workspace_run_lock():
+            unresolved = self.store.unresolved_workspace_runs()
+            if unresolved:
+                raise SessionStoreError(
+                    "workspace has an unresolved run; reconcile it before compacting"
+                )
+            with self.store.turn_lock(session_id):
+                snapshot = self.instruction_snapshot()
+                return self._compact_locked(
+                    session_id,
+                    trigger="manual",
+                    snapshot=snapshot,
+                    cancellation_token=token,
+                )
+
+    def new_session(self, *, title: str = "New session") -> dict[str, Any]:
+        return self.store.create(
+            provider="deepseek",
+            model=self.client.config.model,
+            permission_mode=self.permission_mode,
+            title=title,
+        )
+
+    def resume_session(
+        self,
+        session_id: str | None = None,
+        *,
+        permission_override: str = "read-only",
+    ) -> dict[str, Any]:
+        if permission_override not in PERMISSION_PROFILES:
+            raise ValueError(f"unknown permission mode: {permission_override}")
+        self.permission_mode = permission_override
+        if session_id is None:
+            sessions = self.store.list()
+            if not sessions:
+                return self.new_session()
+            selected_session_id = str(sessions[0]["session_id"])
+        else:
+            selected_session_id = session_id
+        with self.store.turn_lock(selected_session_id):
+            session = self.store.load(selected_session_id)
+            if session.get("archived"):
+                raise SessionStoreError("session is archived; fork it before continuing")
+            unfinished = [
+                item
+                for item in session.get("runs", [])
+                if item.get("status") == "running" or item.get("requires_reconciliation") is True
+            ]
+            if unfinished:
+                run_id = str(unfinished[-1].get("run_id", "unknown"))
+                raise SessionStoreError(
+                    f"session has an unfinished or uncertain run ({run_id}); "
+                    "inspect its journal before archiving it or starting a new session"
+                )
+            if (
+                session.get("permission_mode") != permission_override
+                or session.get("provider") != "deepseek"
+                or session.get("model") != self.client.config.model
+            ):
+                session = self.store.update_runtime(
+                    session["session_id"],
+                    permission_mode=permission_override,
+                    provider="deepseek",
+                    model=self.client.config.model,
+                )
+            return session
+
+    def set_permission_mode(self, session_id: str, mode: str) -> dict[str, Any]:
+        if mode not in PERMISSION_PROFILES:
+            raise ValueError(f"unknown permission mode: {mode}")
+        with self.store.turn_lock(session_id):
+            self.permission_mode = mode
+            return self.store.update_runtime(
+                session_id,
+                permission_mode=mode,
+                provider="deepseek",
+                model=self.client.config.model,
+            )
+
+    def run_turn(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        cancellation_token: CancellationToken | None = None,
+        event_sink: EventSink | None = None,
+        approval_broker: ApprovalBroker | None = None,
+        attachments: Sequence[AttachmentDescriptor | Mapping[str, Any]] = (),
+    ) -> TurnOutcome:
+        with self.store.workspace_run_lock():
+            unresolved = self.store.unresolved_workspace_runs()
+            if unresolved:
+                run_id = unresolved[-1]["run_id"]
+                raise SessionStoreError(
+                    f"workspace has an unresolved run ({run_id}); inspect its journal "
+                    "and explicitly reconcile it before any new run"
+                )
+            with self.store.turn_lock(session_id):
+                return self._run_turn_locked(
+                    session_id,
+                    prompt,
+                    cancellation_token=cancellation_token,
+                    event_sink=event_sink,
+                    approval_broker=approval_broker,
+                    attachments=attachments,
+                )
+
+    def _run_turn_locked(
+        self,
+        session_id: str,
+        prompt: str,
+        *,
+        cancellation_token: CancellationToken | None = None,
+        event_sink: EventSink | None = None,
+        approval_broker: ApprovalBroker | None = None,
+        attachments: Sequence[AttachmentDescriptor | Mapping[str, Any]] = (),
+    ) -> TurnOutcome:
+        content = str(prompt).strip()
+        if not content or len(content) > 200_000:
+            raise ValueError("prompt must contain 1 to 200000 characters")
+        turn_attachments = self._normalize_turn_attachments(attachments)
+        token = cancellation_token or CancellationToken()
+        # Stored permission metadata is never an authority source. The current
+        # invocation's explicit runner mode controls the grants, and the
+        # per-session turn lock makes the displayed metadata follow it.
+        mode = self.permission_mode
+        if mode not in PERMISSION_PROFILES:
+            mode = "read-only"
+        existing = self.store.load(session_id)
+        unresolved = [
+            item
+            for item in existing.get("runs", [])
+            if item.get("status") == "running" or item.get("requires_reconciliation") is True
+        ]
+        if unresolved:
+            raise SessionStoreError(
+                "session has an unfinished or uncertain run; inspect its journal "
+                "before archiving it or starting a new session"
+            )
+        preflight_view = self.store.context_view(session_id)
+        attachment_blobs = self._preflight_attachments(
+            active_messages=preflight_view["messages"],
+            turn_attachments=turn_attachments,
+        )
+        hook_runner = None
+        mcp_catalog = None
+        mcp_policy_material: Mapping[str, Any] = {
+            "schema": "agent_harness.mcp_policy.v1",
+            "servers": [],
+        }
+        if self._project_extensions_enabled:
+            hook_snapshot = self.hook_snapshot()
+            hook_trust_state = self.store.hook_trust_state()
+            # This resolves every project proposal and verifies sandbox support
+            # before automatic compaction can make a provider request.
+            hook_runner = TrustedHookRunner(hook_snapshot, hook_trust_state)
+            mcp_snapshot = self.mcp_snapshot()
+            mcp_catalog = TrustedMcpCatalog(
+                mcp_snapshot,
+                self.store.mcp_trust_state(),
+                self.store.mcp_catalog_state(),
+            )
+            mcp_policy_material = mcp_catalog.policy_material
+            if mcp_catalog.tool_count:
+                run_registry = self._fresh_workspace_registry()
+                mcp_catalog.register_tools(run_registry)
+                self.registry = run_registry
+                self._mcp_registry_active = True
+            elif self._mcp_registry_active:
+                self.registry = self._fresh_workspace_registry()
+                self._mcp_registry_active = False
+        permissions = permission_profile(mode)
+        scopes = {"internal", "user_input", "workspace_read"}
+        if (
+            "workspace.write" in permissions
+            or "process.exec.sandboxed" in permissions
+            or "process.exec.host" in permissions
+        ):
+            scopes.add("workspace_write")
+        if "process.exec.host" in permissions:
+            scopes.add("host_access")
+        if mcp_catalog is not None and mcp_catalog.tool_count and "mcp.external" in permissions:
+            scopes.update({"external_service", "remote_consent"})
+        approval_policy = ApprovalPolicy(
+            rules=(
+                self.store.approval_rules(session_id)
+                if mode != "read-only" and self._agent_context is None
+                else ()
+            )
+        )
+        instruction_snapshot = self.instruction_snapshot()
+        budget = self._context_budget(
+            session=existing,
+            snapshot=instruction_snapshot,
+            prospective_prompt=content,
+            prospective_attachments=[item.to_dict() for item in turn_attachments],
+        )
+        if budget["estimated_input_tokens_upper_bound"] >= budget["automatic_trigger_tokens"]:
+            self._compact_locked(
+                session_id,
+                trigger="automatic",
+                snapshot=instruction_snapshot,
+                cancellation_token=token,
+                target_tokens=budget["automatic_target_tokens"],
+                prospective_prompt=content,
+                prospective_attachments=[item.to_dict() for item in turn_attachments],
+            )
+            refreshed = self.store.load(session_id)
+            budget = self._context_budget(
+                session=refreshed,
+                snapshot=instruction_snapshot,
+                prospective_prompt=content,
+                prospective_attachments=[
+                    item.to_dict() for item in turn_attachments
+                ],
+            )
+        if (
+            attachment_blobs
+            and budget["estimated_input_tokens_upper_bound"]
+            > budget["available_input_tokens"]
+        ):
+            raise SessionStoreError("active context exceeds the selected model input limit")
+        run_id = f"run_{uuid4().hex}"
+        turn_id = f"turn_{uuid4().hex}"
+        session = self.store.begin_run(
+            session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            user_content=content,
+            provider="deepseek",
+            model=self.client.config.model,
+            permission_mode=mode,
+            attachments=turn_attachments,
+        )
+        context_view = self.store.context_view(session_id)
+        context_lineage = dict(context_view["lineage"])
+        history_summary = (
+            {
+                "content": context_view["summary"],
+                "lineage": {
+                    key: context_lineage[key]
+                    for key in (
+                        "compaction_id",
+                        "source_message_count",
+                        "source_messages_sha256",
+                        "summary_sha256",
+                        "active_context_sha256",
+                    )
+                },
+            }
+            if context_view["summary"]
+            else None
+        )
+        event_path, checkpoint_path = self.store.run_paths(run_id)
+        journal = HarnessJournal(
+            event_path,
+            run_id=run_id,
+            turn_id=turn_id,
+            checkpoint_path=checkpoint_path,
+        )
+        self._active_attachment_blobs = attachment_blobs
+        try:
+            try:
+                result = run_agent_harness(
+                    self.model,
+                    self.registry,
+                    {
+                        "messages": [
+                            {
+                                "role": item["role"],
+                                "content": item["content"],
+                                **(
+                                    {"attachments": item["attachments"]}
+                                    if item.get("attachments")
+                                    else {}
+                                ),
+                            }
+                            for item in context_view["messages"]
+                        ],
+                        "workspace": ".",
+                        "active_directory": instruction_snapshot.active_relative_path,
+                        "permission_mode": mode,
+                        "project_instructions": (
+                            instruction_snapshot.to_model_content()
+                            if instruction_snapshot.documents
+                            else ""
+                        ),
+                        "instruction_snapshot": instruction_snapshot.metadata(),
+                        "mcp_snapshot": mcp_policy_material,
+                        "agent_context": self._agent_context,
+                        "history_summary": history_summary,
+                        "context_lineage": context_lineage,
+                        "settled_effects": [
+                            {
+                                "run_id": run.get("run_id"),
+                                **effect,
+                            }
+                            for run in session.get("runs", [])
+                            for effect in run.get("effects", [])
+                        ][-64:],
+                        "safety_notices": list(session.get("risk_notices", []))[-8:],
+                    },
+                    run_id=run_id,
+                    turn_id=turn_id,
+                    limits=self.limits,
+                    retry_policy=self.retry_policy,
+                    allowed_permissions=permissions,
+                    cancellation_token=token,
+                    event_sink=event_sink,
+                    journal=journal,
+                    principal_id="local-user",
+                    session_id=session_id,
+                    trusted_data_scopes=scopes,
+                    approval_policy=approval_policy,
+                    approval_broker=approval_broker,
+                    persistent_approval_allowed=self._agent_context is None,
+                    tool_hook_broker=hook_runner,
+                )
+            except Exception:
+                # Unknown failures may happen after an external effect but before
+                # its settlement can be inspected. Leave the run as `running` so
+                # every future entry point fails closed instead of replaying it.
+                raise
+        finally:
+            self._active_attachment_blobs = None
+            # The scheduler contract joins every started child before returning
+            # or raising.  Clear the lifetime spawn charge on every root exit,
+            # including unknown runtime failures, so stale run IDs cannot leak
+            # budget state in a long-lived Runner.
+            if self._subagent_scheduler is not None:
+                self._subagent_scheduler.budget_ledger.finish_root(run_id)
+        runtime_status = str(result.get("status", "failed"))
+        status = {
+            "completed": "completed",
+            "cancelled": "cancelled",
+            "handoff": "handoff",
+            "failed": "failed",
+            # The kernel keeps a specific deadline disposition in its internal
+            # result, while the authoritative durable terminal is run.failed.
+            # Public Runner/CLI/SDK status must follow that terminal contract;
+            # callers retain the detail in ``reason`` and ``result.status``.
+            "deadline_exceeded": "failed",
+        }.get(runtime_status)
+        if status is None:
+            raise SessionStoreError("runtime returned an unsupported terminal status")
+        output = result.get("output")
+        message = str(output.get("message", "")).strip() if isinstance(output, Mapping) else ""
+        durable_events = journal.replay()
+        usage = _event_usage(durable_events)
+        requested: dict[str, Mapping[str, Any]] = {}
+        started_effects: dict[str, str] = {}
+        settled_effects: set[str] = set()
+        hook_effect_calls: set[str] = set()
+        hook_guarded_settlements: set[str] = set()
+        effects: list[dict[str, str]] = []
+        terminal_type = ""
+        terminal_reason_code = ""
+        for event in durable_events:
+            if not isinstance(event, Mapping):
+                continue
+            payload = event.get("payload")
+            if not isinstance(payload, Mapping):
+                continue
+            event_type = str(event.get("type", ""))
+            if event_type in {
+                "run.completed",
+                "run.cancelled",
+                "run.failed",
+                "run.handoff",
+            }:
+                terminal_type = event_type
+                terminal_reason_code = str(payload.get("reason_code", ""))
+                continue
+            call_id = payload.get("call_id")
+            if not isinstance(call_id, str):
+                continue
+            if event_type == "tool.requested":
+                requested[call_id] = payload
+                continue
+            tool_name = payload.get("tool_name")
+            if not isinstance(tool_name, str):
+                continue
+            if event_type == "hook.effect_started":
+                hook_effect_calls.add(call_id)
+                continue
+            if (
+                event_type
+                in {
+                    "tool.completed",
+                    "tool.failed",
+                    "tool.rejected",
+                    "tool.replayed",
+                }
+                and call_id in hook_effect_calls
+            ):
+                hook_guarded_settlements.add(call_id)
+            entry = self.registry.get(tool_name)
+            if entry is None or entry[0].replay_policy == "safe":
+                continue
+            if event_type == "tool.effect_started":
+                started_effects[call_id] = tool_name
+                continue
+            if event_type != "tool.completed" or call_id not in started_effects:
+                continue
+            settled_effects.add(call_id)
+            effect = {
+                "call_id": call_id,
+                "tool_name": tool_name,
+                "result_sha256": str(payload.get("result_sha256", "")),
+            }
+            arguments_sha256 = requested.get(call_id, {}).get("arguments_sha256")
+            if isinstance(arguments_sha256, str):
+                effect["arguments_sha256"] = arguments_sha256
+            effects.append(effect)
+        unresolved_effects = set(started_effects) - settled_effects
+        unresolved_hook_effects = hook_effect_calls - hook_guarded_settlements
+        expected_terminal = {
+            "completed": "run.completed",
+            "cancelled": "run.cancelled",
+            "handoff": "run.handoff",
+            "failed": "run.failed",
+        }.get(status)
+        if expected_terminal != terminal_type:
+            raise SessionStoreError(
+                "runtime result does not match its authoritative journal terminal"
+            )
+        reconciliation_reasons = {
+            "cancelled_after_external_effect",
+            "deadline_after_external_effect",
+            "external_effect_unsettled",
+            "failure_after_external_effect",
+            "unsafe_hook_replay_blocked",
+        }
+        requires_reconciliation = terminal_reason_code in reconciliation_reasons
+        checkpoint = result.get("checkpoint")
+        if isinstance(checkpoint, Mapping):
+            pending_effect = checkpoint.get("pending_effect")
+        else:
+            pending_effect = getattr(checkpoint, "pending_effect", None)
+        if bool(unresolved_effects or unresolved_hook_effects) != isinstance(
+            pending_effect, Mapping
+        ):
+            raise SessionStoreError(
+                "runtime effect ledger does not match its authoritative terminal"
+            )
+        self.store.finish_run(
+            session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            status=status,
+            assistant_content=message or None,
+            usage=usage,
+            effects=effects,
+            requires_reconciliation=requires_reconciliation,
+        )
+        return TurnOutcome(
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            status=status,
+            message=message or None,
+            reason=str(result.get("reason", "")),
+            usage=usage,
+            result=result,
+        )
+
+
+__all__ = ["AgentRunner", "EventSink", "TurnOutcome", "default_worktree_home"]

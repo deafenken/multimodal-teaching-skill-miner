@@ -1,762 +1,565 @@
-# Teaching Skill Mining and Evaluation System
+# Agent Harness
 
-本项目实现题目中的四阶段工程闭环：对教学视频联合分析语音转写、提问等待、关键帧、PPT/板书 OCR 与匿名课堂观察，从“教师如何教”中抽取 Teaching Skill，把 Skill 表示成另一个 Agent 可直接执行的 JSON 与状态机，最后进行自动评分、跨领域新任务测试和双人复核覆盖审计。
+一个可审计、provider-neutral 的 Coding Agent Harness，包含模型循环、工具执行、权限
+边界、持久化事件协议和多种交互入口。
 
-默认演示链路只使用 Python 3.10+ 标准库，不需要网络或 API。项目内置按 2 门课程组织、每门 5 讲的人工释义演示数据，一条命令即可复现工程闭环；它本身不是完整公开课字幕。项目另已对 10/10 MIT OCW 完整讲次完成官方 WebVTT、来源页、媒体、内容哈希与整段时间轴绑定，并在私有目录真实运行全程音频静音分析、均匀/场景抽帧、Tesseract OCR、板书/幻灯片变化、CLIP 视觉语义和事件融合。第三方视频、字幕正文、帧、OCR 文本和嵌入均不打进 wheel。当前准确状态是“完整视频多模态工程证据已闭环；真实双人复核、事件级识别准确率、确认性多模态增益、学习效果和外部部署验证待完成”，详见 [`docs/project_status.md`](docs/project_status.md)。
+## 直接启动
 
-## 一键运行
-
-```bash
-python3 -m teaching_skill_miner demo --output artifacts
-```
-
-### 浏览器答辩看板
-
-项目附带一个完全自包含、无需前端依赖或本地服务的交互式看板。它展示项目流程、合成多模态时间轴、TeachObs 四臂消融、DIPSER 0.9 证据边界、可执行 Skill 状态机和外部验证缺口：
-
-```bash
-python3 -m teaching_skill_miner dashboard
-# 或安装后：
-tsm dashboard
-```
-
-在无图形界面的服务器或 CI 中只物化 HTML、不打开浏览器：
-
-```bash
-tsm dashboard --no-browser --output artifacts/tsm_dashboard.html
-tsm dashboard --check
-```
-
-看板只内嵌已经审核的聚合指标与 8 秒合成演示，不读取或打包真实私有视频、字幕正文、逐场景 OCR、标签、预测或嵌入。页面明确区分工程验收、探索性多模态增益和仍未建立的 WER、双人复核、部署准确率与学习效果。
-
-先分别检查环境能力与内置核心工程证据；这两条命令不替代后文的测试、exact wheel、CI、tracked-file 隐私或外部研究验收：
-
-```bash
-python3 -m teaching_skill_miner doctor
-python3 -m teaching_skill_miner verify-delivery \
-  --output artifacts/delivery_verification.json \
-  --markdown artifacts/DELIVERY_VERIFICATION.md
-```
-
-运行后生成：
-
-- `artifacts/skills/`：10 个 Teaching Skill，每个视频至少 1 个；
-- `artifacts/evaluations/`：逐 Skill 自动评估；
-- `artifacts/summary.json` 与 `summary.md`：课程/视频/策略覆盖和通过率；
-- `artifacts/teaching_demo.md`：把 Skill 迁移到“二分查找”后生成的教学过程；
-- `artifacts/interactive_demo.json`：学生未达标时触发回退、达标后推进的完整状态轨迹；
-- `artifacts/transfer_benchmark.json`：6 个留出新主题及静态无 Skill 基线对比；
-- `artifacts/data_audit.json`：数据完整性和正式研究就绪状态；
-- `artifacts/multimodal_demo/`：真实运行的合成多模态管线演示与独立 fixture 标注报告；
-- `artifacts/human_review.csv`：两名独立复核者的录入模板；新生成的模板每行用 `skill_fingerprint` 绑定完整 canonical Skill 内容，已有旧 CSV 不会被自动覆盖；空模板明确为 `incomplete`，不算人工验证结果；正式实验建议在条件允许时采用盲法；
-- `artifacts/human_review_status.json`：对 10 个预期 Skill 的覆盖缺口、重复复核者和缺失项审计；空模板不会被写成 10/10 已完成。
-
-完整本地工程验收（全量测试、Ruff、编译/脚本语法、依赖一致性、schema、公开目录审计、双次可复现 wheel 构建、仓库外安装和 exact-wheel 视频闭环）：
-
-```bash
-python3 -m pip install -e '.[recognition,dev]'
-sh scripts/verify_project.sh
-```
-
-要复现本次 macOS arm64 / Python 3.13.11 的精确项目依赖闭包，可使用：
-
-```bash
-python3 -m pip install -c constraints/validated-py313-macos-arm64.txt \
-  -r requirements-dev.txt
-```
-
-CI 的 Python 3.10–3.13 矩阵用于检验声明版本范围的前向兼容性，故有意不套用这个单平台快照；正式归档运行应另外保存平台对应的完整约束文件和构建产物 SHA-256。
-
-正式发布时使用干净、可复现构建，并直接验收将要分发的同一个 wheel：
-
-```bash
-sh scripts/build_release_acceptance.sh
-```
-
-若本机存在 TeachObs 私有证据，`verify_project.sh` 会一并重验人工复核骨架与锁箱草案。它们的默认路径是未带日期的文件名，而本仓库随附的是与论文 profile 配对的带日期版本，因此需要显式指向：
-
-```bash
-TSM_TEACHOBS_HUMAN_ROOT="$PWD/artifacts/private/external_datasets/teachobs/human_annotation_paper_track1_20260723" \
-TSM_TEACHOBS_HUMAN_RECEIPT="$PWD/artifacts/public/teachobs_human_annotation_paper_track1_20260723_receipt.json" \
-TSM_TEACHOBS_LOCKBOX_DRAFT="$PWD/artifacts/public/teachobs_new_site_paper_track1_lockbox_preregistration_20260723_draft.json" \
-sh scripts/build_release_acceptance.sh
-```
-
-不设这三个变量时，验收会在 TeachObs 阶段以"human-review evidence is partial"失败关闭——这是刻意的：`human_annotation/` 下还留着 5,158 行的完整 profile 旧骨架，与 4,945 行论文 profile 的公开 receipt 并不配对，宁可失败也不允许用不匹配的骨架通过。没有 TeachObs 私有证据的环境（例如公开 CI）会跳过整段检查，直接裸跑即可。
-
-这个入口启动时先把旧 acceptance 降级为 `stale_not_accepted`，随后依次执行全量项目验收、两个独立临时源码副本的字节级一致构建、最终候选 wheel 的隔离安装和视频闭环、wheel/公开目录发布审计；候选通过后才原子替换 `dist/` 中的同名 wheel，再对新 acceptance 本身做发布审计并原子替换 `artifacts/release_acceptance_1.2.0.json`。因此中途失败不会遗留看似仍有效的旧验收。acceptance 的测试数、wheel 哈希/大小/成员、公开目录摘要都由绑定同一 wheel SHA-256 的新鲜 receipt 重算；验证源码或任一产物在验收后变化都会失败，不会复制旧 acceptance 的字段。为保证相同证据生成相同字节，acceptance 有意不写墙钟时间。
-
-如需逐步排障，底层入口仍可单独运行：
-
-```bash
-sh scripts/build_release_wheel.sh dist
-sh scripts/verify_release_wheel.sh \
-  dist/teaching_skill_miner-1.2.0-py3-none-any.whl
-```
-
-构建脚本固定 `SOURCE_DATE_EPOCH`；最终发布仍须由人检查研究边界和精确候选，自动 acceptance 只建立工程验收事实，不能建立双人标注有效性、多模态增益、部署准确率或学习效果。
-
-在真实 Git checkout 中还应运行 tracked-file 隐私扫描：
-
-```bash
-python3 scripts/audit_repository_privacy.py
-```
-
-该扫描依赖 `git ls-files`；当前若只是无 `.git` 的目录副本，只能确认 CI 配置存在，不能声称已验证远端实际跟踪文件边界。
-
-也可以安装核心命令行入口（无需识别依赖）：
-
-```bash
-python3 -m pip install .
-tsm demo --output artifacts
-```
-
-## 系统流程
+macOS 双击：
 
 ```text
-视频 ──► ASR / 字幕 ─────────────┐
-  ├──► 音频停顿与提问等待 ───────┤
-  ├──► 场景关键帧 / OCR / 板书变化 ┤
-  └──► 匿名课堂观察 ──────────────┘
-                     │
-                     ▼
-              多模态时间轴事件
-        │
-        ▼
-方法蒸馏：目标 / Bloom 层级 / 策略 / 动作 / 证据
-        │
-        ▼
-可执行 Skill：触发条件 → 步骤 → 学生信号 → fallback → 验证
-        │
-        ├────────► 新主题教学过程 / 交互状态机
-        │
-        ▼
-自动评估：结构 + 证据 + 可执行性 + 教学质量 + 留出迁移 + 溯源
-        │
-        ▼
-两名独立复核者（正式实验建议盲法）与学习效果 A/B
+打开Agent Harness.command
 ```
 
-### 1. 视频采集与预处理
-
-`preprocess` 支持 `.srt`、`.vtt`、`.txt`，以及 `.mp4/.mkv/.mov/.webm/.mp3/.wav/.m4a`。媒体文件模式会调用本机 `ffmpeg` 与 OpenAI `openai-whisper` 包提供的 `whisper` CLI；字幕和文本模式不依赖外部程序。
+终端启动：
 
 ```bash
-python3 -m teaching_skill_miner preprocess new_lesson.srt \
-  --video-id new_001 \
-  --course-id demo_course \
-  --title "New lesson" \
-  --source-url "https://example.org/lesson" \
-  --language en \
-  --output data/new_001.json
+./打开Agent\ Harness.command
 ```
 
-本地视频的命令相同，只需把输入换成视频路径。兼容 OpenAI Whisper 参数接口的 CLI 可通过 `TSM_WHISPER` 指定，`ffmpeg` 可通过 `TSM_FFMPEG` 指定。当前实现不兼容 `whisper.cpp` 的 `whisper-cli` / `main` 参数和模型文件接口；`tsm doctor` 会把它识别为不同 CLI，而不会误报 ASR 已就绪。
-
-### 多模态视频分析
-
-当转写已存在时，可以直接把视频与转写对齐，无需重复 ASR。外部提供的带时间戳文本标为 `transcript`；只有 ASR provenance 哈希与当前媒体一致时才标为 `speech`，同时产物中的 `audio_content_verified` 为 `true`：
+安装为本地命令后：
 
 ```bash
-python3 -m teaching_skill_miner multimodal \
-  --video lesson.mp4 \
-  --transcript lesson.transcript.json \
-  --artifacts-dir artifacts/lesson_multimodal \
-  --frame-interval 20 \
-  --max-frames 48 \
-  --output artifacts/lesson_multimodal/enriched_transcript.json
+.venv/bin/pip install -e .
+harness                         # TUI
+harness exec "检查当前改动"     # 流式 headless
+harness exec --jsonl "运行测试" # JSONL 事件流
+harness exec --attach NOTES.md "核对这份说明" # 本轮不可变文本附件
+harness sessions
+harness agents                    # 列出保留的子任务 worktree（默认不显示路径）
+harness agents WORKTREE_ID --path # 明确查看一个保留 worktree 的本机路径
+harness resume [SESSION_ID]
+harness effects                  # 查看当前 workspace 的未决 run
+harness reconcile RUN_ID         # 人工检查后确认并清除 fence
+harness instructions             # 查看本轮会加载的项目指令摘要
+harness context SESSION_ID       # 查看活动上下文预算和摘要血缘（不输出正文）
+harness compact SESSION_ID       # 手动压缩旧轮次，保留完整原始 transcript
+harness hooks                    # 查看项目 hook 的摘要、digest 与信任状态
+harness mcp                      # 查看本地 stdio MCP、exact digest 与 catalog 状态
 ```
 
-输出包含：
-
-- `question_and_wait`：语音问题与后续静音联合证据；
-- `scene_change` / `slide_change`：镜头或 PPT 变化；
-- `board_build_up`：OCR 文字稳定重合并逐步增加；
-- `code_formula_walkthrough`：画面代码/公式与讲解时间对齐；
-- `student_confusion` / `teacher_adjustment`：经授权的匿名课堂观察输入，不冒充视频自动识别结果。
-
-#### 10 讲完整视频多模态实跑
-
-正式链路不是短视频 fixture。它下载并逐文件验证 MIT 18.06 前 5 讲和 MIT 6.0001 前 5 讲的完整 MP4，再按 5 分钟 chunk 可恢复处理；每个 chunk 做全段音频静音检测、15 秒均匀抽帧、场景变化候选、OCR 和像素变化分析，最后将官方字幕、音频活动、视觉证据和事件统一到同一时间轴。原始媒体与逐帧结果只保存在 `artifacts/private/`。
-
-在已经获取正式字幕的前提下，可按下面的可恢复命令复现完整链路。CLIP 是可选的 `visual` extra；核心 wheel 不自动安装这组重依赖，也不自动下载或重新分发第三方模型权重：
+默认从 `read-only` 开始。需要修改文件时显式切换：
 
 ```bash
-python3 -m pip install 'teaching-skill-miner[visual]'
+harness --permissions workspace-write
+harness --permissions full-access
 ```
 
-准备好指定 revision 的本地 CLIP snapshot 后，一条命令可串联正式字幕、10 个完整视频、长视频音频/抽帧/OCR/事件、CLIP、审计、四臂消融、公开 receipts 和公开目录审计：
+TUI 中使用 `/permissions workspace-write` 切换当前会话权限。
+
+## SDK
+
+Python SDK 是 `AgentRunner` 上的进程内、类型化封装，复用同一套 session、附件、权限、
+审批、journal 和恢复边界；它不启动另一个 `harness` 进程。同步与异步客户端都支持
+start/resume/fork、普通 run、事件流、附件和协作取消：
+
+```python
+from agent_harness.sdk import (
+    HarnessClient,
+    HarnessClientOptions,
+    HarnessRunOptions,
+    HarnessThreadOptions,
+)
+
+client = HarnessClient(HarnessClientOptions(workspace="."))
+thread = client.start_thread(
+    HarnessThreadOptions(permission_mode="read-only")
+)
+stream = thread.run_stream(
+    "检查这份设计",
+    HarnessRunOptions(attachments=("DESIGN.md",)),
+)
+for event in stream:
+    if event.type == "message.delta":
+        print(event.payload["delta"], end="")
+result = stream.result()
+
+resumed = client.resume_thread(result.session_id)  # 默认重新收窄为 read-only
+forked = thread.fork()                             # 逻辑 transcript fork
+```
+
+异步程序使用 `AsyncHarnessClient` / `AsyncHarnessThread`。Python thread 的权限是显式、
+不可变的；同一 client 会串行化 runner 操作以避免并发 thread 借用另一条 thread 的权限。
+同一个事件流只允许一个阻塞消费操作；并发消费会立即失败，并发 close 则都会等到 worker
+真正结束后再返回。
+只有调用方显式传入 `HarnessRunOptions(approval_broker=...)` 才能在 SDK 内回答交互审批；
+省略时保持 headless fail-closed 行为。
+
+`sdk/typescript/` 是可独立打包的 `@agent-harness/sdk`：Node.js 18+、严格 ESM、零运行时
+依赖。它通过 `shell: false` 子进程调用另行安装的 `harness exec --jsonl`，因此不是
+Python 进程内绑定，也不是 app-server transport。仓库内可直接安装：
 
 ```bash
-scripts/run_full_video_multimodal_study.sh \
-  artifacts/private/models/openai_clip_vit_b32_fp16_3d74acf9 \
-  --acknowledge-source-terms \
-  --reuse-downloads
+npm install ./sdk/typescript
 ```
 
-`--reuse-downloads` 要求正式字幕和完整媒体 manifest 已存在，并跳过两个网络获取阶段；去掉它则从正式字幕获取和 10 视频下载/验证开始。长视频阶段复用经输入、配置和输出校验的 chunk checkpoint，因此中断后可恢复。视觉推理默认 CPU、batch size 16；获准在本地或授权计算环境使用 GPU 时可设置 `TSM_VISUAL_DEVICE=cuda:0`，并用 `TSM_VISUAL_BATCH_SIZE` 调整 batch。无论 CPU 还是 GPU，产物状态 `complete_hash_bound_inference` 都只表示哈希绑定推理完成，不表示识别准确率。
+```ts
+import { HarnessClient } from "@agent-harness/sdk";
 
-总 runner 内部等价于下面的分阶段命令；需要诊断或只重跑某一阶段时可逐条执行：
+const client = new HarnessClient({
+  harnessPath: "/absolute/pinned/bin/harness",
+  cwd: "/work/project",
+});
+const thread = client.startThread(); // lazy：首次有效 run 才取得 session ID
+const stream = thread.runStream("检查失败测试", {
+  attachments: ["failure.md"],
+  permissionMode: "read-only",
+});
+for await (const event of stream) {
+  // 消费类型化、已校验的 agent_harness.event.v1 事件
+}
+const result = await stream.result;
+const resumed = client.resumeThread(result.sessionId);
+```
+
+TypeScript 当前支持 start/resume，不提供 fork；取消使用 `AbortSignal`。stdout 会经过
+UTF-8、单行/总量、事件序列、终态、identity、exec-result 和退出码的有界一致性校验，
+有效 exec-result 后子进程也必须在有界宽限期内退出，否则会被终止并按协议错误处理。
+结果前另有从 Harness deadline 推导的可配置 transport timeout；stdout 在没有结果时提前
+关闭，也会立即进入有界终止路径。
+但 JSONL 仍可能包含模型正文与普通工具输出。SDK 不内置 headless approval broker；
+未被中央策略或既有精确规则解决的 medium/high 审批会 handoff。生产嵌入应使用已审查、
+固定版本的绝对 `harnessPath`；默认裸命令名依赖调用进程的 `PATH`，不是可执行文件完整性证明。
+更完整的 Node 示例和边界见
+[`sdk/typescript/README.md`](sdk/typescript/README.md)。
+
+## 当前能力
+
+- 有界、可取消的 model/tool loop，包含 retry、deadline、step 和 tool-call budget。
+- 原生 provider 流；planner JSON 和隐藏推理不会进入对话正文。
+- 中央工具生命周期：requested、started、effect-started、progress、completed、failed、
+  rejected、replay；非安全工具只有在持久化 effect boundary 后才获准执行实际效果。
+- 工作区工具：文件列表、读取、全文检索、统一补丁、沙箱命令和显式主机命令。
+- 三档真实工具授权：`read-only`、`workspace-write`、`full-access`。
+- 敏感工具逐调用审批：默认 low 自动允许、medium/high 询问；TUI 可允许一次，或把
+  精确的工具版本+参数摘要保存为 session/workspace 规则。headless 无审批者时 handoff。
+- `AGENTS.override.md` / `AGENTS.md` 安全发现、32 KiB 快照、摘要审计和
+  `/instructions` 诊断；项目指令只影响模型上下文，不能扩大权限或跳过审批。
+- 可信 command hooks：同步支持 `PreToolUse`、`PostToolUse` 和
+  `PostToolUseFailure`。项目定义必须经过 exact digest 授信；pre hook 只能要求审批或拒绝，
+  post hook 只能观察，任何 hook 都不能授予权限或改写工具参数。
+- exact-digest trusted local MCP tools client 子集：固定协议基线 `2025-06-18`，只支持
+  stdio、显式 catalog refresh 和冻结工具面；MCP 工具只在 `full-access` 中出现，按 high-risk、
+  once-only approval、never-replay 执行。
+- 稳定 message ID、append-only 原始 transcript、可验证摘要血缘和 active-context view；
+  `/compact` 手动压缩，接近输入预算时自动分段压缩，`/context` 只显示计数与 digest。
+- provider-neutral 附件快照：严格 UTF-8 文本/Markdown、校验后的 PNG/JPEG 和
+  有界 PDF 会导入 owner-private 不可变 blob；会话中的附件 manifest 仅保留本地
+  消毒 basename、类型、大小和 digest，不复制源路径、原始内容或 base64。
+- 每次 run 使用 0600 hash-chain journal 和原子 checkpoint。任一 session 留下未完成或
+  待核对 run 时，整个 workspace 的所有新 run 都会被 fence 阻断；`effects` 只列出证据，
+  `reconcile` 只记录操作员已检查并清除 fence，不会验证、回滚或重放外部效果。
+- workspace-scoped 本地 session：list、resume、fork、archive。用户消息与 unresolved run、
+  assistant 消息与 run 终态分别原子落盘；fork 复制 transcript、摘要血缘和 session 元数据，
+  不创建新进程、容器或 worktree，也不隔离环境变量、provider client 或当前进程堆中的秘密。
+- curses TUI：流式正文、工具状态、Ctrl+C 取消、后续输入队列、token/cache 状态栏。
+- 单次高风险审批后的前台 `agent.delegate`：1–4 个独立上下文并发执行、等待全部完成，
+  每个子任务使用从当前 clean committed HEAD 创建的独立 Git worktree；TUI 显示有界状态，
+  保留产物可用 `/agents` 或 `harness agents` 检查。
+- Headless JSONL：稳定事件 schema、session/run/turn identity 和退出码。
+- 稳定 Python/TypeScript SDK：Python 进程内 start/resume/fork、同步/异步 run 与事件流；
+  TypeScript Node 18+ dependency-free subprocess/JSONL start/resume、run/stream、附件和取消。
+
+与 Claude Code、Codex 的逐项对表见
+[docs/harness_parity_matrix.md](docs/harness_parity_matrix.md)。
+
+## 权限模型
+
+| 模式 | 文件读/检索 | 应用补丁 | 命令工具 | 前台子任务 | 本地 MCP tools |
+|---|---:|---:|---|---:|---:|
+| `read-only` | 是 | 否 | 无 | 只读子任务 | 否 |
+| `workspace-write` | 是 | macOS Seatbelt 可用时是 | `process.exec`：macOS Seatbelt 可用时注册 | 只读或 worktree 写子任务 | 否 |
+| `full-access` | 是 | macOS Seatbelt 可用时是 | 沙箱 `process.exec`（可用时）和显式主机级 `process.exec_host` | 只读或 worktree 写子任务 | exact trust + frozen catalog + Seatbelt 可用时是 |
+
+内建 list/read/search 工具拒绝绝对路径、`..`、符号链接和 `.git`、`.private`、
+`.agent-harness`。在 macOS 上，`workspace.patch` 的检查与实际应用以及 `process.exec`
+都由同一类 Seatbelt 策略约束：写入仅允许到工作区、本次调用的私有临时目录和 `/dev`；
+对已知用户数据根的工作区外读取、网络、沙箱进程发出的 signal，以及已知
+Keychain/securityd Mach 服务查找会被拒绝。补丁目标即使在预检后被替换成指向工作区外
+的符号链接，内核写策略仍会拒绝解析后的外部目标。其他平台不注册这两个写工具，而不是
+降级成未隔离的实现。
+
+这是基于 `(allow default)` 再叠加拒绝规则的 macOS 主机策略，不是容器、VM、完整主机读取
+隔离或跨 macOS 版本的凭据服务完备名单。状态中的 `user_data_read_policy` 和
+`keychain_ipc_policy` 分别明确为“已知数据根”和“已知 security Mach 服务”，不代表阻断
+所有可能的主机 IPC、文件读取、进程观察或内核侧信道。
+
+`process.exec_host` 只在 `full-access` 出现，不受上述工作区沙箱约束。它可以按当前 OS
+用户权限读取工作区秘密、工作区外文件、访问网络，并把内容写入有界工具输出；该输出
+可能作为下一轮模型 observation 发送给 provider。环境变量白名单不保护文件、子进程
+继承状态或已在进程堆中的秘密。
+
+超时和取消会尽力回收初始进程组。daemon 化进程可能逃离这套回收机制；沙箱命令即使
+存活仍继承 Seatbelt 限制，但 `process.exec_host` 的逃逸进程继续拥有当前 OS 用户权限。
+选择 `full-access` 即表示主机级工具可被模型选择。
+
+工具可见性、数据 scope、审批与 OS 隔离是同时生效的独立边界。`workspace.patch`、
+`process.exec` 和 `process.exec_host` 在越过 `tool.effect_started` 前必须先得到审批；拒绝
+或无人审批不会创建进程或应用补丁。TUI 审批键为：`y` 仅本次、`s` 保存当前 session
+的精确规则、`w` 保存当前 workspace 的精确规则、`n` 拒绝。规则保存在 workspace 对应
+的 0600 私有状态目录，只含参数 SHA-256；`/approvals clear session|workspace` 可撤销。
+
+`data_scope` 只是工具注册与授权时使用的元数据标签，用于决定工具是否可见、可执行；它
+不是文件系统、网络、进程或内存隔离机制。实际边界来自内建 handler 的路径检查、macOS
+Seatbelt 或显式授予主机进程的权限。
+
+## DeepSeek 配置
+
+优先使用以下任一方式：
 
 ```bash
-python3 -m teaching_skill_miner fetch-full-videos \
-  --source-manifest data/formal_caption_sources.json \
-  --formal-caption-manifest artifacts/private/formal_captions/dataset_manifest.json \
-  --output artifacts/private/full_videos \
-  --public-receipt artifacts/public/full_video_validation_receipt.json \
-  --acknowledge-source-terms
-
-python3 -m teaching_skill_miner multimodal-longform-dataset \
-  --media-manifest artifacts/private/full_videos/media_manifest.json \
-  --transcript-manifest artifacts/private/formal_captions/dataset_manifest.json \
-  --output artifacts/private/full_multimodal \
-  --chunk-seconds 300 --overlap-seconds 2 \
-  --frame-interval 15 --max-scenes-per-chunk 12 --ocr-workers 4
-
-python3 -m teaching_skill_miner visual-semantic-dataset \
-  --manifest artifacts/private/full_multimodal/dataset_manifest.json \
-  --model artifacts/private/models/openai_clip_vit_b32_fp16_3d74acf9 \
-  --output-dir artifacts/private/full_multimodal/semantic_results \
-  --source-model-id openai/clip-vit-base-patch32 \
-  --source-revision 3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268 \
-  --device cpu --batch-size 16
-
-python3 -m teaching_skill_miner visual-semantic-apply \
-  --manifest artifacts/private/full_multimodal/dataset_manifest.json \
-  --semantic-results-dir artifacts/private/full_multimodal/semantic_results \
-  --output-manifest artifacts/private/full_multimodal/dataset_manifest.semantic.json
-
-python3 -m teaching_skill_miner audit \
-  --manifest artifacts/private/full_multimodal/dataset_manifest.semantic.json \
-  --output artifacts/private/full_multimodal/data_audit.semantic.json \
-  --require-formal
-
-python3 -m teaching_skill_miner multimodal-ablation \
-  --manifest artifacts/private/full_multimodal/dataset_manifest.semantic.json \
-  --output artifacts/private/full_multimodal/ablation
-
-python3 scripts/build_multimodal_public_receipts.py
+export DEEPSEEK_API_KEY='...'
+export HARNESS_DEEPSEEK_API_KEY_FILE='/private/path/deepseek_api.txt'
 ```
 
-本次最终产物声明 pipeline `teaching_skill_miner.longform_multimodal.v9`、extraction `teaching_skill_miner.longform_extraction.v2`。v2 使用正确的 TSV quoting 解析 Tesseract 输出；此前解析结果和由它派生的聚合值已作废并重新跑完 10 讲。新实跑的可核验证据为：10 个完整视频共 `1,038,813,006` bytes，FFprobe 总时长 `26,656.83` 秒（`7.404675` 小时）；抽取 `2,553` 帧，其中 `2,441` 帧有阈值后 OCR 文本、`1,964` 帧至少有 3 个接受词，共接受 `40,191` 个词；生成 `1,974` 个视觉事件和 `2,270` 个融合事件。10/10 讲通过全时间轴采样覆盖门槛，10/10 讲通过官方字幕—媒体时间轴绑定，审计结果为 `formal_empirical_ready=true`、`multimodal_empirical_ready=true`。
+在仓库内运行时也会发现 `.private/deepseek_api.txt`。普通私有文件以及指向 owner-only
+私有目标的链接都会经过目录权限、类型、inode、size 和 `O_NOFOLLOW` 校验。
 
-CLIP 对 `2,553/2,553` 个哈希绑定帧完成 512 维视觉嵌入和八类封闭 ontology 的相对 prompt 分数。本次使用 `openai/clip-vit-base-patch32` revision `3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268`，本地 FP16 `model.safetensors` SHA-256 为 `676093550c9e05bc3ba55256c278c89f0d15a1a1585f3b81d76454c33b852d5e`，最终推理设备为 CPU。曾用 GPU 服务器处理公开模型权重，但没有把视频、帧、字幕、OCR 或其他私有项目数据上传到该服务器。
-
-四臂配对消融对每一讲复用完全相同的 transcript segments，只改变可见的机器派生模态，并排除课堂观察：
-
-| Arm | 平均内部 Skill 分 | 相对 transcript-only | 保留事件数 |
-|---|---:|---:|---:|
-| transcript-only | 95.37 | 0.00 | 0 |
-| transcript + audio | 95.37 | 0.00 | 237 |
-| transcript + visual/OCR | 95.30 | -0.07 | 2,033 |
-| full | 95.32 | -0.05 | 2,270 |
-
-这些分数只是同一流水线的结构、证据引用一致性和可执行性量表；它们不是 Accuracy、Precision、Recall、F1，也没有显示内部 Skill 分数增益。OCR 计数不表示 OCR 正确率，CLIP 相对 prompt 分数不是校准概率，检测器事件数不表示正确事件数。因为没有独立事件 gold label、独立 Skill 质量评分或学习者结果，`recognition_accuracy_established`、`multimodal_gain_established`、`teaching_effectiveness_established` 和 `deployment_accuracy_established` 均为 `false`。完整设计和证据解释见 [`docs/multimodal_design.md`](docs/multimodal_design.md)。
-
-内容最小化的公开证据分别写入 `artifacts/public/full_multimodal_validation_receipt.json` 和 `artifacts/public/multimodal_ablation_receipt.json`。最终总 runner 实跑后的文件 SHA-256 分别为 `33155d14082050ef06302b33f18b5f01894a569147009681d93a18febc90f32b` 与 `81af973544a2a9b49708712ae2cb95f4381791cd4d26e4add7168bf1f95d3410`。它们只保留聚合计数、设计字段和上游私有产物哈希承诺，不包含媒体、字幕/OCR 文本、帧、嵌入、逐讲记录、讲次标识或本地路径；生成后仍须运行 `tsm release-audit artifacts/public` 并做人工披露风险复核。
-
-#### TeachObs 真实标签四臂基准
-
-MIT OCW 10 讲证明了完整视频、官方字幕、音频、OCR、CLIP 和事件融合确实运行，但它没有独立事件真值，不能计算识别 F1。项目因此另接入 commit-pinned TeachObs v0.1：30 个真实课堂完整讲次、5,158 个 15 秒场景、39 个发布共识标签，固定使用官方 23 讲训练/7 讲测试划分。旧的发布文本兼容基线在 1,312 个官方测试场景上得到 Micro-F1 `0.612968`、Macro-F1 `0.360044` 和 Hamming accuracy `0.826180`；它不是当前“官方字幕/审计 ASR 物化文本 + 音频 + 视觉”的四臂结果，且 Hamming accuracy 受多标签负例占比影响，不能单独写成“Accuracy”。
-
-字幕安全检索已实际审计 23/30 讲、34 条轨道，34/34 轨时间轴覆盖率不低于 0.90，均值 0.985841；平台字幕仍缺 7 讲。随后六讲离线 GPU ASR 已按 v2/v4/v4 契约完成并通过导入，当前 coverage matrix 为 19 讲 creator-provided 平台字幕、4 讲平台自动字幕、6 讲审计 ASR，共覆盖 29/30 讲，唯一 pending 为 S4。这里的“审计 ASR”只建立媒体、模型、运行时和时间线 provenance，不是官方字幕，也不建立 WER 或内容准确率。正式物化得到 4,509 个非空场景和 436 个空场景：14,637 条平台 cue 全部保留，其中 12 条只裁剪越界时间戳（合计 69.781 秒、最大 35.522 秒）；3,337 条 ASR segment 保留 3,336 条，另有 1 条位于同一哈希绑定媒体内但完全落在官方 scene 域外，显式排除 2.46 秒。两类处理都只看时间和媒体绑定，静默丢文本计数为 0。`prepare-teachobs-media` 已对论文 profile 的 29 讲/4,945 场景完成完整源视频、逐场景音频统计、中点抽帧、OCR/画面变化和固定 CLIP 特征。为与 arXiv:2605.30673v2 §4.1 的 Track 1 文本/单帧比较对齐，正式总 runner 默认采用 `paper_track1_23_train_6_test`：保留完整 23 讲、3,846 个训练场景，测试固定为 S2/S5/S19/S24/S28/S30 的 1,099 个场景；S4 因论文的中点帧 attachment 口径不统一而在任何拟合、调参和指标前排除，因此媒体/特征分母是 29 讲、4,945 场景，bootstrap cluster 为 6。CLI 为兼容旧流程仍默认 `full_23_train_7_test`（30 讲、5,158 场景、7 讲/1,312 场景测试），可用 `--evaluation-profile` 明确选择。两个 profile 的训练/测试 `source` 元数据均有 3 个取值重叠，且发布数据没有 canonical site/teacher/classroom ID；runner 会把这一事实及集合哈希写入私有结果和聚合公开 receipt，但不会把 `source` 冒充站点或新增伪 site-held-out F1。
-
-四臂修订模型仅在 23 个训练讲次上做 5 折 lesson-grouped OOF：每折重新拟合 transcript/OCR TF-IDF、IDF 与全部数值 scaler，从固定 `C={0.25,1.0}`、`class_weight=balanced` 候选中按 pooled OOF Micro-F1 选择，再从固定 `0.3–0.7` 网格选择逐标签阈值。候选、fold、seed、阈值哈希和 OOF 指标均写入 provenance，冻结 JSON+NPZ 重载后必须与内存概率及预测一致。这个流程是在首轮公开六讲结果已经观察后加入的迭代性探索修订；虽未用六讲标签拟合或选择，也不能写成首次盲测、确认性增益、跨站点或部署准确率。数据审计、命令、双人独立标注和学习效果边界见 [`docs/teachobs_external_benchmark.md`](docs/teachobs_external_benchmark.md)。
-
-正式 v2 结果如下；OOF Micro-F1 只用于训练讲次内选择，测试列来自固定六讲的一次修订后评估：
-
-| Arm | 训练 OOF Micro-F1 | 测试 Micro-F1 | 测试 Macro-F1 | Hamming accuracy | Visual Macro-F1 |
-|---|---:|---:|---:|---:|---:|
-| transcript-only | 0.611918 | 0.594496 | 0.244338 | **0.818833** | 0.238622 |
-| transcript + audio | 0.564436 | **0.604708** | 0.247501 | 0.809967 | 0.244307 |
-| transcript + visual | 0.541563 | 0.548328 | 0.303894 | 0.775297 | 0.332851 |
-| full | 0.516856 | 0.543812 | **0.309604** | 0.763258 | **0.336426** |
-
-相对 transcript-only，full 的 Macro-F1 增量为 `+0.065266`，六讲配对 cluster bootstrap 95% CI 为 `[+0.014886, +0.095637]`；Visual Macro-F1 增量为 `+0.097804`，CI 为 `[+0.035152, +0.114008]`。但 full 的 Micro-F1/Hamming 分别下降 `0.050684/0.055575`，因此只能说多模态改善了类别均衡和视觉类覆盖，不能说它普遍提高了“Accuracy”。最佳 Micro-F1 是 `transcript + audio`，最佳 Hamming 是 transcript-only；两者都不是 0.9。固定 0.5 阈值首轮结果及旧 bundle 已原样保存在私有 `benchmark_attempts/fixed_threshold_v1/`，避免事后覆盖失败证据。
-
-未来新站点确认性验证另有 fail-closed 预注册层：安装后的 `prepare-teachobs-lockbox-preregistration` 冻结 system/analysis/四臂模型、同一样本主 contrast、39 标签 Macro-F1、classroom/session cluster、固定 2,000 次配对 bootstrap、coverage、前瞻、一次性消费和外部 Ed25519 登记门。四臂现可导出为无 pickle、可重验且预测一致的确定性 JSON+NPZ；schema 1.2 的完成门会解析同一 bundle 的四个 manifest 并安全重载全部 companion `arrays.npz`，把数组 SHA、每臂 39 个 `model_thresholds` 的摘要、标签顺序和训练/软件 provenance 纳入 path-free v2 artifact-set fingerprint。分析计划绑定同一组逐臂阈值摘要，不再错误假定统一 `0.5`。当前公开 draft 仍缺真实目标数据和外部签名，因此所有 established flags 为 false；完整交接见 [`docs/teachobs_confirmatory_lockbox.md`](docs/teachobs_confirmatory_lockbox.md)。
-
-学习效果缺口现在有独立的可执行工具：`prepare-learner-effect-study` 生成 teacher/classroom cluster RCT 预注册、仅 SHA-256 token 的盲化分配表和 pre/post/retention 采集表；`analyze-learner-effect-study` 按冻结的 post-adjusted-for-pre ITT 模型及 cluster bootstrap 做 fail-closed 分析。模板、合成测试和未签名本地结果都保持 `learner_effectiveness_established=false`，不得把内部 Skill 分当学习效果；操作与外部签名交接见 [`docs/learner_effect_study.md`](docs/learner_effect_study.md)。
-
-运行仓库内的可复现多模态演示：
+可选配置：
 
 ```bash
-sh scripts/run_multimodal_demo.sh
+export HARNESS_DEEPSEEK_MODEL='deepseek-v4-flash'
+export HARNESS_DEEPSEEK_TIMEOUT_SECONDS='60'
+export HARNESS_DEEPSEEK_MAX_RETRIES='2'
+export HARNESS_DEEPSEEK_THINKING='0'
 ```
 
-该脚本生成一段本地合成视频并真实运行 FFmpeg、Tesseract、事件融合、Skill 抽取和评估。当前稳定产物为 1 个静音区间、4 个关键帧、9 个融合事件和 5 种输入模态；其中课堂观察来自人工合成 JSON，音轨为音调加静音，提供的 transcript 并非音轨 ASR。
+TUI 只展示 provider 返回的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，不会
+伪造缓存命中。planner 使用稳定的 system-prefix，便于服务端前缀缓存复用。
 
-脚本还会把输出与独立编写的 fixture 标注比较，生成 `artifacts/multimodal_demo/fixture_benchmark.json`。该合成基准当前对 3 个指定事件得到 Precision/Recall/F1 = 1.0、OCR 必需词召回率 = 1.0；报告同时固定写明 `real_world_accuracy_established: false` 与 `teaching_effectiveness_established: false`。这证明已知合成条件下的链路行为，不证明真实课堂准确率。详细审计见 [`docs/validation_report.md`](docs/validation_report.md)，设计见 [`docs/multimodal_design.md`](docs/multimodal_design.md)。
+## 附件
 
-### 真实课堂自动识别（OUC-CGE pilot）
+Headless 可重复传入 `--attach`；TUI 使用 `/attach PATH` 暂存本轮快照，
+`/attachments` 检查待发列表，`/detach ID|all` 只移除尚未绑定到待发 turn 的项目。
+普通 prompt 提交时，Harness 会把“此 prompt + 当时暂存的附件”一起冻结，不会
+让忙时 follow-up 的附件串到下一个 prompt。当前 curses TUI 没有图形拖拽、粘贴
+或剪贴板导入，不声称这部分与 Claude Code/Codex 交互对齐。
 
-仓库另有一条与内部 Skill 评分相互独立的真实识别链路：使用 [OUC-CGE](https://www.nature.com/articles/s41597-025-04987-w) 官方 OSF 公开 sample 中的真实课堂视频和专家标签，自动输出 `low / medium / high` 小组投入度概率，并计算文件名伪分组 out-of-fold Accuracy、Macro-F1、逐类指标、混淆矩阵、校准指标和 bootstrap 95% 区间。
+导入不相信扩展名：文本必须是严格 UTF-8，PNG/JPEG 会校验实际签名、结构和
+尺寸；PDF 只校验 `%PDF-`/`%%EOF` 包络与大小边界，不解析或提取内容。源文件使用
+no-follow 路径遍历和稳定 inode/device/size 读取，然后原子发布到当前
+workspace 对应的 0700 私有附件目录，blob 为 0600。
+每轮最多导入 8 个、原始字节合计最多 24 MiB；单个文本、图片、PDF 上限分别
+为 2、8、16 MiB。当前 DeepSeek provider 的活动请求另有 16 个/24 MiB 上限。
 
-安装识别依赖并运行：
+当前 DeepSeek 能力边界是：
+
+- `deepseek-v4-flash` 等普通文本模型可接收严格 UTF-8 文本/Markdown 附件。
+- 只有操作员显式设置 `HARNESS_DEEPSEEK_MODEL=deepseek-v4-flash-vision-exp` 时，才会发送
+  PNG/JPEG；Harness 不会为图片自动换模型。图片在当次 provider 请求内联，不调用
+  DeepSeek Files API。
+- PDF 可安全导入、快照并用统一 descriptor 表示，但当前 DeepSeek adapter 不支持
+  PDF；它会在建立 run 或发出网络请求前拒绝，不伪造提取结果。
+
+文档、文本和图片内容始终是不可信的用户数据。其中的指令不是 system/project
+指令，不能扩大工具权限、数据 scope 或审批范围。使用附件表示用户明确同意把
+该 turn 所需的文本或内联图片字节发送给选定的远程 provider。
+
+## 项目指令
+
+每个 turn 开始时，Harness 在显式 workspace 范围内每级最多选择一个文件：
+`AGENTS.override.md` 优先于 `AGENTS.md`，然后按根到当前目录顺序合并。读取拒绝符号链接、
+非普通文件、非 UTF-8、读取期间替换以及超过 32 KiB 的组合；失败时整轮 fail closed，
+不会静默截断或回退到较低优先级文件。当前不加载 `CLAUDE.md` 或领域教学 Skill；可执行
+项目配置只通过下述独立、显式授信的 hook 边界进入。`harness instructions --json` 和 TUI
+`/instructions` 默认只显示路径、大小和摘要，不打印指令正文。
+
+默认 active directory 就是 workspace 根；需要对子目录应用更近的指令时显式传入，例如：
 
 ```bash
-python3 -m pip install -e '.[recognition]'
-
-python3 -m teaching_skill_miner real-data-audit \
-  --dataset-root data/real/ouc_cge/extracted \
-  --output artifacts/real_classroom/dataset_audit.json
-
-python3 -m teaching_skill_miner real-recognition-benchmark \
-  --dataset-root data/real/ouc_cge/extracted \
-  --output-dir artifacts/real_classroom \
-  --folds 4 --frames 12 --seed 2026
+harness --cwd . --active-directory packages/api instructions
 ```
 
-对新视频执行自动推理：
+## 可信 command hooks
 
-```bash
-python3 -m teaching_skill_miner real-recognition-infer \
-  --video /path/to/classroom.mp4 \
-  --checkpoint artifacts/real_classroom/checkpoint.json \
-  --output artifacts/real_classroom/inference.json
-```
+项目可以在 `.agent-harness/hooks.json` 声明同步 command hooks，entrypoint 必须位于
+`.agent-harness/hooks/`。当前只实现工具调用的三个事件：
 
-当前可直接复现的是 36 个时长不一的官方 `sample` 视频；SHA-256 去重后为 35 个。实验按主视频流时间轴取中心 10 秒，并用文件名末尾数字构造标签无关的**伪分组**做 4 折 `StratifiedGroupKFold`。这能防止已知精确重复和同尾号跨折，却不等于按源视频、课堂 session 或参与者划分。因此报告固定写明 `group_disjoint_evaluation: false`、`surrogate_filename_group_disjoint_evaluation: true`、`session_disjoint_evaluation: false` 和 `real_world_recognition_accuracy_established: false`。
+- `PreToolUse`：可返回 `pass`、`ask` 或 `deny`；多个结果按 `deny > ask > pass` 聚合。
+  `pass` 只表示“不再收紧”，不会覆盖中央 permission、scope、approval 或 sandbox 决策。
+  `ask` 强制当前调用重新审批，既有 session/workspace `allow` 规则不能绕过它；该审批只允许
+  本次 `y/n`，不能用 `s/w` 保存持久放行。
+- `PostToolUse`：工具成功后同步观察，必须返回 `pass`。
+- `PostToolUseFailure`：最终一次工具失败后同步观察，必须返回 `pass`。
 
-本地实测的视觉、音频和融合 Macro-F1 都是 1.0000，但**不能解读为 100% 真实识别率**：只看时长、码率、分辨率、编码器和流数量的元数据对照也达到 Macro-F1 0.9710，强烈表明来源/编码混杂风险。更关键的是，low 只有 0/11 个视频含重叠有效音频，而 medium/high 都是 12/12；因此 audio/fusion 的满分是无效的模态缺失捷径，本地 pilot 仅选择 visual checkpoint 用于链路调试，并明确不纳入公开 release。视觉特征后的标签置换 sanity check 平均 Macro-F1 为 0.3060，但它不能排除目标泄漏。当前没有建立多模态增益、跨 session 准确率或部署准确率。
-
-下载地址、校验和、隐私要求见 [`data/real/README.md`](data/real/README.md)；完整协议、许可边界和升级为正式实验的条件见 [`docs/real_classroom_protocol.md`](docs/real_classroom_protocol.md)。
-
-#### DIPSER V5 可审计的姿态 + 手表基准
-
-另一条真实数据链路使用 [DIPSER V5](https://doi.org/10.57760/SCIENCEDB.11541) 线下大学课堂数据，将发布方由 RGB 生成的 head/body pose metadata 与五类智能手表传感器对齐；它不读取 raw RGB 像素，因此不是端到端视频模型。每个归档必须恰好解析出四个 publisher expert labeler；ID 可为 `01`–`05`，V5 实际有 `01/02/03/04` 和 `01/02/03/05` 两种组合（后者 22 个 archive），`self_labeling` 排除。这项解析修正不放宽“四专家齐全 + 3/4 多数”真值门槛。Range 读取在所需 non-image 尾部 ≤128 MiB 时做有界合并，异常布局时只逐成员 Range，不下载整包。默认 52-archive 清单是“部分标签清单审查后冻结的探索性分析”，不是正式预注册。
-
-```bash
-python3 -m teaching_skill_miner dipser-credible-benchmark \
-  --output-dir artifacts/dipser_credible/full_v5_52 \
-  --workers 2 --outer-splits 5 --inner-splits 3 --seed 2026
-```
-
-主报告写入 `artifacts/dipser_credible/full_v5_52/credible_report.json`，LOCO、LOAO 和 cohort×activity 双重阻断结果写入同目录的 `blocked_descriptive_report.json`。冻结 roster 计划了单站点 `3 cohort × 9 repeated activity = 27` 个 recording cells，但 complete-case 数据实际只有 25 个 cell 含样本；因此现有 OOF、bootstrap/permutation 和阻断指标均只作同设计内描述。多模态增益、可推广跨 session 准确率和 `deployment_accuracy_established` 均保持 `false`。完整运行、完整数值模态、指纹和目标站点前瞻冻结测试要求见 [`docs/dipser_credible_benchmark.md`](docs/dipser_credible_benchmark.md)。
-
-仓库内已完成一次 52/52 官方归档实跑：296 个完整案例、25 个有样本的 recording。原冻结分析的 session-blocked fusion Accuracy/Macro-F1 为 0.6622/0.5346，而多数类 Accuracy 已有 0.7568。随后新增了**明确标记为事后开发**的优化协议：严格因果 Fusion 模型为 0.8176/0.6357；完整 participant-sequence + classroom-session 的层级离线模型，在固定 SGKF5 seed=2026 上触及 0.9020/0.7435。后者的确定性 leave-one-session-out 为 0.8986/0.7397，50 个 outer seed 的 Accuracy 均值仅 0.8883（范围 0.8784–0.9020，21/50 达到 0.9），所以不能表述为稳定跨 session 0.9。
-
-同一 nested 协议下，Visual、Sensor、Fusion 的 SGKF5 分别为 0.6284/0.2882、0.7973/0.5811、0.9020/0.7435，当前数据上存在明显的多模态互补点差。但层级模型需要完整 held-out session 的无标签未来窗口与其他学生上下文：排除当前行后 SGKF5 降为 0.8547，严格时间前缀降为 0.7770。因此该结果的准确名称是 **offline full-session transductive development estimate**，不是实时、单学生、归纳式或部署准确率；确认性多模态增益仍需新冻结外部数据。
-
-不重新下载数据即可复跑优化与全部身份审计：
-
-```bash
-python3 scripts/run_dipser_optimization.py \
-  --artifact-dir artifacts/dipser_credible/full_v5_52_complete_v5
-
-python3 scripts/run_dipser_hierarchical_challenge.py \
-  --artifact-dir artifacts/dipser_credible/full_v5_52_complete_v5
-```
-
-因果优化结果见 [`OPTIMIZATION_RESULTS.md`](artifacts/dipser_credible/full_v5_52_complete_v5/OPTIMIZATION_RESULTS.md)；0.9 挑战、模态消融、50-seed、未来上下文反事实和阻断审计见 [`HIERARCHICAL_0_9_RESULTS.md`](artifacts/dipser_credible/full_v5_52_complete_v5/HIERARCHICAL_0_9_RESULTS.md)，逐折/逐样本机读产物为同目录的 `hierarchical_0_9_report.json`。层级固定 gate 的 LOCO、LOAO、双重阻断 Accuracy 分别只有 0.6554、0.8919、0.6351。因此 `accuracy_0_9_established`、确认性 `multimodal_gain_established` 和 `deployment_accuracy_established` 均保持 `false`。原始覆盖流和指纹见 [`RESULTS.md`](artifacts/dipser_credible/full_v5_52_complete_v5/RESULTS.md)。
-
-两个 runner 现在都会从 records、特征名和精确 float64 矩阵重新计算 dataset / feature-bundle fingerprint；只修改 JSON 中重复声明的哈希无法绕过校验。
-
-通用 `extract-strict-features` 入口可直接从私有目标站点视频/音频与 CSV/JSON/JSONL 数值传感器生成 `strict_feature_bundle.json`，绑定原始文件 SHA-256、时间窗口、精确样本顺序、提取配置、实现代码、运行环境以及 FFmpeg/FFprobe 二进制和版本。输出目录/文件权限为 `0700/0600`；可用 `--model` 只做 checkpoint v3 schema/provenance 兼容性检查，但不会执行预测，也不会建立任何准确率：
-
-```bash
-python3 -m teaching_skill_miner extract-strict-features \
-  --manifest PRIVATE_LOCKBOX/dataset_manifest.json \
-  --raw-root /secure/target_site_lockbox \
-  --extractor-config configs/raw_feature_extractor.example.json \
-  --identity-field session_id --identity-field participant_id \
-  --identity-field cohort_id --identity-field activity_id --identity-field site_id \
-  --output-dir PRIVATE_LOCKBOX/features
-```
-
-完整 manifest `raw_inputs`、`content_sha256` 计算和支持的提取器见 [`docs/raw_feature_bridge.md`](docs/raw_feature_bridge.md)。若要在新外部数据上进行可信锁箱测试，应冻结一个独立的扁平严格模型、身份契约和指标门槛（该入口不是 0.902 层级模型部署器）：
-
-```bash
-python3 -m teaching_skill_miner freeze-recognition-model \
-  --manifest PRIVATE_SOURCE/dataset_manifest.json \
-  --features PRIVATE_SOURCE/features.json \
-  --claim-contract configs/external_claim_contract.example.json \
-  --class-name low --class-name medium --class-name high \
-  --identity-field session_id --identity-field participant_id \
-  --identity-field cohort_id --identity-field activity_id --identity-field site_id \
-  --group-field session_id \
-  --claim-cluster-field session_id \
-  --output PRIVATE_SOURCE/frozen_model.json
-```
-
-从创建登记开始，应在锁箱保管方控制的环境内执行，并把精确外部 dataset、严格 feature bundle、coverage 分母证据和 checkpoint v3 绑定到登记请求：
-
-```bash
-python3 -m teaching_skill_miner create-freeze-registration \
-  --model PRIVATE_SOURCE/frozen_model.json \
-  --manifest PRIVATE_LOCKBOX/dataset_manifest.json \
-  --features PRIVATE_LOCKBOX/features.json \
-  --registration-id target-site-2026-lockbox-001 \
-  --output PRIVATE_LOCKBOX/freeze_registration_request.json
-
-python3 -m teaching_skill_miner sign-freeze-registration \
-  --request PRIVATE_LOCKBOX/freeze_registration_request.json \
-  --private-key CUSTODIAN_PRIVATE/ed25519_private.pem \
-  --issuer "External governance custodian" \
-  --key-id target-site-key-2026 \
-  --output PRIVATE_LOCKBOX/freeze_registration_attestation.json
-
-python3 -m teaching_skill_miner evaluate-frozen-recognition \
-  --model PRIVATE_SOURCE/frozen_model.json \
-  --manifest PRIVATE_LOCKBOX/dataset_manifest.json \
-  --features PRIVATE_LOCKBOX/features.json \
-  --registration-attestation PRIVATE_LOCKBOX/freeze_registration_attestation.json \
-  --trusted-public-key TRUST_ANCHOR/ed25519_public.pem \
-  --one-time-ledger PRIVATE_LOCKBOX/one_time_ledger \
-  --output PRIVATE_LOCKBOX/external_evaluation.json
-
-python3 -m teaching_skill_miner sign-evaluation-report \
-  --report PRIVATE_LOCKBOX/external_evaluation.json \
-  --private-key CUSTODIAN_PRIVATE/ed25519_private.pem \
-  --issuer "External governance custodian" \
-  --key-id target-site-key-2026 \
-  --output PRIVATE_LOCKBOX/external_evaluation_receipt.json
-
-python3 -m teaching_skill_miner verify-delivery \
-  --external-deployment-report PRIVATE_LOCKBOX/external_evaluation.json \
-  --external-evaluation-receipt PRIVATE_LOCKBOX/external_evaluation_receipt.json \
-  --trusted-attestation-public-key TRUST_ANCHOR/ed25519_public.pem
-```
-
-只有 checkpoint 内冻结的 Accuracy、Macro-F1、cluster-CI 下界、逐类 Recall/支持、claim-cluster 数、可重算 coverage、前瞻采集、签名登记和一次性消费全部通过，`deployment_accuracy_established` 才可能为 `true`。Ed25519 签名只证明内容由对应私钥签署且未被篡改，**不会自动证明签署者独立**；可信公钥必须由外部治理方在看结果前通过独立渠道固定，开发者自签名不能把开发集变成锁箱。
-
-部署准确率、确认性多模态增益和真实学习者效果使用三条相互独立的外部证据链。后两类可以用 `prepare-external-research-evidence`、`sign-external-research-evidence` 和 `verify-external-research-evidence` 对聚合研究 manifest 重新计算 gate 并验证外部签名，再分别通过 `verify-delivery` 的 `--external-multimodal-*` 与 `--external-learner-*` 参数接入。两类 manifest 还必须绑定同一个实际交付 system artifact，delivery 会实算其 SHA-256。仓库当前不附带任何正向外部证据；一个有效部署 receipt 不能替代配对模态消融或学习效果实验，准备 manifest 也不自动证明其绑定的原始研究产物真实。完整协议见 [`docs/external_research_evidence.md`](docs/external_research_evidence.md)。
-
-### 新视频一条命令完成现场演示
-
-`pipeline` 按“预处理 → 多模态对齐 → Skill 抽取 → 教学过程 → 交互执行 → 自动评估”运行并保存所有中间结果。输入为视频时默认启用多模态；可用 `--no-multimodal` 显式关闭：
-
-```bash
-python3 -m teaching_skill_miner pipeline new_lesson.srt \
-  --video-id new_001 \
-  --course-id demo_course \
-  --title "New lesson" \
-  --source-url "https://example.org/lesson" \
-  --concept "牛顿法" \
-  --output artifacts/new_video_demo
-```
-
-若输入已经是本系统的 transcript JSON，只需提供概念和输出目录：
-
-```bash
-python3 -m teaching_skill_miner pipeline data/transcripts/python_l03.json \
-  --concept "递归调用栈" \
-  --output artifacts/pipeline_demo
-```
-
-若有真实视频以及官方字幕、人工核验 transcript 或已审计 ASR，可在没有本机 Whisper 模型时仍用一个命令执行真实 FFmpeg/OCR 多模态闭环：
-
-```bash
-python3 -m teaching_skill_miner pipeline /path/to/authorized_lesson.mp4 \
-  --transcript /path/to/official_or_audited_transcript.json \
-  --observations /path/to/anonymized_observations.json \
-  --concept "目标概念" \
-  --output artifacts/captioned_video_run
-```
-
-该路径会在 `pipeline_summary.json` 中写入 `transcript_source_mode`、`language_evidence_status` 和 `audio_content_verified`。提供的文字只算 transcript 模态；只有同一媒体哈希绑定的 ASR provenance 才会标记为已核对语音内容。
-
-对获授权的真实课堂视频可用答辩脚本一次完成“本机 ASR（若就绪）或第八参数官方/审计 transcript”之后的多模态分析、Skill、教学过程、脚本化 fallback 和自动评估：
-
-```bash
-sh scripts/run_defense_demo.sh \
-  /path/to/authorized_lesson.mp4 artifacts/defense_demo \
-  lesson_001 course_001 "Lesson title" "https://authorized.example/lesson" "目标概念"
-```
-
-若现场没有 OpenAI Whisper CLI，可把官方/审计 transcript 作为第八个参数传入同一脚本。
-
-脚本化学生回应只用于稳定展示状态机，不是学习效果证据。真实媒体、逐样本特征和预测遵循 [`PRIVACY.md`](PRIVACY.md)，公开 wheel/目录应先运行 `tsm release-audit`。
-
-### 2. Teaching Skill 抽取
-
-```bash
-python3 -m teaching_skill_miner mine \
-  --transcript data/new_001.json \
-  --backend heuristic \
-  --output artifacts/new_001.skill.json
-```
-
-离线抽取器对中英文关键词、时间段和教学事件进行可解释打分，覆盖题目要求中的具体例子、逐步拆解、提问、追问、纠错、对比、先直觉后形式化、整体到局部、代码/公式逐行解释、练习反馈、难度递进、回顾、迁移和动态调整等策略。
-
-每个策略和 procedure 步骤都标记 `origin`：`observed_method` 表示有视频/转写证据，`recommended_enrichment` 表示系统补充的通用教学脚手架。每个证据有稳定 `evidence_id`，观察到的步骤必须列出 `evidence_ids`；推荐步骤不会被计入“视频中观察到的方法”覆盖率。
-
-#### 教学步骤：按教师自己的顺序还原九个环节
-
-题目 4.2 列出九个教学环节。[`teaching_phases.py`](teaching_skill_miner/teaching_phases.py) 逐条实现它们，用线索匹配定位每个环节在转写中的首次出现，再**按教师自己的时间顺序**排出 procedure——而不是套一个固定模板：
-
-| 环节 | `teaching_phase` |
-|---|---|
-| 复习前置知识 | `prior_knowledge_review` |
-| 提出问题或情境 | `problem_or_context_setup` |
-| 给出直观例子 | `intuitive_example` |
-| 建立抽象概念 | `abstract_concept_building` |
-| 展示推导或操作 | `derivation_or_operation_walkthrough` |
-| 检查学生理解 | `understanding_check` |
-| 纠正常见错误 | `error_diagnosis_and_correction` |
-| 练习与反馈 | `practice_and_feedback` |
-| 总结和迁移 | `summary_and_transfer` |
-
-命中的环节带真实时间段、触发线索和 `evidence_ids`，标 `origin=observed_method`；未命中的环节仍然补进 procedure 以保证可执行，但明确标 `origin=recommended_enrichment` 且 `observed_span` 为 `null`，指令里直接写明"视频中未观察到该环节"。两者在 JSON 里从不混淆：
+最小配置示例：
 
 ```json
 {
-  "step": 2,
-  "teaching_phase": "intuitive_example",
-  "teaching_phase_name": "给出直观例子",
-  "origin": "observed_method",
-  "observed_span": {"start": 0.0, "end": 100.0},
-  "matched_cues": ["example"],
-  "evidence_ids": ["evi_35d8659f0cbfbac8"],
-  "provenance": {"derivation": "observed_teaching_phase_from_timeline"}
+  "schema": "agent_harness.hooks.v1",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "id": "protect-generated",
+        "matcher": ["workspace.patch"],
+        "entrypoint": ".agent-harness/hooks/protect-generated",
+        "args": [],
+        "timeout_seconds": 5
+      }
+    ],
+    "PostToolUse": [],
+    "PostToolUseFailure": []
+  }
 }
 ```
 
-`mining_metadata.teaching_phase_analysis` 记录本讲实际观察到哪些环节、顺序如何、哪些没出现。10 份演示转写各观察到 4–7 个环节，没有一份凑满九个——凑满才说明检测器在编造。该检测器只记录时间轴上可见的教学动作，不建立识别准确率。
+成功退出时 stdout 必须是一个严格 JSON 对象，例如
+`{"schema":"agent_harness.hook_output.v1","decision":"pass"}`；pre hook 也可用退出码
+`2` 直接拒绝。其他非零退出、超时、超限或格式错误按 hook failure 处理。
 
-每个 Skill 都带 `source.evidence`；证据包含开始/结束时间、原转写中的精确引文和所支持的策略。评估器会做逐字匹配，伪造证据无法通过 grounding gate。
+这只是 Claude Code/Codex hooks 的同步工具生命周期子集，不包含其他 run/session/model
+生命周期、异步 hooks、参数改写或完整配置兼容。
 
-多模态 Skill 还带 `source.multimodal_evidence`。评估器会核对事件 ID、时间戳、模态集合、策略映射、证据载荷、置信度，以及证据引用的帧/OCR/静音记录；伪造内容会使 `multimodal_consistent` gate 失败。该分数名为 `internal_evidence_consistency`，不是识别 Precision/Recall/F1，也不是教学效果分。
-
-### 3. Skill 可执行化与新任务迁移
-
-Skill 使用 JSON 表示（JSON 同时是 YAML 1.2 的合法子集），结构约束见 [`schema/teaching_skill.schema.json`](schema/teaching_skill.schema.json)。除题目要求的字段外，每一步都有：
-
-- `teacher_action`：Agent 动作；
-- `instruction`：带 `{concept}` 参数的指令；
-- `expected_signal`：进入下一步的学生信号；
-- `fallback`：信号未出现时的降阶、提示或回退策略。
-
-将已抽取方法迁移到新概念：
+仓库中的 hook 永远先视为不可信提案。Harness 会 no-follow 读取 owner-owned、非链接、
+非 group/other-writable 的配置和可执行文件，快照 entrypoint 字节，并为事件、matcher、参数、
+timeout、精确配置字节及 entrypoint 字节生成 definition SHA-256。信任状态保存在工作区之外
+的 0600 私有状态目录；任一被绑定内容变化都会使状态变成 `modified`，并在新 run 开始前
+fail closed。操作入口为：
 
 ```bash
-python3 -m teaching_skill_miner teach \
-  --skill artifacts/skills/python_l03.skill.json \
-  --concept "牛顿法" \
-  --learner-level beginner \
-  --output artifacts/newton_lesson.md
+harness hooks [--json]
+harness hooks trust HOOK_ID --sha256 DIGEST
+harness hooks disable HOOK_ID --sha256 DIGEST
+harness hooks revoke HOOK_ID
 ```
 
-静态教案之外，`interact` 会真正执行 Skill 状态机。每轮显示教师动作和预期信号，由教师、上层 Agent 或独立判分器判断是否达标；未达标停留原步骤并执行 fallback，连续两次失败则降低复杂度并回查前置知识：
+`trust` 和 `disable` 都必须带当前展示的 exact digest，避免在确认与写入之间接受另一版本。
+TUI `/hooks` 只显示 content-free 状态，不提供授信操作。
+
+每次执行使用已快照的 entrypoint 字节，并进入专用的 macOS Seatbelt profile：工作区只读、
+网络和 signal 被拒绝、禁止 fork 子进程、写入仅限本次私有 runtime 目录和 `/dev`，同时沿用
+已知用户数据根及 Keychain/securityd Mach 服务的拒绝边界，并拒绝读取工作区内的 `.git`、
+`.private` 和 `.agent-harness`。没有跨平台或 unsandboxed 回退；只要存在 trusted hook 而
+sandbox 不可用，新 run 就会在 provider 请求之前 fail closed。可以用 exact-digest
+`disable` 明确禁用不应执行的定义。
+
+hook stdin 会临时包含当前工具的原始参数；成功后的 post hook 还会收到有界工具结果，
+因此只应授信已审查的本地程序。事件和 journal 仅记录 hook policy/definition/input/output
+digest、身份、时长、动作和安全错误码，不写入原始 hook stdin、stdout 或 stderr。底层工具
+自己的标准事件仍遵循其原有持久化契约。
+
+## 本地 MCP stdio tools client 子集
+
+Harness 自 2.4.0 起实现 **exact-digest trusted local stdio MCP tools client subset**，协议
+基线固定为 `2025-06-18`，不是完整 MCP 平台。项目定义位于 `.agent-harness/mcp.json`；
+配置存在不会自动启动 server。最小示例：
+
+```json
+{
+  "schema": "agent_harness.mcp.v1",
+  "servers": {
+    "local_tools": {
+      "transport": "stdio",
+      "command": "/absolute/path/to/mcp-server",
+      "args": [],
+      "cwd": ".",
+      "pass_env": [],
+      "network_access": false,
+      "allow_process_fork": false,
+      "startup_timeout_seconds": 10,
+      "tool_timeout_seconds": 30
+    }
+  }
+}
+```
+
+启用流程是显式的两阶段确认：
 
 ```bash
-python3 -m teaching_skill_miner interact \
-  --skill artifacts/skills/python_l03.skill.json \
-  --concept "递归调用栈"
+harness mcp [--json]
+harness mcp trust SERVER_ID --sha256 DIGEST
+harness mcp refresh SERVER_ID
+harness mcp disable SERVER_ID --sha256 DIGEST
+harness mcp revoke SERVER_ID
 ```
 
-### 4. 自动评估与人工验证
+`harness mcp` 默认显示完整 64 位 definition digest、精确 argv、cwd、传入的环境变量名称、
+network/fork 标志和 catalog 状态；`trust`/`disable` 必须回传完整 digest。`refresh` 只会启动
+已精确授信的 server，协商 `2025-06-18`，分页读取 `tools/list`，过滤超限或不受支持的工具
+schema，并把 catalog 摘要和规范化工具定义冻结到工作区之外的 0600 私有状态。每次工具调用
+会重新握手并核对 live catalog；`notifications/tools/list_changed` 或 digest 变化都会拒绝调用，
+要求显式 refresh，不会在活动 run 中动态接受新工具。TUI `/mcp` 只读，不提供 trust 或
+refresh。
+
+当前客户端协议面只包括 initialize/initialized、分页 `tools/list`、`tools/call`、取消通知、
+响应 server `ping`，以及把 tools-list-changed 标为 stale。输入/输出 schema 只接受 Harness
+能够本地验证的 object-root 关键字子集；text 和 object-shaped `structuredContent` 可进入规范化
+结果，图片、音频、resource 等非文本内容只保留 type、长度、MIME 和 SHA-256 摘要，不做二进制
+渲染。`isError` 是已完成的远端工具结果，不被伪装成 transport failure。
+
+明确不支持：HTTP transport、OAuth、resources、prompts、sampling、elicitation、tasks、
+input-required/task result、活动 run 动态 catalog、完整 JSON Schema、二进制渲染，以及把
+Harness 作为 MCP server。未实现的方法不会被静默代理；server 发起的非 `ping` request 返回
+method-not-supported。
+
+MCP server 定义的 exact digest 绑定精确配置字节、server ID、直接 executable 的内容与文件
+身份、argv、cwd、允许传入的环境变量名称、network/fork 标志、timeout 和 sandbox-policy
+版本。它**不是传递依赖完整性证明**：不会覆盖解释器参数所指脚本、动态库、导入包、运行时
+配置、环境变量值或 server 后续读取的其他文件。调用前只会再次核验直接 executable；operator
+必须自行审查并固定其完整依赖链。
+
+为封闭“核验后、exec 前”的路径替换窗口，user-owned direct executable 会在每次连接中按已
+核验字节物化到本次 0700 私有 runtime 的 0500 副本，并执行该副本。因此这类程序看到的
+`argv[0]`，以及脚本常见的 `__file__`，会指向临时 runtime；依赖 executable 所在目录查找资源
+的 server 必须显式适配。完整 canonical ancestry 均为 root-owned、mode/ACL 对当前用户不可写的
+macOS system executable 保留原平台路径，因为复制后的 platform binary 可能无法执行。
+
+每个 MCP 进程都通过 macOS Seatbelt 启动，工作区只读，`.git`、`.private`、
+`.agent-harness` 不可读，写入限于私有 runtime HOME/TMP 和 `/dev`；network 与 fork 默认
+拒绝，只有 exact-digest-bound 的 `network_access` / `allow_process_fork` 才能打开。没有
+unsandboxed 或 unsupported-host 回退。这个 Seatbelt 仍是 allow-default 的主机策略，不是容器、
+VM 或完整机密边界；允许 fork 后，setsid/double-fork 的后代可能逃离 Harness 的进程组回收，
+并继续持有该定义授予的 Seatbelt/network 权限。
+
+`pass_env` 仍需逐项显式声明；provider 凭据、Harness/sandbox 保留项，以及 `DYLD_*`、`LD_*`、
+`PYTHONPATH`、`NODE_OPTIONS` 等常见 loader/runtime code-loading 控制均拒绝传入。获准的普通业务
+变量值会披露给本地 server，且值本身不受 definition digest 绑定。
+
+冻结的 MCP tools 只在 `full-access` 工具面注册，统一标为 external-service、high-risk、
+never-replay，并要求一次性审批；已有或新建的 session/workspace persistent allow 不能绕过。
+MCP 原始输入和规范化结果遵循普通工具的 owner-only journal/checkpoint 合同，结果也可能成为
+下一轮 provider observation。server stderr 原文只在进程运行期间被持续 drain，不写入 journal、
+checkpoint 或 catalog；CLI 最多返回 byte count、truncated 标志和 SHA-256。
+
+## 前台子任务与隔离 worktree
+
+模型可通过中央 `agent.delegate` 工具提交 1–4 个有界任务。Harness 只实现
+**foreground wait-all**：子任务真实并发，但父工具等待每个已启动子任务结束；父取消会
+级联，所有子任务在父调用结算前都必须 join。返回给父模型的是有界最终摘要、状态、任务顺序/
+层级、是否改动、失败码（如有）和不透明关联 ID，不包含子任务推理过程。子任务摘要与普通工具
+observation 一样是不可信证据，其中嵌入的指令不能扩大父任务或权限。
+
+委派是 high-risk、never-replay、不可保存持久放行的一次性审批。审批预览显示整批任务及其
+请求的 `read-only` 或 `workspace-write` 模式。只读父任务不能委派写任务；父任务即使是
+`full-access`，子任务也最多得到 `workspace-write`。子 runner 不向模型暴露或授权 host
+command、MCP、project hooks 或再次委派；受批次审批约束的 `workspace.patch` / 沙箱 `process.exec` 可以在
+子任务内执行，但不会建立 session/workspace persistent approval。
+
+每个子任务从当前仓库精确的 committed `HEAD` 建立独立、不透明分支和 Git worktree。源仓库
+必须 clean（包括没有非 ignored 的 untracked 文件）；Harness 不会把父工作区未提交内容
+猜测性复制进去，ignored 本机文件也不会被复制。
+Git 通过受信绝对路径和清理后的环境直接执行，禁用项目 hooks、includes、filters、fsmonitor
+与 external diff。worktree 隔离文件写冲突，但**不是**进程、内存、provider credential、
+主机读取或网络隔离证明；真正的写边界仍由子 runner 的 permission 与 macOS Seatbelt 提供。
+
+只有 Git status、分支 baseline 和 no-follow 内容 manifest 都精确不变时，Harness 才会用普通
+非 force Git 操作自动移除 worktree。存在改动、额外 commit、结构异常或创建/清理不确定性时，
+Harness 会保留仍存在的 worktree/分支及相应记录供人工检查；若 checkout 已正常移除、仅 ref 的
+compare-and-swap 删除失败，则保留的是分支和 `ref_preserved` 记录。不会自动 merge、apply、
+commit、push、reset、clean、prune 或强制删除。默认列表不暴露本机路径：
 
 ```bash
-python3 -m teaching_skill_miner evaluate \
-  --skill artifacts/skills/python_l03.skill.json \
-  --transcript data/transcripts/python_l03.json \
-  --output artifacts/python_l03.report.json
+harness agents
+harness agents WORKTREE_ID
+harness agents WORKTREE_ID --path  # 只有显式指定一个 ID 才显示路径
 ```
 
-总分为七个维度的加权和：
+默认 worktree 根为 macOS 的 `~/Library/Caches/AgentHarnessWorktrees`，其他平台为
+`~/.cache/agent-harness-worktrees`；可在子命令前用 `--worktree-home ABSOLUTE_PATH` 或环境变量
+`AGENT_HARNESS_WORKTREE_HOME` 设置私有目录。当前没有后台运行、恢复/steer 子任务、agent
+thread 切换、自定义 agent profile、自动合并或 agent team；这不是 Claude Code/Codex 的完整
+subagent parity。
 
-| 维度 | 权重 | 核心检查 |
-|---|---:|---|
-| 结构完整性 | 12% | 必填字段、类型、动作词表 |
-| 证据落地性 | 18% | 时间戳、精确引文、证据数量 |
-| 可执行性 | 18% | 步骤、观察信号、失败回退、参数 |
-| 方法忠实度 | 22% | observed_method 步骤能否被其引用证据反推验证 |
-| 教学质量 | 12% | 前提、成功标准、失败模式、验证题 |
-| 可迁移性 | 9% | 概念参数、近迁移题、边界/反例 |
-| 可追溯性 | 9% | 课程、视频、来源、转写类型 |
+## 上下文压缩
 
-其余六个维度检查的都是挖掘器按构造必然写出的字段，因此在本数据集上全部饱和（十个 Skill 的每个维度总体标准差均为 0.000）。**方法忠实度**是唯一一个需要重新推导才能得分的维度：它不看步骤"有没有写"，而是拿每个 `observed_method` 步骤引用的证据记录反推它自己的声明。
+Harness 始终保留完整原始消息；压缩只生成一个单独、append-only 的有损摘要，并让后续模型
+看到“最新摘要 + 未覆盖消息后缀 + 当前用户消息”。每条消息有稳定 ID 和内容摘要；每个压缩
+记录绑定连续原文前缀、父摘要、provider/model 和 prompt 版本。hash 用于发现私有状态损坏
+和血缘不一致，不是抵抗拥有状态目录写权限者的签名。
+压缩区间不能跨过含附件的消息；该消息及其后缀会留在 active view，所以含附件的长会话
+可能在不能继续安全压缩时直接达到 context 上限。
 
-| 子项 | 权重 | 检查 |
-|---|---:|---|
-| `phase_coverage` | 30% | 九个规范环节中实际还原了几个 |
-| `cue_verification` | 20% | 步骤声称的触发线索是否真的出现在它引用的引文里 |
-| `span_consistency` | 15% | 步骤声称的时间区间是否真的包含它引用的每条证据 |
-| `evidence_utilisation` | 15% | 已挖掘的证据被 procedure 引用的比例 |
-| `temporal_monotonicity` | 10% | observed 步骤是否沿视频时间轴单调推进 |
-| `evidence_density` | 10% | 每个 observed 步骤的引文条数（上限 2 条即满分） |
+自动压缩在“摘要、活动消息、项目指令、工具定义和待发送 prompt”的保守 UTF-8 byte 上界
+达到可用输入预算 80% 时触发，目标降到约 60%，并保留最近 6 条原始消息。单次只总结有界
+增量并停在 assistant 边界，最多执行 8 段，避免把超大历史一次发送给 provider 或无限
+重试。单条巨大 prompt、近期后缀或工具 observation 仍可能触发硬 context limit；压缩不会
+解除 2,000 条消息和 64 MiB 私有 session 存储上限。
 
-前一、四、六项在诚实的 Skill 之间本就有差异，衡量"方法还原了多少"；后三项在诚实的 Skill 上恒为 1.0，只有在步骤伪造出处时才会塌陷，是这个维度可证伪的一半。当前十个 Skill 的方法忠实度落在 83.3–89.8（标准差 1.64），总分落在 92.3–93.7。
+摘要由当前 provider 生成，可能遗漏或误述，因此永远标为历史用户数据，而不是 system
+指令，也不能扩大工具、权限、scope 或跳过审批。压缩沿用远端内容许可；取消发生在提交前
+时不会写入压缩记录。`harness context SESSION_ID --json` 与 TUI `/context` 不输出 transcript
+或摘要正文。
 
-`tests/test_method_fidelity.py` 用五种人工降级（纯模板、伪造线索、打乱时间区间、抽掉证据、塌缩环节）验证它确实在测量：每种降级都必须被对应的子项抓到，且总分严格下降；把这个维度钉成常数会让其中八个测试失败。
-
-通过条件为总分至少 75，并且同时通过全部硬门槛：schema 合法、grounding 至少 60、executability 至少 70、至少两种测试、方法忠实度至少 40（`method_distilled_from_video`）；多模态 Skill 还要额外通过 `multimodal_consistent`。自动高分仅表示"工程与量表合规"，不等价于真实学习效果。人工协议、评分锚点与 A/B 指标见 [`docs/human_review_guide.md`](docs/human_review_guide.md)。
-
-留出新任务测试覆盖分数除法、光合作用、递归、条件概率、牛顿第三定律和议论文结构：
-
-```bash
-python3 -m teaching_skill_miner benchmark \
-  --skills artifacts/skills \
-  --cases data/evaluation_cases.json \
-  --output artifacts/transfer_benchmark.json
-```
-
-报告同时给出静态“解释—示例—总结”基线，并检查概念参数替换、源主题泄漏、fallback 触发和失败后恢复。该 benchmark 是确定性的能力覆盖测试，不冒充真实学生学习增益。
-
-完成人工评分表后，可计算逐 Skill 结果和双人二次加权 Cohen's kappa：
-
-```bash
-python3 -m teaching_skill_miner human-evaluate \
-  --input artifacts/human_review.csv \
-  --skills artifacts/skills \
-  --output artifacts/human_review_report.json
-```
-
-只有预期 Skill 100% 覆盖、每项至少两名不同复核者、无重复 `(skill_id, reviewer_id)`、每行 `skill_fingerprint` 与当前完整 Skill 内容一致、五维门槛和一致性门槛全部通过，人工验证才成立。同一个 `skill_id` 的内容只要发生变化，旧评分也会失败关闭。项目不会填充虚假评分；旧 CSV 若缺 fingerprint，应在新输出目录生成当前模板并重新确认评分对应的确切版本，不能把旧评分无证据地追溯绑定到新 Skill。
-
-## 数据来源与边界
-
-样例选取：
-
-- [MIT 18.06 Linear Algebra 视频列表](https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/video_galleries/video-lectures/)前 5 讲；
-- [MIT 6.0001 Python 视频列表](https://ocw.mit.edu/courses/6-0001-introduction-to-computer-science-and-programming-in-python-fall-2016/video_galleries/lecture-videos/)前 5 讲。
-
-逐视频演示文件对应关系见 [`data/dataset_manifest.json`](data/dataset_manifest.json)；10 个官方字幕 URL、固定 SHA-256、页面关联媒体和参考时长见 [`data/formal_caption_sources.json`](data/formal_caption_sources.json)。该索引不含字幕正文或视频。
-
-仓库中的 `data/transcripts/*.json` 仍是为了离线、快速、可复现演示而人工整理的短篇英文释义节选，时间戳为近似值，不冒充完整逐字 ASR。正式字幕使用独立私有 manifest，避免把第三方全文混入项目 wheel：
-
-```bash
-python3 -m teaching_skill_miner fetch-formal-captions \
-  --source-manifest data/formal_caption_sources.json \
-  --output artifacts/private/formal_captions \
-  --public-receipt artifacts/public/formal_caption_retrieval_receipt.json \
-  --acknowledge-source-terms
-
-python3 -m teaching_skill_miner audit \
-  --manifest artifacts/private/formal_captions/dataset_manifest.json \
-  --output artifacts/private/formal_captions/independent_data_audit.json \
-  --require-formal
-
-python3 -m teaching_skill_miner verify-delivery \
-  --formal-manifest artifacts/private/formal_captions/dataset_manifest.json \
-  --output artifacts/delivery_verification.json \
-  --markdown artifacts/DELIVERY_VERIFICATION.md
-```
-
-`fetch-formal-captions` 从每个 MIT OCW 讲次页面重新确认页面声明的 WebVTT 与媒体配对，要求字幕 URL 使用 `https://ocw.mit.edu`，校验固定字幕 SHA-256，并用 FFprobe 读取同页所链接媒体的实际时长；该命令本身不保存视频。当前实跑结果为 10/10 正式字幕通过，平均 770.5 个合并后 cue、6172.8 个审计 token，首尾 cue 时间轴覆盖率为 98.84%–99.72%；公开 receipt 只含 URL、哈希、时长和计数，不含字幕文本。随后独立执行 `fetch-full-videos` 已把页面绑定的 10 个完整媒体下载到私有目录，并再次校验本地 SHA-256、容器、音视频流和参考时长；由于上游索引没有发布者固定的媒体哈希，本地 SHA-256 能检测下载后的变化，但不能独立证明发布者原始字节身份。
-
-因此：
-
-- 自动评估会把这种数据的证据忠实度与溯源分限制在 85；
-- 正式字幕集使用官方 caption 时应报告页面 URL、字幕哈希、媒体时长和时间轴覆盖；若改用 ASR，才必须另外报告模型、版本、模型/解码配置指纹、独立 WER 抽检和人工修订比例；
-- 使用公开数据时必须遵守来源页面的许可、署名和非商业条款。
-
-TeachObs 的平台字幕缺口另有一条不下载模型/媒体的离线 GPU 交接链：
-`prepare-teachobs-asr-handoff` 从私有媒体 manifest 生成逐讲媒体哈希、时长、固定
-Whisper revision、拒绝任意 symlink/非普通节点的模型树哈希、解码和冻结了精确
-容器镜像 digest 的 CUDA runtime contract；安装后的
-`hash-teachobs-asr-model` 与 `run-teachobs-asr-gpu` 只接受预置的本地模型快照，
-源码 checkout 也保留等价的 [`run_teachobs_asr_gpu.py`](scripts/run_teachobs_asr_gpu.py)；
-[`build_teachobs_asr_container.sh`](scripts/build_teachobs_asr_container.sh) 则从已验收
-的 exact wheel 和已预置、ID 匹配的本地 CUDA base 构建，不使用工作区作为 context，
-不拉取 base、模型或媒体，并在返回最终 image ID 前于断网只读容器内复验四个固定
-GPU package version、GPU CLI help 和 `ffprobe`；
-`import-teachobs-asr-results` 重新验媒体、manifest、segment 和完整 provenance，
-再按“creator-provided 平台字幕 → 平台自动字幕 → 审计 ASR fallback”生成 30 讲
-coverage matrix。ASR job manifest v2 / lesson result v4 / GPU runner v4 以完整媒体
-单次输入为前提，把 VAD 第一/最后语音锚点的首尾空白统一按媒体时长比例验收：
-first-to-last span 至少 `0.90`，两端各自至多 `0.10`；端点秒数只作诊断，不再用
-任意固定 30 秒门槛。旧 v1/v3 证据失败关闭且必须整批重跑，不能事后改写或只重跑
-未通过的讲次。六讲 v4 结果现已全部通过导入；当前
-[`teachobs_asr_receipt.json`](artifacts/public/teachobs_asr_receipt.json) 记录
-`valid_asr_result_count=6`、`covered_lesson_count=29`，并因唯一缺口 S4 而继续保持
-pending。ASR 永远不冒充官方字幕，未经独立人工参考抽检时 WER 和内容准确率仍为
-false。完整操作见
-[`docs/teachobs_audited_asr_handoff.md`](docs/teachobs_audited_asr_handoff.md)。
-
-运行数据审计：
-
-```bash
-python3 -m teaching_skill_miner audit \
-  --manifest data/dataset_manifest.json \
-  --output artifacts/data_audit.json
-```
-
-审计分别报告 `dataset_structure_passed` 与 `formal_empirical_ready`，因此默认释义节选保持 `formal_empirical_ready=false`，正式私有字幕 manifest 为 `true`。这里的 `formal_empirical_ready` 只表示完整转写的来源、身份、时间戳和覆盖门槛通过，不等于教学方法标签正确、多模态增益成立、学生学习有效或部署准确率成立。
-
-## API / 推理配置
-
-默认：
-
-```bash
-TSM_BACKEND=heuristic
-```
-
-可选的 API 后端会先生成结构合法的离线 baseline，再让兼容 Responses API 的模型基于转写证据细化，最后重新做 schema 校验。复制 `.env.example` 中的变量到当前 shell（项目不会自动读取或提交密钥）：
-
-```bash
-export TSM_API_BASE="https://api.openai.com/v1"
-export TSM_API_KEY="..."
-export TSM_MODEL="gpt-4.1-mini"
-export TSM_ALLOW_REMOTE_TRANSCRIPT_UPLOAD=1
-
-python3 -m teaching_skill_miner mine \
-  --transcript data/transcripts/python_l03.json \
-  --backend api \
-  --output artifacts/python_l03.api.skill.json
-```
-
-推理失败、返回非 JSON 或字段不合法时命令会明确报错，不会静默输出未经校验的 Skill。密钥只能通过环境变量传入；非本地 API 必须使用 HTTPS，并在确认授权、最小化、保留和跨境要求后显式允许转写片段外发。
-
-## 许可
-
-本仓库原创代码和文档采用 [`Academic Evaluation License 1.0`](LICENSE)：允许学术评估、教学和非商业研究使用与修改，但商业使用、再许可和公开部署需要另行书面许可，并禁止把系统作为学生或教师高影响决策的唯一依据。
-
-该许可不覆盖或重新许可任何第三方课堂视频、字幕、标签、姿态/传感器数据、预训练模型、字体、编解码器或外部工具。使用者必须分别核对上游条款、署名、隐私、知情同意、伦理审批和数据使用协议，详见 [`THIRD_PARTY_DATA.md`](THIRD_PARTY_DATA.md) 与 [`PRIVACY.md`](PRIVACY.md)。
-
-wheel 安装会把 `CHANGELOG.md`、`PRIVACY.md`、`SECURITY.md` 和 `THIRD_PARTY_DATA.md` 一并放入 `share/teaching-skill-miner/governance/`，确保脱离源码仓库安装后仍能读取许可、隐私和安全边界。
-
-## 目录结构
+## TUI 命令
 
 ```text
-teaching_skill_miner/
-  preprocess.py       字幕解析、文本切段、媒体 ASR
-  multimodal.py       静音、关键帧、OCR、课堂观察与时间轴融合
-  longform_multimodal.py  完整讲次分块、全程覆盖、字幕/音频/视觉对齐与事件融合
-  multimodal_ablation.py transcript / +audio / +visual / full 配对内部消融
-  full_video_dataset.py  MIT OCW 完整媒体下载、哈希、FFprobe 与私有存储验证
-  visual_semantics.py    哈希绑定 CLIP 单任务推理与模型/运行时 provenance
-  visual_semantics_dataset.py  逐讲批处理与私有 semantic batch receipt
-  visual_semantics_apply.py    语义结果回绑 transcript/analysis 与 dataset manifest
-  recognition/        真实课堂数据审计、视听觉特征、分组评估与推理
-  miner.py            目标/策略/动作抽取与 Skill 生成
-  executor.py         参数替换、状态分支、教学过程生成
-  runtime.py          学生信号驱动的可执行状态机
-  evaluator.py        单 Skill 与数据集级自动评估
-  benchmark.py        跨领域留出任务与静态基线对比
-  audit.py            数据完整性与研究就绪审计
-  formal_captions.py  官方页面/VTT/媒体时长与哈希绑定的正式字幕导入
-  human_eval.py       双人复核汇总与一致性计算
-  delivery.py         一键交付验收与外部证据缺口
-  project_health.py   资源、依赖、工具和 API 安全自检
-  release_audit.py    wheel/公开目录隐私发布审计
-  llm_backend.py      可选 Responses API 细化
-  models.py           数据契约与严格校验
-  cli.py              pipeline/interact/benchmark/audit/demo 等命令
-data/
-  dataset_manifest.json
-  formal_caption_sources.json  10 个官方字幕的无正文 URL/哈希索引
-  transcripts/        2 门课程 × 5 讲离线样例
-  real/               本地真实课堂数据说明；原始视频不得提交
-schema/               Skill、严格 manifest/feature bundle、checkpoint v3、登记签名、receipt 和 claim contract schema
-configs/              可复制后冻结的外部验收门槛示例
-tests/                预处理、抽取、证据、防伪、迁移、覆盖测试
-artifacts/            演示生成物；真实课堂逐样本产物保持私有
-  private/full_videos/       完整媒体与私有下载 manifest
-  private/full_multimodal/   帧、OCR、语义嵌入、事件、审计和四臂消融
-  public/full_video_validation_receipt.json  不含媒体/字幕/帧的聚合验证 receipt
-  public/full_multimodal_validation_receipt.json  完整链路聚合证据与私有产物哈希承诺
-  public/multimodal_ablation_receipt.json  四臂设计、聚合内部指标与结论边界
+/help
+/new
+/sessions
+/resume [SESSION_ID]
+/fork
+/archive
+/effects
+/reconcile RUN_ID
+/status
+/model
+/permissions [read-only|workspace-write|full-access]
+/tools
+/instructions
+/hooks
+/mcp
+/agents
+/context
+/compact
+/attach PATH
+/attachments
+/detach ID|all
+/approvals
+/approvals clear session|workspace
+/clear
+/quit  （/exit 同义）
 ```
 
-## 当前限制与下一步实验
+运行中输入普通文本会进入有界 follow-up 队列；`Ctrl+C` 取消当前 run，但不破坏已落盘
+的 journal。若不可重放的外部效果已经开始，取消会转为明确 handoff，而不是谎报为安全
+取消。`/effects` 展示整个 workspace 的未决 run；只有在人工检查 journal 和真实工作区
+状态后才应执行 `/reconcile RUN_ID`。该命令表示“我已承担判断责任”，不是自动核验。
 
-1. 当前已覆盖完整视频停顿等待、场景变化、OCR 文字演进、CLIP 封闭 ontology 视觉语义和匿名课堂观察；手势指向、复杂图表关系推理仍需专用检测器或经标注验证的视觉语言方法。CLIP 相对 prompt 分数本身不是分类准确率。
-2. 自动评估主要检查过程质量，不能替代真实学生的前后测。
-3. 完整长视频已经分块并融合为事件时间轴，但一个视频当前仍输出一个主 Skill；抽取器已区分观察证据和推荐脚手架，尚未完成 episode 级多 Skill 聚类和独立专家 gold-set 评测。
-4. 下一步应在冻结当前检测/抽取 pipeline 后，由独立复核者标注事件和 Skill 质量，并在新数据上做配对四臂确认性消融；正式字幕、OCR/CLIP 输出和内部量表完成都不自动构成方法 gold label 或多模态增益。
-5. 真实课堂公开 sample pilot 已运行 Visual、Audio、Fusion 消融，但音频覆盖与标签完全相关，Audio/Fusion 结果已判无效；本地链路只选择 visual checkpoint 调试，且不公开发布。要声称可泛化准确率，仍需完整数据、按 session/参与者隔离的测试集和跨学校外部验证。事件级问题检测、困惑识别等任务还需要各自的人工时间段真值，不能沿用投入度分类分数。
-6. DIPSER 的严格因果开发期 Accuracy 为 0.8176；使用完整 held-out session 的离线 transductive 层级候选在一个固定 SGKF5 划分触及 0.9020，但 LOSO 为 0.8986、50-seed 均值为 0.8883，LOCO/双重阻断仅 0.6554/0.6351。冻结全部模型、gate 和特征后，还需要未参与开发的新 cohort/session 或外部学校锁箱数据，才能建立确认性 0.9 与多模态增益。
+## 架构
 
-逐条题目映射与答辩提示见 [`docs/requirements_traceability.md`](docs/requirements_traceability.md)。
+```text
+TUI / headless CLI
+        │
+Generic Session Store ─── Immutable Attachment Store
+        │
+Harness Runtime ── Event reducer / Journal / Checkpoint
+   │          │
+Provider ← capability preflight   Tool Registry ─┬─ Trusted Hook Broker
+                         ├─ Frozen MCP Catalog / stdio Client
+                         └─ Foreground Subagent Scheduler
+                                  │
+                       isolated Git worktrees
+                                  │
+                path checks / Seatbelt / explicit host shell
+```
+
+包结构：
+
+- `agent_harness/core/`：domain-neutral runtime、events、tools、journal、recovery。
+- `agent_harness/providers/`：provider client 与 tool-aware adapter。
+- `agent_harness/attachments.py`：no-follow 导入、不可变私有 blob 和 descriptor 合同。
+- `agent_harness/toolsets/`：coding workspace 工具。
+- `agent_harness/session.py`：本地多轮 session。
+- `agent_harness/context.py`：active-context 预算、分段计划和 provider 摘要契约。
+- `agent_harness/hooks.py`：项目 hook 的安全发现、exact-digest 信任绑定与沙箱执行。
+- `agent_harness/mcp.py`：本地 MCP 定义、exact-digest trust、冻结 catalog 与 stdio bridge。
+- `agent_harness/core/mcp_protocol.py`：固定 `2025-06-18` 的严格有界 MCP tools 协议子集。
+- `agent_harness/subagents.py`：前台批处理、并发/深度预算、取消传播与结果契约。
+- `agent_harness/worktrees.py`：clean HEAD worktree 创建、持久记录和保守清理。
+- `agent_harness/tui.py`：终端 UI。
+- `agent_harness/cli.py`：TUI/headless 入口。
+
+2.0 以前的私有运行数据不会被迁移脚本删除或改写；它们不属于新包、默认 CLI 或当前
+Harness session namespace。
+
+## 验证
+
+```bash
+.venv/bin/python -m pytest -q
+.venv/bin/ruff check agent_harness tests_harness
+build_dir=$(mktemp -d)
+.venv/bin/python -m build --outdir "$build_dir"
+.venv/bin/python -m agent_harness --cwd . status
+```
+
+Python 需要 3.10 或更高版本。TUI 使用标准库 curses，无额外运行时依赖。

@@ -1,54 +1,200 @@
 # Changelog
 
-## 1.2.0 — 2026-07-21
+## 2.7.0 — Stable Python and TypeScript SDKs
 
-- Added a self-contained public aggregate evidence dashboard with a multimodal timeline, four-arm TeachObs ablation explorer, DIPSER scope comparison, executable Skill state-machine demo, claim-boundary matrix, responsive layouts, and persistent visual tweaks; `tsm dashboard` opens it without a server or frontend dependency.
-- Added dashboard privacy/self-containment checks, source and exact-wheel CLI smoke coverage, and strict wheel allowlisting for the reviewed HTML resource; no private media, transcript text, OCR rows, labels, predictions, or embeddings are embedded.
-- Packaged demo data, evaluation cases, schemas, and claim-contract configuration for non-editable wheel installs.
-- Added `doctor`, `verify-delivery`, `release-audit`, aggregate DIPSER export, and strict frozen-recognition CLI workflows.
-- Added fail-closed DIPSER dataset/feature fingerprint recomputation and tamper tests.
-- Generalized strict feature-bundle validation to exact sample order, modality/feature schemas, extractor provenance, and finite float64 matrices, while narrowly containing legacy DIPSER compatibility.
-- Upgraded the identity-aware frozen model to checkpoint v3, binding the exact strict training feature bundle, class schema, claim contract fingerprint, and frozen claim-cluster field.
-- Added Ed25519 freeze registration, exact external dataset/feature/coverage binding, atomic one-time ledger consumption, signed evaluation receipts, and delivery-side trusted-key verification.
-- Added fail-closed coverage denominator accounting and claim-cluster independence gates, including rejection when a participant or teacher spans multiple claimed independent clusters.
-- Added `extract-strict-features`, a private raw media/sensor bridge that binds source bytes and windows, sample order, extractor code/configuration, runtime, and FFmpeg/FFprobe provenance without making predictions.
-- Added signed, externally governed aggregate evidence manifests for confirmatory multimodal gain and real learner effectiveness, with recomputed study gates and separate out-of-band trust anchors in delivery verification.
-- Added Skill procedure provenance, observed/recommended separation, and complete human-review coverage validation.
-- Bound every human-review row to the exact canonical Teaching Skill SHA-256 so stale ratings cannot validate modified content under the same Skill ID.
-- Tightened formal transcript readiness around source/media hashes, full coverage, OpenAI Whisper model/decoder provenance, independent WER checks, or complete human review records.
-- Added CI, isolated wheel smoke testing, privacy governance, atomic artifact writes, and real-media download hardening.
-- Added allowlist-only clean release builds with fixed `SOURCE_DATE_EPOCH`, byte-identical double-build verification, and direct verification of the exact wheel intended for distribution.
-- Added a fail-closed release finalizer that invalidates stale acceptance first, binds JUnit counts and all receipts to the exact wheel and current verification tooling, audits the wheel/public directory/final acceptance, and never carries old positive fields forward.
-- Hardened release and tracked-file audits against renamed media/archives/models, UTF-8/UTF-16 secrets, identity fields hidden in parsed JSON string tokens, unknown binary payloads, unsafe/duplicate/symlink ZIP members, archive resource bombs, and oversized tracked files.
-- Bundled privacy, security, third-party-data, and changelog governance documents inside wheel installs.
-- Marked scripted state-machine completion in machine-readable artifacts as demonstration-only and explicitly not learner-effectiveness evidence.
-- Expanded publication audits and private permissions for media, models, arrays, archives, databases, binary magic signatures, frames, and row-level identity/path fields; passing remains a guard, not a de-identification proof.
-- Kept independent human review, learner effects, confirmatory multimodal gain, and deployment accuracy explicitly pending external evidence.
-- Added a hash-pinned MIT OCW formal-caption source index and `fetch-formal-captions`, which verifies each official page's WebVTT/media pair, caption content type and SHA-256, live FFprobe duration, and conservative first-to-last-cue coverage before publishing a private 2×5 formal manifest.
-- Completed and independently re-audited the 10/10 official-caption retrieval in this workspace while keeping caption text out of the wheel and hash-only public receipt.
-- Hardened formal transcript audit against manifest/transcript identity mismatches and duplicate caption URLs or content hashes, and added `audit --require-formal` for fail-closed automation.
-- Added private, resumable download and FFprobe validation for the 10 page-linked MIT OCW complete videos, with local SHA-256 commitments and a content-free public receipt.
-- Added resumable whole-timeline chunk processing for complete lectures: full-track silence detection, uniform and scene-change frames, Tesseract OCR, pixel/board/slide change evidence, formal-caption/media alignment, and per-lecture multimodal event fusion.
-- Corrected Tesseract TSV quoted-field parsing in longform extraction v2, advanced the full pipeline to v9, invalidated the earlier OCR-derived aggregates, and reran all 10 lectures plus semantic attachment and ablation.
-- Completed the corrected v9/v2 10-lecture run over 1,038,813,006 bytes / 26,656.83 seconds, producing 2,553 hash-bound frames, 40,191 threshold-accepted OCR words, 1,974 visual events, and 2,270 fused events with 10/10 timeline coverage and caption/media binding.
-- Added hash-bound CLIP visual semantics for all 2,553 frames using a fixed eight-class ontology, complete model revision/weight/runtime provenance, and explicit uncalibrated-score/accuracy boundaries.
-- Packaged the CLIP implementation behind the optional `visual` extra with `visual-semantic-extract`, `visual-semantic-dataset`, and `visual-semantic-apply` CLI entry points; repository scripts remain compatibility wrappers.
-- Added paired transcript-only, transcript+audio, transcript+visual/OCR, and full internal ablations over identical transcript segments; the report explicitly separates internal rubric/evidence consistency from recognition accuracy or causal gain.
-- Added aggregate-only public multimodal and ablation receipts that commit to private source artifacts while excluding media, text, frames, embeddings, per-lecture records, identifiers, and paths.
-- Added `run_full_video_multimodal_study.sh` to orchestrate the complete resumable 10-video workflow through semantic attachment, four-arm ablation, public receipts, and release audit, with CPU defaults and explicit GPU environment overrides.
-- Made TeachObs credentialed YouTube media recovery use cookie-capable `default,web_safari` clients while retaining anonymous `android_vr`, preserving the actual client and local yt-dlp/EJS/runtime provenance across media reuse, and suppressing private browser-profile details from failure and timeout exception chains.
-- Advanced the offline TeachObs ASR worker/result contract to v3: VAD-restored overlong wall-clock segments are split on positive-duration word anchors, while finite in-segment zero-duration point words are attached to the temporally nearest adjacent positive word (previous on ties) without becoming boundaries; the runner proves monotonic assignments, enforces the 30.5-second maximum distance, preserves exact text and positive boundaries, and records reconciled counts plus maximum observed distance for fail-closed import validation.
-- Advanced the TeachObs ASR job/result/runner contracts to v2/v4/v4 and replaced the arbitrary 30-second VAD endpoint gates with one symmetric, duration-relative policy: hash-bound full-media single-pass input, at least 0.90 first-to-last speech-anchor span, and at most 0.10 media-duration gap at either endpoint. Legacy evidence fails closed and all selected lessons must be rerun under the new manifest; no result migration or failed-only rerun is accepted.
-- Moved the ASR wheel-specific image label after the fixed OS/CUDA/Whisper layers so a source-only rebuild still changes the final image digest and receipt without needlessly invalidating multi-gigabyte dependency caches.
-- Completed the six selected offline GPU ASR jobs under the v2/v4/v4 contract and re-imported all six with hash-bound media/model/runtime/timeline checks, yielding 29/30 transcript-source coverage (19 creator-provided captions, 4 automatic captions, 6 audited-ASR fallbacks, with only S4 pending) while explicitly leaving WER and content accuracy unestablished.
-- Added a fail-closed TeachObs transcript materialization bridge that binds the selected platform-caption/audited-ASR provenance and fixed 4,945-scene paper-profile order into the four-arm benchmark input; the older released-text transcript-only numbers remain a separately named compatibility baseline.
-- Advanced the TeachObs materialization manifest/receipt to v2 with deterministic target-window provenance: overlapping platform cues are endpoint-clipped without text loss, zero-intersection platform cues fail closed, and full-media ASR tail segments outside the official scene domain are explicitly counted and excluded while remaining bound to the source media duration.
-- Replaced the TeachObs four-arm fixed-threshold classifier with a train-only, five-fold lesson-grouped OOF revision: every fold refits TF-IDF/IDF and numeric scalers, selects from a fixed balanced-logistic C registry, and selects per-label thresholds from a fixed grid using pooled OOF Micro-F1 with deterministic tie-breaks. Frozen model schema v2 binds the selected C, threshold arrays, and selection provenance and still verifies exact safe-NPZ prediction/probability parity. Because the first public-test run was already observed, all private/public artifacts explicitly mark this as a post-test iterative exploratory revision rather than a first blind or confirmatory evaluation.
-- Completed the formal 29-lesson / 4,945-scene TeachObs materialization and revised four-arm run. Transcript/audio achieved the best Micro-F1 (0.604708), transcript-only the best Hamming accuracy (0.818833), while full multimodal improved Macro-F1 over transcript-only by 0.065266 with a six-lesson paired-cluster 95% interval of [0.014886, 0.095637] but reduced Micro-F1 and Hamming accuracy. The fixed-threshold first attempt remains preserved privately rather than overwritten.
-- Upgraded the TeachObs new-site preregistration to schema 1.2 / protocol v2 so its analysis plan binds the four exact 39-label `model_thresholds` array hashes and the transitive artifact-set fingerprint instead of incorrectly hard-coding a scalar 0.5 threshold.
-- Made completed TeachObs ASR/materialization require a current benchmark, paper-profile human-review skeleton, and transitively bound lockbox draft in final verification; the project receipt now records and later recomputes the exact selected human manifest/receipt/lockbox paths and hashes, including fresh-root environment overrides.
-- Replaced the fixed six-step procedure template with distillation of the nine canonical teaching phases named in the task statement. Each phase is located by cue matching against the transcript and the procedure is emitted in the teacher's own temporal order rather than a template order, so matched steps carry real timespans, matched cues, and evidence ids under `origin=observed_method` while unmatched phases remain explicitly labelled `recommended_enrichment` scaffolding. The ten demo lectures recover four to seven observed phases each, and `mining_metadata.method` advanced to `interpretable_heuristic_v2_phase_sequence`.
-- Added the `method_fidelity` evaluation dimension and reweighted the rubric to seven dimensions (structure 12%, evidence 18%, executability 18%, method fidelity 22%, pedagogical quality 12%, generalizability 9%, traceability 9%). The other six dimensions check fields the miner emits by construction and were saturated at a population standard deviation of 0.000 across all ten demo skills, so they measured packaging rather than distillation. `method_fidelity` instead re-derives each observed step's claims from the evidence records it cites — a step scores only if its claimed cue literally occurs in its own quotes, its claimed timespan actually contains every record it references, and its evidence ids resolve. Demo skills now span 83.3 to 89.8 on the new dimension and 92.3 to 93.7 overall, and a sixth gate `method_distilled_from_video` fails any skill below 40.
-- Added negative-control degradation tests that score deep copies of real skills after template-stripping, cue fabrication, timespan shuffling, evidence removal, and phase collapse, asserting both a strictly lower total and that each degradation is caught by the specific sub-component meant to detect it; pinning `method_fidelity` to a constant fails eight of them.
-- Extended the shipped demo response script to cover the full nine-phase procedure and added a regression test binding its length to the distilled procedure, fixing a scripted `interact` session that ended incomplete and made `run_multimodal_demo.sh` exit non-zero.
-- Recomputed the four-arm ablation and its public aggregate receipt under the revised rubric; the source transcript set commitment is unchanged and the paired-delta structure is preserved, while mean internal scores move from 100.00/100.00/99.92/99.94 to 95.37/95.37/95.30/95.32. These remain internal structural scores rather than recognition accuracy or causal multimodal gain.
+- Added a typed, zero-dependency in-process Python SDK with synchronous and asynchronous
+  clients, persisted thread start/resume/fork, direct and streamed turns, immutable event and
+  result views, explicit attachments and caller-supplied approval brokers.
+- Serialized the complete Python authority transition, attachment import, turn and conservative
+  cleanup at client scope. Each invocation reapplies the immutable thread permission mode;
+  callback-driven re-entry is rejected so concurrent handles cannot borrow another turn's
+  authority. Observer callback failures cannot revoke a durable run.
+- Added cooperative stream and task cancellation that joins its worker before settling, rather
+  than abandoning an in-process Runner after the caller is cancelled. Async start, resume and
+  both fork entry points likewise wait for their durable lifecycle mutation to settle before
+  propagating task cancellation. The SDK does not invent an approval broker or auto-approve
+  medium/high effects. Stream consumption is single-owner and fails fast on concurrent blocking
+  consumers; every concurrent close waiter observes final worker settlement. A fatal application
+  cancellation callback is re-raised only after all cleanup callbacks run and sync/async workers
+  have settled.
+- Added the publishable dependency-free `@agent-harness/sdk` ESM package for Node.js 18+ with
+  first-party TypeScript declarations. It invokes a pinned/configurable `harness` executable with
+  `shell: false`, sends prompts through stdin, supports lazy start/resume, repeated attachments,
+  ordered per-thread turns, typed async event streams and `AbortSignal` cancellation.
+- Bound the TypeScript transport to strict, size-limited UTF-8 JSONL: exact event envelopes,
+  contiguous sequences, one terminal event, identifiers, final status and process exit must
+  agree. Child stderr is drained but never copied into SDK errors, hidden reasoning is not
+  promoted to `finalResponse`, and a verified committed result wins a late cancellation race.
+  Abort listener registration happens before spawn, and a child that lingers after its result is
+  terminated under a bounded close watchdog and reported as a protocol failure. A capped
+  pre-result transport timeout and immediate EOF-without-result termination close earlier hang
+  paths; rejected async observers and signal-listener thenables are consumed without becoming
+  unhandled host-process failures. Every watchdog/protocol stop requests cooperative SIGINT
+  first and retains a bounded SIGKILL fallback.
+- Canonicalized deadline exhaustion to the public `failed` status used by the authoritative
+  `run.failed` event and CLI exit code, while retaining `deadline_exceeded` as the reason and in
+  the internal runtime result.
+- Published `agent_harness.exec_result.v1` as a JSON Schema and added the PEP 561 `py.typed`
+  marker. The TypeScript package is a subprocess/JSONL SDK, not an app-server transport or a
+  claim of complete Claude Agent SDK/Codex SDK parity.
+
+## 2.6.0 — Immutable local attachments
+
+- Added a provider-neutral `agent_harness.attachment.v1` descriptor and owner-private,
+  immutable blob snapshots. Imports use no-follow path traversal, stable-file checks,
+  byte-based type validation and atomic publication; session manifests retain a sanitized
+  local basename, size, type and digests, never the source path, inline body or base64.
+- Added bounded ingestion for strict UTF-8 text/Markdown, validated PNG/JPEG and PDF snapshots
+  with `%PDF-`/`%%EOF` envelope checks (not parsing or extraction). A turn may ingest at most
+  8 attachments and 24 MiB total; individual
+  text, image and PDF limits are 2, 8 and 16 MiB respectively.
+- Added exact provider capability preflight before a run or network request. Standard
+  DeepSeek text models accept UTF-8 text attachments. PNG/JPEG input is available only when
+  the operator explicitly selects `deepseek-v4-flash-vision-exp`; the Harness never changes
+  models automatically. The current DeepSeek adapter rejects PDF before creating a run.
+- Added identical attachment expansion for planner/final-answer phases, inline vision request
+  validation and trace redaction. The current DeepSeek path does not upload through its Files
+  API; image bytes are inlined only in the provider request and are not copied into
+  attachment-specific event metadata. Assistant/tool output retains its ordinary contract.
+- Added repeated headless `--attach` input and TUI staging commands `/attach`, `/attachments`
+  and `/detach`. The curses UI intentionally does not claim drag-and-drop, paste or clipboard
+  parity with Claude Code or Codex.
+- Bound attachment manifests into append-only session lineage and context estimates. A
+  compaction range cannot cross an attachment-bearing message, so attachment history remains
+  in the active suffix and can reach the context limit rather than being silently summarized.
+- Treat all attachment content, including images and documents, as untrusted user data rather
+  than system/project instructions or an authorization source. Active DeepSeek provider input
+  is capped at 16 attachments and 24 MiB in addition to the per-turn ingestion limits.
+
+## 2.5.0 — Isolated foreground subagents
+
+- Added one provider-visible `agent.delegate` capability for a high-risk, never-replay,
+  foreground wait-all batch of 1–4 child tasks. Child work is truly concurrent, results remain
+  in input order, parent cancellation propagates, reconciliation cancels siblings, and every
+  started child is joined before the parent tool settles.
+- Added atomic in-process batch/global/parent/depth/total budgets. The default depth is one and
+  total/concurrent child limit is four. This does not claim a cross-process global scheduler.
+- Added child sessions with bounded prompt/output/path-free lineage metadata, untrusted-result
+  prompt-injection boundaries and no hidden reasoning channel. Children receive at most
+  `workspace-write` and have no host command, MCP, executable project hooks, nested delegation
+  or persistent approvals.
+- Added a run-level persistent-approval cap bound into the execution-policy/checkpoint digest.
+  The exact parent batch needs one fresh approval; inside that authority, only centrally
+  authorized child patch/sandbox-command requests can receive an automatic once-only allow.
+- Added fail-closed Git worktree management from exact clean committed `HEAD`: opaque
+  branch/path IDs, cross-process common-Git-directory lock, direct absolute Git argv, scrubbed
+  environment/config, provisional durable records, linked-worktree/lock verification and a
+  bounded no-follow baseline manifest.
+- Added pristine-only normal worktree removal plus compare-and-swap ref deletion. Changed,
+  committed, structurally suspicious or uncertain artifacts that still exist are preserved. A
+  post-remove ref race retains the branch and record after the checkout is gone; there is no
+  force/reset/clean/prune or automatic merge/apply/commit/push/PR behavior.
+- Added `harness agents [WORKTREE_ID] [--path] [--json]`, TUI `/agents`, active-agent status and
+  typed public lifecycle projection. Default views omit local paths; one explicit ID plus
+  `--path` is required to reveal a retained worktree path.
+- Explicitly do not claim background/resumable/steerable agent threads, custom agents/model
+  routing, nested delegation, team coordination, automatic integration or full Claude
+  Code/Codex subagent parity.
+
+## 2.4.0 — Exact-trust local MCP stdio tools
+
+- Added an intentionally narrow MCP tools client subset pinned to protocol version
+  `2025-06-18`: local stdio transport, initialization, paginated `tools/list`,
+  `tools/call`, cancellation, server ping responses and stale-catalog notification
+  handling.
+- Added secure `.agent-harness/mcp.json` discovery. A server definition must be accepted
+  with its full exact digest, then have its bounded tool catalog explicitly refreshed and
+  frozen in private state before it contributes tools to a run. The live catalog is checked
+  again before each call; changes require another explicit refresh rather than changing an
+  active run dynamically.
+- Registered MCP tools only in `full-access`, as high-risk, external-service, never-replay
+  operations that require a fresh once-only approval. Persistent session/workspace allow
+  rules cannot bypass an MCP approval.
+- Added strict, bounded newline-delimited JSON-RPC framing, a deliberately limited
+  object-root JSON Schema validator, bounded text/structured results and hash/length-only
+  projections for non-text content. Unsupported tool schemas are rejected from the frozen
+  catalog.
+- Added a dedicated read-only macOS Seatbelt launch with network and process fork denied by
+  default and available only through exact-digest-bound configuration flags. There is no
+  unsandboxed or unsupported-host fallback. Exact trust binds the direct executable and
+  launch definition; it does not attest transitive libraries, interpreter arguments,
+  packages, runtime configuration or environment values.
+- Closed the verified-path-to-exec race for user-owned direct executables by running an exact
+  mode-0500 copy from each connection's mode-0700 private runtime. This intentionally changes
+  `argv[0]`/script `__file__`; ACL-nonwritable root-anchored macOS system executables retain
+  their canonical platform path. Common loader/runtime code-loading variables are rejected
+  from `pass_env` even when explicitly named.
+- Added `harness mcp` inspection plus digest-bound `trust`, `disable`, `refresh` and
+  `revoke` operations; TUI `/mcp` remains content-free and read-only.
+- MCP inputs and normalized results follow the existing owner-only journal/checkpoint
+  contract. Raw server stderr is drained transiently and is never persisted; only bounded
+  byte-count, truncation and SHA-256 metadata can be returned to the local CLI.
+- Explicitly do not claim HTTP transport, OAuth, resources, prompts, sampling, elicitation,
+  tasks, active-run dynamic catalogs, full JSON Schema, binary rendering or MCP server mode.
+
+## 2.3.0 — Trusted synchronous command hooks
+
+- Added a deliberately limited synchronous hook surface for `PreToolUse`, `PostToolUse`
+  and `PostToolUseFailure`; this is not full Claude Code or Codex hooks parity.
+- Added secure `.agent-harness/hooks.json` discovery and exact definition-digest trust or
+  disable decisions stored in the private workspace state. Changed definitions become
+  untrusted and block runs until the operator makes a new exact decision.
+- Made project hooks monotonic: pre-tool hooks may preserve the central decision, require
+  approval or deny, while post-tool hooks are observe-only. A hook cannot grant authority,
+  replace arguments or weaken permissions, scopes, approvals or the tool sandbox. Hook
+  approval challenges are once-only and cannot be bypassed by or saved as a persistent rule.
+- Run trusted entrypoint snapshots in a dedicated read-only, no-network macOS Seatbelt
+  profile with no unsafe fallback on unsupported hosts.
+- Added content-free hook lifecycle evidence. Journals contain identities, timing, outcome
+  codes and SHA-256 bindings, not raw hook stdin, stdout or stderr.
+- Added `harness hooks` inspection plus explicit digest-bound `trust`, `disable` and `revoke`
+  operations; TUI `/hooks` is intentionally read-only.
+
+## 2.2.0 — Traceable context compaction
+
+- Added stable message IDs and content digests while retaining backwards-compatible reads of
+  earlier Harness sessions.
+- Made persisted transcript and compaction history append-only; session begin/finish now bind
+  user/run and assistant/terminal state in atomic store updates.
+- Added incremental provider summaries with source-prefix digests, parent lineage, bounded
+  chunks and assistant-boundary cut points. Original messages are never replaced or deleted.
+- Added summary+suffix active-context projection shared by planner and answer. Summaries remain
+  user data and cannot grant tools, permissions, scopes or approval bypasses.
+- Added `harness context`, `harness compact`, TUI `/context` and background `/compact`.
+- Added automatic compaction at 80% of the conservatively estimated input budget, targeting
+  60% and retaining the most recent six original messages.
+
+## 2.1.0 — Workspace policy, approvals and project instructions
+
+- Added a macOS Seatbelt workspace command boundary, a distinct full-access host command and
+  fail-closed workspace writer registration on unsupported platforms.
+- Added digest-bound per-call approvals, headless handoff and private exact session/workspace
+  rules, with an interactive TUI approval surface.
+- Added secure root-to-active-directory `AGENTS.override.md` / `AGENTS.md` discovery and a
+  32 KiB instruction snapshot bound into every run.
+- Added OS-sandboxed patch application, outgoing-signal denial and denial of known Keychain
+  security-service lookups; documented that the allow-default profile is not a container.
+
+## 2.0.0 — Agent Harness pivot
+
+- Retired the previous domain-specific application, prompts, schemas and product surfaces.
+- Added the standalone `agent_harness` package with generic schema identifiers and data
+  scopes.
+- Added a tool-aware DeepSeek coding adapter. Planner JSON and hidden reasoning remain
+  internal; final prose uses the provider's native stream.
+- Added workspace-confined list/read/search and patch tools, plus an explicit host-level
+  command tool in `full-access`.
+- Added real `read-only`, `workspace-write` and `full-access` tool surfaces.
+- Added private workspace-scoped sessions with resume, fork and archive, backed by the
+  existing durable hash-chain run journals and atomic checkpoints.
+- Added a workspace-wide fence for unfinished or uncertain runs and manual
+  `effects`/`reconcile` acknowledgement commands; acknowledgement is not automatic effect
+  verification, rollback or replay.
+- Added a standard-library curses TUI and `harness exec --jsonl` headless mode.
+- Added truthful provider cache telemetry: hit/miss values are shown only when the
+  provider reports them.
+- Replaced the macOS launch entry with `打开Agent Harness.command`.
+- Added an official-docs capability matrix against Claude Code and Codex CLI.
+
+Existing pre-2.0 private runtime data is left untouched as legacy data and is not
+loaded into the new Harness session namespace.

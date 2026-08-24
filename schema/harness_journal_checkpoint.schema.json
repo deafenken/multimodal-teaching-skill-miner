@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-harness/harness_journal_checkpoint.schema.json",
+  "title": "Agent Harness atomic journal checkpoint envelope",
+  "type": "object",
+  "required": ["schema", "run_id", "turn_id", "sequence", "record_hash", "snapshot", "checkpoint_sha256"],
+  "properties": {
+    "schema": {"const": "agent_harness.journal_checkpoint.v1"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "turn_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "sequence": {"type": "integer", "minimum": 1},
+    "record_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "snapshot": {"type": "object"},
+    "checkpoint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

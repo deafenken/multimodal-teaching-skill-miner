@@ -1,49 +1,120 @@
-# 项目完备性状态
+# Project status
 
-## 已形成闭环的工程能力
+Status: **engineering preview**
+Version: **2.7.0**
 
-| 能力 | 状态 | 验收入口 |
-|---|:---:|---|
-| 源码与 exact wheel 安装 | 完成工程链 | `build_release_acceptance.sh` 串联 `verify_project.sh` 双构建一致性、最终 clean wheel、exact 安装/视频 smoke、发布审计和机器生成 acceptance；当前 acceptance 状态为 `engineering_ready_external_validation_pending`，任何后续源码变更都必须重新生成 |
-| 浏览器答辩看板 | 完成 | `tsm dashboard` 直接打开自包含 HTML；包含合成多模态时间轴、TeachObs 四臂消融、DIPSER 评估范围、可执行 Skill 和 claim boundary；只使用公开聚合数据，不包含真实私有媒体或逐样本记录 |
-| 2 门课×5 节离线演示 | 完成 | `tsm demo` |
-| 2 门课×5 节完整正式字幕 | 完成 | `tsm fetch-formal-captions` 实跑 10/10；官方页面/VTT/媒体时长/哈希绑定；私有 manifest 的 `formal_empirical_ready=true` |
-| 2 门课×5 节完整 MIT OCW 媒体 | 完成 | 10/10 私有下载、本地 SHA-256、FFprobe 容器/音视频流/参考时长验证；1,038,813,006 bytes、26,656.83 秒；公开 receipt 不含媒体内容 |
-| 视频/字幕或 ASR / Skill / 教学过程 / 状态机 | 完成 | `tsm pipeline --transcript` 提供无 Whisper 的真实视频闭环；同媒体哈希 ASR 仍可直接使用 |
-| 完整视频音频、抽帧、OCR 与事件 | 完成工程链路 | v9/v2：10/10 全时间轴覆盖和字幕—媒体对齐；2553 帧、2441 非空 OCR 帧、1964 帧至少 3 词、40191 接受词、1974 视觉事件、2270 融合事件 |
-| CLIP 视觉语义 | 完成工程链路 | wheel `visual` extra 和三个 `tsm visual-semantic-*` 入口；2553/2553 哈希绑定帧；512 维嵌入、八类相对 prompt 分数、模型 revision/权重 SHA/CPU 环境绑定；没有人工真值，不建立 Accuracy |
-| transcript / +audio / +visual / full 消融 | 完成内部分析 | 10 讲完全相同 transcript segments，排除课堂观察；平均内部 Skill 分 95.37/95.37/95.30/95.32，不构成多模态增益 |
-| 多模态公开聚合 receipts | 完成工程边界 | `full_multimodal_validation_receipt.json` 与 `multimodal_ablation_receipt.json` 只保留聚合、设计、结论边界和私有来源哈希承诺；发布仍需 release audit 与人工披露复核 |
-| 10 讲端到端总 runner | 完成工程入口 | `run_full_video_multimodal_study.sh` 串联获取/验证、可恢复长视频处理、CLIP、审计、消融、公开 receipts 与 release audit；默认 CPU，可通过环境变量选择授权 GPU |
-| TeachObs 外部人工标签 | 完成导入与审计 | commit-pinned v0.1：30 讲、5158 场景、39 个共识标签、官方 23/7 划分；来源报告 7 名独立编码员，但无逐编码员文件，不能重算 κ |
-| TeachObs 旧发布文本 transcript-only 基线 | 完成探索性实跑 | repository 随附发布文本、1,312 个官方测试场景：Micro-F1 0.612968、Macro-F1 0.360044；它不是当前平台字幕/审计 ASR 物化文本的四臂结果，Hamming accuracy 0.826180 也不单独表述为 Accuracy |
-| TeachObs 字幕与转写时间轴审计 | 论文 profile 已覆盖，完整 profile 部分完成 | 平台字幕审计为 23/30 讲、34 轨（creator-provided 19、automatic 15），平均时间轴覆盖 0.985841；其中 23 讲进入优先级 matrix，另六讲 GPU ASR 已全部通过技术导入，形成 creator-provided 19 + automatic 4 + audited ASR 6 = 29/30 讲，唯一 pending 为 S4。时间轴与 provenance 不是 WER，字幕/ASR 内容准确率仍未建立 |
-| TeachObs 审计 ASR GPU 交接 | 完成 fail-closed 工程链，六讲已实跑导入 | `prepare/import-teachobs-asr-*` 与离线 GPU runner 固定媒体/模型/解码/runtime/segment；v2/v4/v4 契约对 hash-bound 完整媒体单次输入采用统一的 VAD 相对端点策略（span≥0.90、首尾各≤媒体时长 0.10、绝对秒数只诊断），旧证据失败关闭且整批重跑、不迁移。当前六讲均为有效结果；`teachobs_asr_receipt.json` 每次由当前 media manifest、caption audit、job/import audit 重算，其 aggregate 和 `handoff_status` 仍是权威状态。ASR 不是官方字幕，WER/内容准确率仍只能由独立人工参考建立 |
-| TeachObs 双人独立标注包 | 完成 fail-closed 骨架 | `prepare/analyze-teachobs-double-annotation`；A/B 两份空标签表使用不同盲化顺序，论文 profile 为每人 4,945 行×39 标签，完整 profile 为 5,158 行×39；发布的 39 个定义全空，须外部 39/39 operational codebook 和真实两人回填后才计算 κ，当前 human_completion=false |
-| TeachObs 完整视频四臂 F1 | 完成正式探索性实跑 | 29 讲/4,945 场景完成媒体、字幕/ASR、音频、OCR、CLIP 与四臂对齐；固定六讲 1,099 场景上，transcript/+audio/+visual/full 的 Micro-F1 为 0.594496/0.604708/0.548328/0.543812，Macro-F1 为 0.244338/0.247501/0.303894/0.309604，Hamming 为 0.818833/0.809967/0.775297/0.763258。full 相对 text 的 Macro-F1 增量 +0.065266（lesson-cluster 95% CI [0.014886,0.095637]），但 Micro/Hamming 明显下降。修订仅在 23 讲内做 5 折 lesson-grouped OOF 并记录 frozen v2 provenance；首轮公开测试结果已观察，因此是 post-test iterative exploratory，不是首次盲测、0.9、确认性或部署结果 |
-| TeachObs 新站点确认性四臂预注册 | 完成 fail-closed 草案链 | 精确绑定 system/analysis/四臂模型文件 SHA、同样本主 contrast、39 标签 Macro-F1、classroom/session cluster、固定 2,000 次 bootstrap、coverage、前瞻/一次性与外部 Ed25519 登记门；本地四臂冻结包是否完整必须以草案中的传递校验字段和 checker 为准。在新目标数据、外部登记签名和一次性执行证据到位前，所有 established=false；公开 TeachObs 23/7 被机器规则排除 |
-| 九个规范教学环节蒸馏 | 完成 | `teaching_phases.py` 按题目 4.2 定义九个环节；`mine_skill` 按教师自己的时间线排出 procedure，每步标 `origin=observed_method`（带时间戳、命中线索和 evidence_id）或 `recommended_enrichment`（无证据）。10 份演示 transcript 实际观察到 4–7 个环节 |
-| 自动结构与证据一致性评估 | 完成 | `tsm evaluate`；七个维度加权（结构 12%、证据 18%、可执行 18%、方法忠实度 22%、教学质量 12%、迁移 9%、溯源 9%）。前六个维度检查生成器按构造必然满足的字段，10 份演示 Skill 上标准差为 0.000；`method_fidelity` 改为从被引用的 evidence 记录反推每个 observed 步骤的主张，实际区分度为 83.3–89.8（总分 92.3–93.7） |
-| 评分维度的可证伪性 | 完成负控 | `tests/test_method_fidelity.py` 用五种降级（纯模板、伪造线索、打乱时间段、删证据、塌缩环节）对深拷贝 Skill 打分并断言严格下降，且把每种降级绑定到应当检出它的那个分量；把 `method_fidelity` 钉成 100.0 会让 8 个测试失败 |
-| observed method 与推荐脚手架区分 | 完成 | `method_provenance` |
-| 人工复核覆盖与版本审计机制 | 完成工程能力 | 复核完成后强制 100% 覆盖、不同 reviewer、canonical `skill_fingerprint` 绑定；当前真实评分仍待完成 |
-| DIPSER 数据/特征防篡改 | 完成 | runner 重算指纹 + tamper tests |
-| checkpoint v3 与签名外部锁箱协议 | 完成 | 特征/ClaimContract/claim-cluster 绑定、Ed25519 登记、一次性 ledger、签名 receipt |
-| 外部研究证据接入 | 完成协议 | 确认性多模态增益/真实学习效果聚合 manifest、重算 gate、system artifact 实算绑定、独立签名与各自可信公钥；当前无正向证据 |
-| 学习效果 cluster RCT 工具 | 完成 fail-closed 工程链 | `prepare/analyze-learner-effect-study` 生成 teacher/classroom 预注册、仅哈希 token 分配与盲化 pre/post/retention 表，并执行固定 ITT ANCOVA 和 cluster bootstrap；模板、合成与未签名本地分析均保持 learner_effectiveness_established=false |
-| 原始目标站点媒体/传感器到 strict feature bundle | 完成 | `extract-strict-features` 绑定 raw hashes/windows、代码、配置、运行时与工具 provenance；只提取不预测 |
-| 环境诊断 | 完成 | `tsm doctor` |
-| 发布隐私与证据新鲜度审计 | 完成工程检查 | `tsm release-audit` 检查公开边界；`verify_project.sh` 在 TeachObs 私有 media/caption 输入存在时，还必须重验 annotation/caption/ASR receipt 对当前私有输入的哈希绑定；若四臂 benchmark 任一产物存在，还要求 result、public receipt 和完整冻结 bundle 同时通过 profile-aware checker。项目 receipt 记录本次用到的全部私有/公开证据文件 SHA，最终 acceptance 在发布前再次重算比较，防止长构建期间的并发变化；这些都不等于完整去标识或不可重识别证明 |
-| CI 与隔离 wheel smoke | 配置完成 | `.github/workflows/ci.yml`；当前目录不是 Git checkout，远端 tracked-file 与 Actions 实际执行待在真实 checkout 验证 |
+## Implemented
 
-## 项目内不能伪造完成的外部证据
+- independent `agent_harness` package with domain-neutral schemas;
+- bounded provider/tool loop with cancellation, retries and explicit handoff;
+- typed, durable-first event stream and tamper-evident per-run journal;
+- private workspace-scoped sessions with resume, logical transcript fork and archive;
+- read-only downgrade on resume, workspace-wide unresolved-run fencing and manual
+  `effects`/`reconcile` acknowledgement;
+- DeepSeek adapter with central tool calls and native final-answer streaming;
+- provider-neutral immutable attachment snapshots and strict descriptors: no-follow stable
+  ingestion into owner-private blobs, 8-item/24-MiB turn bounds, manifest/session lineage,
+  context accounting and pre-run provider-capability validation; standard DeepSeek models
+  accept strict UTF-8 text, while PNG/JPEG require an explicitly selected
+  `deepseek-v4-flash-vision-exp` model and a 16-item/24-MiB active-request bound;
+- typed in-process Python SDK over `AgentRunner`: sync/async clients and immutable thread/run/
+  event/result values, persisted start/resume/fork, run/event streams, attachment ingestion,
+  cooperative cancellation, explicit optional approval broker, and client-wide serialization
+  that reapplies each thread's authority before every turn;
+- dependency-free Node.js 18+ strict-ESM TypeScript SDK package: lazy start/resume,
+  per-thread ordered run/stream, attachments, per-turn permissions and `AbortSignal`, backed by
+  `harness exec --jsonl` with `shell: false`, bounded canonical UTF-8 parsing, exact
+  event/result/identity/exit-code agreement, pre-spawn signal registration, a bounded
+  pre-result transport timeout, post-result process-close watchdog, async observer rejection
+  isolation and stderr redaction;
+- list/read/search tools, macOS Seatbelt-enforced patch/command writers, and a separately
+  named host command behind explicit permission profiles;
+- per-call approval before sensitive effects, fail-closed headless behavior and private
+  exact session/workspace rules;
+- secure `AGENTS.override.md`/`AGENTS.md` snapshots, provider wiring and context diagnostics;
+- exact-digest-trusted synchronous command hooks for `PreToolUse`, `PostToolUse` and
+  `PostToolUseFailure`; project hooks are monotonic, post hooks are observe-only, execution
+  uses a dedicated read-only/no-network macOS sandbox with no unsupported-host fallback,
+  and events omit raw hook I/O;
+- exact-digest trusted local stdio MCP tools client subset pinned to protocol `2025-06-18`:
+  explicit trust/disable and catalog refresh, frozen/run-bound tool surface, live-catalog
+  revalidation, strict bounded JSON-RPC/schema/result handling, `full-access` high-risk
+  once-only approval, never replay, read-only macOS Seatbelt execution and digest-only stderr
+  diagnostics;
+- stable message identities, append-only transcripts, provider-generated summary lineage,
+  active-context projection, manual `/compact` and bounded 80%→60% automatic compaction;
+- one bounded foreground `agent.delegate` batch: 1–4 concurrent child sessions, parent
+  cancellation and wait-all settlement, dynamic read-only/workspace-write child cap, no child
+  host/MCP/hooks/nesting/persistent approval, and typed content-free lifecycle status;
+- exact clean-HEAD Git worktree isolation with opaque durable records, cross-process
+  common-directory mutation locking, direct trusted Git execution, pristine-only non-force
+  cleanup, conservative artifact preservation (with an explicit post-remove ref-race exception),
+  and path-redacted CLI/TUI artifact inspection;
+- curses TUI and headless text/JSONL commands;
+- macOS double-click launcher;
+- unit, contract, security, persistence and reducer tests.
 
-| 事项 | 当前状态 | 完成条件 |
-|---|:---:|---|
-| 10/10 双人独立教学复核 | 待完成 | 真实复核者评分、意见、κ 与复评记录 |
-| 生成 Skill 提高学习效果 | 未建立 | 伦理审批后的前后测或对照/A-B 实验；可在完成后接入签名外部 learner evidence |
-| 确认性多模态增益 | 未建立 | 冻结 pipeline 后的新数据配对消融与置信区间；可在完成后接入签名 external multimodal evidence |
-| 跨学校/部署准确率 | 未建立 | 独立目标站点、前瞻一次性锁箱、全部 claim gate 通过 |
-| 可信部署 0.9 | 未建立 | 不能继续调同一开发集取得，必须由上述外部锁箱建立 |
+## Deliberately not claimed
 
-当前准确定位是：**核心工程、10/10 正式字幕与完整媒体、TeachObs 29 讲媒体/字幕或审计 ASR/音频/视觉/OCR/CLIP、固定六讲四臂探索性识别指标和安全冻结均已真实运行、可复现和可审计；真实双人复核、因果学习效果、确认性多模态增益、跨站点与外部部署结论仍明确待真实证据完成。** `formal_empirical_ready=true` 只代表正式转写来源与覆盖门槛通过，`multimodal_empirical_ready=true` 只代表所需模态、全程覆盖、对齐和事件结构齐全；两者本身都不是 Accuracy。当前 TeachObs 数值也只是公开测试上的 post-test exploratory estimate。签名机制只验证由指定密钥签署的内容完整性，不能自动证明签署者独立；可信公钥必须来自开发团队之外的治理渠道。
+- feature parity with Claude Code or Codex;
+- full Claude Agent SDK or Codex SDK parity: the Python SDK is an in-process Harness facade,
+  while the TypeScript SDK is a subprocess/JSONL client rather than Codex app-server JSON-RPC;
+  the TypeScript surface has no thread fork or approval broker, and neither surface adds the
+  broader SDK-specific tools/hooks/MCP/subagent/custom-transport APIs of those products;
+- publication of `@agent-harness/sdk` to a public registry; this repository contains a
+  publishable package and validates its local pack artifact only;
+- executable content pinning by the TypeScript SDK: a bare `harness` name trusts `PATH`, and an
+  absolute `harnessPath` is checked as executable but not digest-attested;
+- automatic model switching, DeepSeek Files API upload, or PDF understanding/extraction; the
+  current DeepSeek adapter rejects PDF before run creation, and PDF ingestion checks only the
+  `%PDF-`/`%%EOF` envelope and size boundary;
+- graphical attachment drag-and-drop, paste or clipboard input in the curses TUI;
+- a portable cross-platform or container-grade command sandbox (the enforced backend is
+  currently macOS Seatbelt only);
+- complete host-read, IPC or credential-service isolation: the Seatbelt profile is an
+  allow-default deny overlay covering named boundaries, not a container or VM;
+- cleanup or containment of an unsandboxed `process.exec_host` command that daemonizes
+  outside its initial process group;
+- confidentiality isolation between a session and its fork;
+- MCP HTTP transport, OAuth, resources, prompts, sampling, elicitation, tasks, input-required/
+  task results, active-run dynamic catalogs, full JSON Schema, binary rendering or MCP server
+  mode; the implemented surface is only the exact-trusted local stdio tools client subset;
+- transitive integrity for MCP dependencies: the exact digest binds the direct executable and
+  launch definition, not interpreter-argument scripts, libraries, packages, runtime files or
+  environment values;
+- containment of an MCP server allowed to fork and then daemonize outside the Harness process
+  group; descendants retain the Seatbelt/network authority explicitly granted to that server;
+- `CLAUDE.md` compatibility;
+- complete Claude Code/Codex subagent parity: no background/resume/steer or agent-thread
+  switching, custom agent definitions/model routing, nested delegation, team coordination,
+  automatic merge/apply/commit/push/PR, or cross-process global fan-out budget;
+- worktree isolation as a process, credential, OS-principal, host-read, IPC or network security
+  boundary; it isolates checkout writes and shares the Git object database/refs;
+- full Claude Code/Codex hooks parity: only the three synchronous tool lifecycle events are
+  implemented, with no async hooks, input rewriting or other run/session/model events;
+- a provider-neutral compaction implementation beyond the current DeepSeek adapter;
+- exact cost estimates when the provider does not supply a stable price contract;
+- production deployment or multi-user tenancy;
+- automatic cross-process continuation of an in-flight run;
+- automatic verification, rollback or safe replay of an unresolved effect.
+
+The current comparison and implementation order are documented in
+`docs/harness_parity_matrix.md`. The previous product-domain application, its public
+fixtures, schemas, Console/API and active entry points have been removed. Private legacy
+runtime data was not deleted and is outside the new session namespace.
+
+## Verification
+
+```bash
+ruff check agent_harness tests_harness
+pytest -q
+python -m build --outdir "$(mktemp -d)"
+python -m agent_harness --cwd . status
+npm --prefix sdk/typescript ci --ignore-scripts
+npm --prefix sdk/typescript test
+npm pack ./sdk/typescript --dry-run --json
+zsh -n '打开Agent Harness.command'
+```
+
+The PTY TUI launch, idle `Ctrl+C` and `/quit` checks are local interactive smoke tests;
+the current CI job does not claim to execute them.

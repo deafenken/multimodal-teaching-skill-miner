@@ -8,42 +8,102 @@ permissions:
   contents: read
 
 jobs:
-  tests:
-    runs-on: ubuntu-latest
+  harness:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.13"]
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[recognition,dev]"
-      - run: python -m pytest
-      - run: python -m compileall -q teaching_skill_miner scripts
-      - run: sh -n scripts/*.sh
-      - run: python -m ruff check teaching_skill_miner tests scripts
+      - run: python -m pip install -e '.[dev]'
+      - run: ruff check agent_harness tests_harness
+      - run: pytest -q
+      - run: python -m compileall -q agent_harness
+      - run: python -m build --outdir dist-ci
+      - name: Audit release archives
+        run: |
+          python - <<'PY'
+          import tarfile
+          from pathlib import Path
+          from zipfile import ZipFile
 
-  package-and-privacy:
+          wheels = list(Path("dist-ci").glob("*.whl"))
+          sdists = list(Path("dist-ci").glob("*.tar.gz"))
+          assert len(wheels) == 1, wheels
+          assert len(sdists) == 1, sdists
+          with ZipFile(wheels[0]) as archive:
+              wheel_names = archive.namelist()
+          with tarfile.open(sdists[0], "r:gz") as archive:
+              sdist_names = archive.getnames()
+          assert any(name.startswith("agent_harness/") for name in wheel_names)
+          required_wheel_members = {
+              "agent_harness/py.typed",
+              "agent_harness/sdk.py",
+          }
+          assert required_wheel_members <= set(wheel_names), (
+              required_wheel_members - set(wheel_names)
+          )
+          required_data_suffixes = {
+              "/share/agent-harness/schema/agent_harness_attachment.schema.json",
+              "/share/agent-harness/schema/agent_harness_exec_result.schema.json",
+          }
+          assert all(
+              any(name.endswith(suffix) for name in wheel_names)
+              for suffix in required_data_suffixes
+          ), required_data_suffixes
+          wheel_roots = {name.split("/", 1)[0] for name in wheel_names}
+          assert all(
+              root == "agent_harness" or root.startswith("agent_harness-")
+              for root in wheel_roots
+          ), wheel_roots
+
+          sdist_roots = {name.split("/", 1)[0] for name in sdist_names}
+          assert len(sdist_roots) == 1, sdist_roots
+          sdist_root = next(iter(sdist_roots))
+          assert sdist_root.startswith("agent_harness-"), sdist_root
+          sdist_children = {
+              name.split("/", 2)[1]
+              for name in sdist_names
+              if name.startswith(f"{sdist_root}/") and "/" in name
+          }
+          allowed_children = {
+              "CHANGELOG.md",
+              "LICENSE",
+              "PKG-INFO",
+              "PRIVACY.md",
+              "README.md",
+              "SECURITY.md",
+              "agent_harness",
+              "agent_harness.egg-info",
+              "pyproject.toml",
+              "schema",
+              "setup.cfg",
+              "tests_harness",
+          }
+          assert sdist_children <= allowed_children, sdist_children - allowed_children
+          PY
+      - name: Installed CLI smoke
+        run: |
+          python -m pip install --force-reinstall --no-deps dist-ci/*.whl
+          harness --help
+          harness --cwd . status
+
+  typescript-sdk:
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 22]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          python-version: "3.11"
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e ".[recognition,dev]"
-      - run: python scripts/audit_repository_privacy.py
-      - run: sudo apt-get update && sudo apt-get install --yes ffmpeg
-      - run: sh scripts/build_release_acceptance.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: teaching-skill-miner-release-candidate
-          path: |
-            dist/*.whl
-            artifacts/release_acceptance_*.json
-          if-no-files-found: error
+          node-version: ${{ matrix.node-version }}
+      - run: npm --prefix sdk/typescript ci --ignore-scripts
+      - run: npm --prefix sdk/typescript test
+      - run: npm pack ./sdk/typescript --dry-run --json

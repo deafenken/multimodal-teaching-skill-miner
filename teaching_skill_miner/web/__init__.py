@@ -1,1 +1,0 @@
-"""Packaged public dashboard resources."""
